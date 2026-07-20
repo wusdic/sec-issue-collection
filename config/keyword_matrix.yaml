@@ -5,6 +5,7 @@
 version: "0.1"
 time_filters: [近24小时, 近7天]        # 适配器映射为各平台的时间参数
 query_budget_per_source_daily: 60
+max_pages_per_query: 3                # C2: 翻页深度; 命中饱和时记录截断, 禁止无声截断
 
 event_terms:                # 核心事件词
   [勒索病毒, 勒索软件, 数据泄露, 信息泄露, 被黑客攻击, 网络攻击, 系统瘫痪,
@@ -28,6 +29,11 @@ org_terms:                  # 单位类型词(与后果词交叉)
 procurement_terms:          # M6 回访/招标检索专用(与单位名拼接,不进日常矩阵)
   [安全服务 中标, 网络安全 采购, 数据安全 招标, 等保 测评 中标, 灾备 建设 中标,
    安全运营 托管 中标, 应急响应 采购]
+
+english_terms:              # 仅作用于境外源(Ransomware.live/DataBreaches 等), 中文矩阵搜不到涉华英文报道
+  [China ransomware attack, Chinese company data breach, China data leak,
+   Chinese hospital cyberattack, China manufacturer hacked, Chinese bank breach,
+   China industrial cyberattack, Chinese firm extortion]
 
 negative_terms:             # 排除词(降噪)
   [招聘, 股票分析, 课程 培训班, 软件下载, 攻略, 演习 演练 通知]

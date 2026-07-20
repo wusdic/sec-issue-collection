@@ -11,6 +11,7 @@
 | [`schema/event.schema.json`](schema/event.schema.json) | 事件记录字段规范(JSON Schema,机器可读) |
 | [`schema/dictionaries.yaml`](schema/dictionaries.yaml) | 标准词表:行业、攻击类型、入口、数据类型、采购品类、来源可信度分级 |
 | [`design/详细设计.md`](design/详细设计.md) | 采集软件详细设计:技术选型、服务划分、流水线逻辑、REST API、排期 |
+| [`design/搜索行为逻辑与能力规范.md`](design/搜索行为逻辑与能力规范.md) | 八类搜索行为(B1–B8)× 十项通用能力(C1–C10)统一规范,含监控名单机制与待编写清单 |
 | [`design/schema.sql`](design/schema.sql) | PostgreSQL 建库 DDL(含发布硬校验触发器、pgvector 语义去重) |
 | [`config/seed_sources.yaml`](config/seed_sources.yaml) | 种子源清单(32 个,含适配器/频率/可信度/反爬备注) |
 | [`config/keyword_matrix.yaml`](config/keyword_matrix.yaml) | 每日定题检索关键词矩阵初版 |

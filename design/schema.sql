@@ -312,13 +312,44 @@ CREATE TABLE keyword_set (
 
 CREATE TABLE keyword_run (
   id          BIGSERIAL PRIMARY KEY,
-  keyword_set_id BIGINT NOT NULL REFERENCES keyword_set(id),
+  keyword_set_id BIGINT REFERENCES keyword_set(id),   -- B5/B6 等非矩阵搜索可空
   source_id   BIGINT NOT NULL REFERENCES source(id),
+  behavior    TEXT NOT NULL DEFAULT 'B1'
+              CHECK (behavior IN ('B1','B2','B3','B4','B5','B6','B7','B8')),  -- 搜索行为分类(见搜索行为规范)
+  watch_target_id BIGINT,                             -- B5: 归因到监控对象
   query       TEXT NOT NULL,
   ran_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  pages_fetched INT NOT NULL DEFAULT 1,
+  truncated   BOOLEAN NOT NULL DEFAULT FALSE,         -- C2: 命中饱和被截断(禁止无声截断)
   results     INT NOT NULL DEFAULT 0,
   new_docs    INT NOT NULL DEFAULT 0,
-  new_source_candidates INT NOT NULL DEFAULT 0
+  new_source_candidates INT NOT NULL DEFAULT 0,
+  result_snapshot JSONB                               -- C10: 结果清单快照(可回放审计)
+);
+CREATE INDEX ON keyword_run (behavior, ran_at DESC);
+
+-- 搜索行为规范 B5: 监控名单(重点单位/涉事产品/攻击组织/专题的持续盯防)
+CREATE TABLE watch_target (
+  id          BIGSERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('org','product','attacker_group','topic')),
+  value       TEXT NOT NULL,
+  aliases     TEXT[] NOT NULL DEFAULT '{}',           -- 简称/英文名/曾用名, 查询时展开
+  reason      TEXT,                                   -- 入名单原因
+  linked_event_id TEXT REFERENCES event(event_id),    -- 由哪个事件带入(可空: 人工主动布防)
+  tier        TEXT NOT NULL DEFAULT 'B' CHECK (tier IN ('A','B','C')),  -- 搜索频率
+  active      BOOLEAN NOT NULL DEFAULT TRUE,
+  expires_at  DATE,                                   -- 到期自动停(可续)
+  created_by  BIGINT REFERENCES app_user(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (kind, value)
+);
+
+-- 搜索能力 C4: 水位线增量(每源×查询只处理新增)
+CREATE TABLE search_watermark (
+  source_id   BIGINT NOT NULL REFERENCES source(id),
+  query_hash  TEXT NOT NULL,                          -- 规范化查询串哈希
+  last_ran_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (source_id, query_hash)
 );
 
 -- ============ M10 覆盖对标 ============
