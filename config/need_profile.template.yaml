@@ -7,12 +7,27 @@ need:
   name: ""                    # 人读名称
   owner: ""                   # 需求负责人(词表与质量规则的裁决人)
   priority: B                 # A/B/C, 决定抓取与查询配额分配
+  timeliness_sla: 日级        # 告警级/小时级/日级/周级(9C), 反向决定源调度优先级
+  primary_behaviors: [G1]     # 主驱动行为(9B): 发现主驱动 [G1] / 名单主驱动 [G5] / 混合
+  languages: [zh]             # 语言范围(9F), 词表按语言维护
+  regions: [中国大陆]          # 地域范围(9F)
 
-# ① 目标记录 Schema
-record_schema:
-  file: ""                    # JSON Schema 文件路径, 如 schema/event.schema.json
-  min_publish_fields: []      # 最少可发布字段集(入库门槛)
-  entity_links: []            # 挂接的全局实体类型: org / product / person / region
+# 合规画像(9D, 框架级必填)
+compliance:
+  data_categories: []         # 信息类别: 企业公开信息/个人公开职务信息/涉舆情内容...
+  personal_info: false        # 是否涉及个人信息(true 则强制最小化字段+更严审计)
+  collection_boundary: 仅公开渠道
+  retention: ""               # 留存期限
+  usage_limit: ""             # 用途限定(如: 仅内部分析, 对外引用需法务审核)
+
+# ① 目标记录 Schema(可多个, 共享同一名单与实体库)
+record_schemas:
+  - file: ""                  # JSON Schema 文件路径, 如 schema/event.schema.json
+    archetype: 事件型          # 记录原型(9A): 事件型/文档型/对象型/观测型 — 决定更新与去重语义
+    min_publish_fields: []    # 最少可发布字段集(入库门槛)
+    dedup_key: []             # 记录级去重键(按原型: 实体+类型+时间窗 / 文号 / 实体键 / 对象+指标+粒度)
+
+entity_links: []              # 挂接的全局实体类型: org / product / person / region(跨需求共享实体库)
 
 # ② 领域词表
 dictionaries:
@@ -38,15 +53,19 @@ update:
 
 # ⑤ 质量规则
 quality:
-  assertion_tristate_fields: []   # 需三态管理的关键断言字段
+  model: 事实核实型            # 质量模型(9E): 事实核实型/影响力评估型/观点聚合型, 可字段级混用
+  assertion_tristate_fields: []   # 事实核实型: 需三态管理的关键断言字段
+  influence_signals: []           # 影响力评估型: 引用/热度/作者权威等加权信号
+  stance_fields: []               # 观点聚合型: 多立场并存记录的字段
   screen_prompt: ""               # 粗筛判定标准(LLM prompt 要点)
   double_review_fields: []        # 需双人复核的字段
-  dedup_fingerprint: []           # 记录级去重指纹要素(实体键+类型+时间窗)
 
-# ⑥ 输出物
+# ⑥ 输出物(9C 输出四型)
 outputs:
-  reports: []                 # [{name: "", cycle: 周/月/季, audience: ""}]
-  api_subscriptions: []       # 下游系统订阅(CRM 等)
+  reports: []                 # 报表型: [{name: "", cycle: 周/月/季, audience: ""}]
+  leads: []                   # 线索型: 推送给人跟进的规则
+  api_subscriptions: []       # 订阅型: 按用户过滤条件分发(CRM 等)
+  alerts: []                  # 告警型: [{condition: 阈值/状态跃迁, channel: "", latency: 分钟/小时}]
   kpi: []                     # 本需求的专属 KPI(覆盖率/时延/转化等)
 
 # G8 覆盖基准(强制, 无基准不上线)
