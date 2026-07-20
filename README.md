@@ -12,6 +12,8 @@
 | [`schema/dictionaries.yaml`](schema/dictionaries.yaml) | 标准词表:行业、攻击类型、入口、数据类型、采购品类、来源可信度分级 |
 | [`design/详细设计.md`](design/详细设计.md) | 采集软件详细设计:技术选型、服务划分、流水线逻辑、REST API、排期 |
 | [`design/搜索行为逻辑与能力规范.md`](design/搜索行为逻辑与能力规范.md) | 八类搜索行为(B1–B8)× 十项通用能力(C1–C10)统一规范,含监控名单机制与待编写清单 |
+| [`design/通用信息搜索框架.md`](design/通用信息搜索框架.md) | 领域无关的泛化框架:信息需求六要素、通用流水线、G1–G8 泛化搜索行为、多需求并行架构 |
+| [`config/need_profile.template.yaml`](config/need_profile.template.yaml) | 信息需求画像模板(新需求实例化配置) |
 | [`design/schema.sql`](design/schema.sql) | PostgreSQL 建库 DDL(含发布硬校验触发器、pgvector 语义去重) |
 | [`config/seed_sources.yaml`](config/seed_sources.yaml) | 种子源清单(32 个,含适配器/频率/可信度/反爬备注) |
 | [`config/keyword_matrix.yaml`](config/keyword_matrix.yaml) | 每日定题检索关键词矩阵初版 |

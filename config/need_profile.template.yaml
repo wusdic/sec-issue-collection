@@ -1,0 +1,55 @@
+# 信息需求画像模板 v0.1 —— 通用信息搜索框架的需求实例化配置
+# 用法: 复制本文件为 need_<名称>.yaml, 按第 7 节实例化清单逐项填写
+# 六要素齐备且声明覆盖基准后方可上线; 框架不变量(存档/去重/来源绑定/三态断言)不可裁剪
+
+need:
+  id: ""                      # 唯一标识, 如 sec_events / policy_watch / tender_intel
+  name: ""                    # 人读名称
+  owner: ""                   # 需求负责人(词表与质量规则的裁决人)
+  priority: B                 # A/B/C, 决定抓取与查询配额分配
+
+# ① 目标记录 Schema
+record_schema:
+  file: ""                    # JSON Schema 文件路径, 如 schema/event.schema.json
+  min_publish_fields: []      # 最少可发布字段集(入库门槛)
+  entity_links: []            # 挂接的全局实体类型: org / product / person / region
+
+# ② 领域词表
+dictionaries:
+  file: ""                    # 枚举词表文件(版本化发布)
+  discovery_terms_file: ""    # G1 发现搜索词表(含时间限定与排除词)
+  source_search_terms: []     # G2 找源搜索词
+
+# ③ 来源策略
+sources:
+  seed_file: ""               # 种子源清单
+  credibility_levels:         # 本需求的可信度分级定义与"确认"授权等级
+    confirm_allowed: []       # 允许支撑 confirmed 断言的等级, 如 [S1, S2]
+    levels: {}                # S1..Sn: 定义说明
+
+# ④ 更新策略
+update:
+  lagged_fields: []           # 滞后字段清单: [{field: "", typical_lag_days: 0}]
+  followup_schedule: []       # G4 追踪节奏, 如 [30, 90, 180, 365]
+  watch_kinds: []             # G5 名单对象类型: org/product/attacker_group/topic/...
+  expansion_rules: []         # G6 关联扩展规则: 记录属性 → 扩展查询模板
+  burst_signals: []           # G7 突发信号源: 热搜/政策发布/榜单
+  close_condition: ""         # 记录关闭条件
+
+# ⑤ 质量规则
+quality:
+  assertion_tristate_fields: []   # 需三态管理的关键断言字段
+  screen_prompt: ""               # 粗筛判定标准(LLM prompt 要点)
+  double_review_fields: []        # 需双人复核的字段
+  dedup_fingerprint: []           # 记录级去重指纹要素(实体键+类型+时间窗)
+
+# ⑥ 输出物
+outputs:
+  reports: []                 # [{name: "", cycle: 周/月/季, audience: ""}]
+  api_subscriptions: []       # 下游系统订阅(CRM 等)
+  kpi: []                     # 本需求的专属 KPI(覆盖率/时延/转化等)
+
+# G8 覆盖基准(强制, 无基准不上线)
+benchmark:
+  baselines: []               # [{name: "", type: 官方汇总/商业数据/人工抽样, cycle: 月}]
+  target_recall: 0.9
