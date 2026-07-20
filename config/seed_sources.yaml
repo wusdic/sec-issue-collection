@@ -1,0 +1,221 @@
+# 种子源清单 v0.1 —— M1 源注册表初始导入
+# kind: page(固定栏目抓取) / query(关键词检索型)
+# tier: A(每2-4小时) B(每日) C(每周)
+# manual_assist: true = 反爬/账号门槛高,一期采用"系统生成查询链接+人工粘贴结果"半自动模式
+# 注: URL 为栏目入口,开发时以实际页面结构写适配器;失效时在源管理中更新
+
+version: "0.1"
+
+sources:
+  # ================= S1 官方权威 =================
+  - name: 国家网信办-执法与处罚通报
+    entry_url: https://www.cac.gov.cn/     # 执法专栏
+    kind: page
+    adapter: cac_gov
+    credibility: S1
+    tier: A
+  - name: 工信部-网络安全管理局通报
+    entry_url: https://www.miit.gov.cn/
+    kind: page
+    adapter: miit_gov
+    credibility: S1
+    tier: A
+  - name: CNCERT/CC 周报与专报
+    entry_url: https://www.cert.org.cn/
+    kind: page
+    adapter: cncert
+    credibility: S1
+    tier: B
+  - name: 国家信息安全漏洞共享平台 CNVD 公告
+    entry_url: https://www.cnvd.org.cn/
+    kind: page
+    adapter: cnvd
+    credibility: S1
+    tier: B
+    note: 仅采"已被利用/事件型"公告,纯漏洞预警不入库
+  - name: 公安部及地方网安"净网"通报(汇聚页)
+    entry_url: https://app.mps.gov.cn/gdnps/index.jsp
+    kind: page
+    adapter: mps_gov
+    credibility: S1
+    tier: B
+  - name: 人民银行-行政处罚公示
+    entry_url: http://www.pbc.gov.cn/
+    kind: page
+    adapter: pbc_penalty
+    credibility: S1
+    tier: B
+    note: 过滤涉数据安全/科技风险类处罚
+  - name: 金融监管总局-行政处罚
+    entry_url: https://www.nfra.gov.cn/
+    kind: page
+    adapter: nfra_penalty
+    credibility: S1
+    tier: B
+  - name: 证监会-行政处罚与监管措施
+    entry_url: http://www.csrc.gov.cn/
+    kind: page
+    adapter: csrc_penalty
+    credibility: S1
+    tier: B
+  - name: 上交所-上市公司公告(关键词检索)
+    entry_url: http://www.sse.com.cn/disclosure/
+    kind: query
+    adapter: sse_announcement
+    credibility: S1
+    tier: A
+    note: "查询词组: 网络安全/数据泄露/勒索/系统故障/风险提示"
+  - name: 深交所-上市公司公告(关键词检索)
+    entry_url: https://www.szse.cn/disclosure/
+    kind: query
+    adapter: szse_announcement
+    credibility: S1
+    tier: A
+  - name: 巨潮资讯网-公告全文检索
+    entry_url: http://www.cninfo.com.cn/
+    kind: query
+    adapter: cninfo
+    credibility: S1
+    tier: A
+  - name: 裁判文书网
+    entry_url: https://wenshu.court.gov.cn/
+    kind: query
+    adapter: wenshu
+    credibility: S1
+    tier: B
+    manual_assist: true
+    note: "罪名/案由检索: 非法获取计算机信息系统数据、侵犯公民个人信息、破坏计算机信息系统; 民事案由: 网络侵权、个人信息保护纠纷"
+  - name: 信用中国-行政处罚双公示
+    entry_url: https://www.creditchina.gov.cn/
+    kind: query
+    adapter: creditchina
+    credibility: S1
+    tier: B
+  - name: 中国政府采购网(事故后采购回访 + 招标全量)
+    entry_url: http://www.ccgp.gov.cn/
+    kind: query
+    adapter: ccgp
+    credibility: S1
+    tier: B
+    note: M6 回访检索主力; P3 起兼做招标全量集采集
+  - name: 各省通信管理局通报(以粤/浙/苏/京/沪起步)
+    entry_url: multi
+    kind: page
+    adapter: provincial_ca
+    credibility: S1
+    tier: B
+    note: adapter_config 中配置各省 URL 列表,后续逐省扩充
+
+  # ================= S2 企业自披露 =================
+  - name: 企业公告定题搜索(官网/公众号声明)
+    entry_url: ~
+    kind: query
+    adapter: baidu_search        # 复用搜索引擎,site 限定动态生成
+    credibility: S2
+    tier: A
+    note: 由事件线索触发定向核查,非常规轮询
+
+  # ================= S3 行业与专业媒体 =================
+  - name: FreeBuf
+    entry_url: https://www.freebuf.com/news
+    kind: page
+    adapter: freebuf
+    credibility: S3
+    tier: A
+  - name: 安全客
+    entry_url: https://www.anquanke.com/
+    kind: page
+    adapter: anquanke
+    credibility: S3
+    tier: A
+  - name: 嘶吼
+    entry_url: https://www.4hou.com/
+    kind: page
+    adapter: sihou
+    credibility: S3
+    tier: B
+  - name: 安全牛
+    entry_url: https://www.aqniu.com/
+    kind: page
+    adapter: aqniu
+    credibility: S3
+    tier: B
+  - name: E安全
+    entry_url: https://www.easyaq.com/
+    kind: page
+    adapter: easyaq
+    credibility: S3
+    tier: B
+  - name: 奇安信威胁情报中心
+    entry_url: https://ti.qianxin.com/blog/
+    kind: page
+    adapter: qianxin_ti
+    credibility: S3
+    tier: B
+  - name: 微步在线研究响应中心
+    entry_url: https://x.threatbook.com/
+    kind: page
+    adapter: threatbook
+    credibility: S3
+    tier: B
+  - name: 财新网-科技/金融频道(调查报道)
+    entry_url: https://www.caixin.com/
+    kind: query
+    adapter: caixin_search
+    credibility: S3
+    tier: B
+    manual_assist: true
+    note: 付费墙,存档摘要+链接,全文人工补档
+  - name: 21财经/界面新闻 安全相关检索
+    entry_url: multi
+    kind: query
+    adapter: finance_media_search
+    credibility: S3
+    tier: B
+
+  # ================= S4 需佐证渠道 =================
+  - name: 搜狗微信搜索(公众号定题)
+    entry_url: https://weixin.sogou.com/
+    kind: query
+    adapter: sogou_wechat
+    credibility: S4          # 渠道整体 S4,具体文章按公众号主体重定级(官方号→S1/S2)
+    tier: A
+    note: 图片防盗链,存档必须当刻下载; 验证码频发,配代理池,失败转 manual_assist
+  - name: 微博搜索+热搜监测
+    entry_url: https://s.weibo.com/
+    kind: query
+    adapter: weibo_search
+    credibility: S4
+    tier: A
+  - name: 百度资讯搜索(定题矩阵)
+    entry_url: https://www.baidu.com/
+    kind: query
+    adapter: baidu_search
+    credibility: S4          # 渠道打分,命中文章按发布方重定级
+    tier: A
+  - name: 必应中文资讯搜索(定题矩阵)
+    entry_url: https://cn.bing.com/
+    kind: query
+    adapter: bing_search
+    credibility: S4
+    tier: A
+  - name: Ransomware.live(勒索组织列名监测,过滤中国受害者)
+    entry_url: https://www.ransomware.live/
+    kind: page
+    adapter: ransomware_live
+    credibility: S4
+    tier: A
+    note: 有公开 API; 仅记录列名事实与截图,严禁访问泄露数据
+  - name: DataBreaches.net 涉华报道
+    entry_url: https://databreaches.net/
+    kind: page
+    adapter: databreaches_net
+    credibility: S4
+    tier: B
+  - name: 知乎/脉脉 定题检索
+    entry_url: multi
+    kind: query
+    adapter: social_search
+    credibility: S4
+    tier: B
+    manual_assist: true

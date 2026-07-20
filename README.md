@@ -10,6 +10,10 @@
 | [`docs/需求与解决方案.md`](docs/需求与解决方案.md) | 完整需求方案与解决方案(v1.0),后续采集软件设计的需求基线 |
 | [`schema/event.schema.json`](schema/event.schema.json) | 事件记录字段规范(JSON Schema,机器可读) |
 | [`schema/dictionaries.yaml`](schema/dictionaries.yaml) | 标准词表:行业、攻击类型、入口、数据类型、采购品类、来源可信度分级 |
+| [`design/详细设计.md`](design/详细设计.md) | 采集软件详细设计:技术选型、服务划分、流水线逻辑、REST API、排期 |
+| [`design/schema.sql`](design/schema.sql) | PostgreSQL 建库 DDL(含发布硬校验触发器、pgvector 语义去重) |
+| [`config/seed_sources.yaml`](config/seed_sources.yaml) | 种子源清单(32 个,含适配器/频率/可信度/反爬备注) |
+| [`config/keyword_matrix.yaml`](config/keyword_matrix.yaml) | 每日定题检索关键词矩阵初版 |
 
 ## 核心设计要点
 
