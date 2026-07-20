@@ -7,7 +7,7 @@
   "required": [
     "event_id", "title", "occurred_date", "disclosed_date", "industry", "region",
     "org_type", "org_size", "severity", "affected_systems", "attack_type", "consequences", "entry_vector",
-    "root_cause", "downtime_hours", "loss_L1", "loss_L2", "loss_L3", "loss_L4",
+    "root_cause", "security_controls", "downtime_hours", "loss_L1", "loss_L2", "loss_L3", "loss_L4",
     "loss_L5", "loss_L6", "ransom", "affected_users", "affected_records",
     "secondary_impact", "disclosure_channel", "remediation_actions",
     "accountability", "sellable_mapping", "sources", "confidence_overall",
@@ -98,6 +98,49 @@
       }
     },
 
+    "affected_products": {
+      "type": "array",
+      "description": "涉事 IT 产品(被利用漏洞/被攻陷系统的具体产品),支撑'同款预警'线索与技术栈风险画像",
+      "items": {
+        "type": "object",
+        "required": ["vendor", "product"],
+        "properties": {
+          "vendor": { "type": "string" },
+          "product": { "type": "string" },
+          "version": { "type": "string" },
+          "role": { "enum": ["漏洞所在产品", "被攻陷系统", "涉事第三方服务", "其他"] },
+          "source_ref": { "type": "string" }
+        }
+      }
+    },
+    "security_controls": {
+      "type": "array", "minItems": 1,
+      "description": "事发时安全控制状态,产品方向分析核心输入;信息不足时填一条 {control:'整体不明', status:'不明'}",
+      "items": {
+        "type": "object",
+        "required": ["control", "status"],
+        "properties": {
+          "control": { "type": "string", "description": "见 dictionaries.yaml#security_controls" },
+          "status": { "enum": ["缺位", "在位但失效", "在位被绕过", "不明"] },
+          "note": { "type": "string", "description": "如'有备份但备份被同时加密'" },
+          "source_ref": { "type": "string" }
+        }
+      }
+    },
+    "incumbent_vendors": {
+      "type": "array",
+      "description": "事发前在用安全产品/服务商,仅公开来源(历史招标/厂商案例);仅限内部竞争分析,严禁对外诋毁性使用",
+      "items": {
+        "type": "object",
+        "required": ["vendor", "evidence_level"],
+        "properties": {
+          "vendor": { "type": "string" },
+          "product_category": { "type": "string", "description": "见 dictionaries.yaml#procurement_categories" },
+          "evidence_level": { "enum": ["招标/合同证实", "厂商案例宣传", "媒体报道", "传闻"] },
+          "source_ref": { "type": "string" }
+        }
+      }
+    },
     "downtime_hours": { "$ref": "#/$defs/NumberWithStatus" },
     "loss_L1": { "$ref": "#/$defs/MoneyTriState" },
     "loss_L2": {
