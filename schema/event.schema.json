@@ -6,7 +6,7 @@
   "type": "object",
   "required": [
     "event_id", "title", "occurred_date", "disclosed_date", "industry", "region",
-    "org_type", "org_size", "affected_systems", "attack_type", "entry_vector",
+    "org_type", "org_size", "severity", "affected_systems", "attack_type", "consequences", "entry_vector",
     "root_cause", "downtime_hours", "loss_L1", "loss_L2", "loss_L3", "loss_L4",
     "loss_L5", "loss_L6", "ransom", "affected_users", "affected_records",
     "secondary_impact", "disclosure_channel", "remediation_actions",
@@ -40,6 +40,20 @@
     "org_name": { "type": "string", "description": "未公开时填'未披露'" },
     "org_uscc": { "type": "string", "description": "统一社会信用代码,实体归一主键" },
     "org_size": { "enum": ["特大", "大", "中", "小微", "未知"] },
+    "org_tags": {
+      "type": "array",
+      "items": { "type": "string", "description": "见 dictionaries.yaml#org_tags,多选,与 org_type 组合使用" }
+    },
+    "severity": {
+      "type": "object",
+      "required": ["level"],
+      "description": "事件整体严重度,定级阈值见 dictionaries.yaml#severity_levels。系统按已确认口径自动建议,人工可覆盖",
+      "properties": {
+        "level": { "enum": ["特别重大", "重大", "较大", "一般", "未定级"] },
+        "auto_suggested": { "type": "boolean" },
+        "basis": { "type": "string", "description": "定级依据说明,人工覆盖时必填" }
+      }
+    },
     "related_event_ids": { "type": "array", "items": { "type": "string" } },
 
     "affected_systems": {
@@ -48,7 +62,11 @@
     },
     "attack_type": {
       "type": "array", "minItems": 1,
-      "items": { "type": "string", "description": "见 dictionaries.yaml#attack_types" }
+      "items": { "type": "string", "description": "手段维度,见 dictionaries.yaml#attack_types" }
+    },
+    "consequences": {
+      "type": "array", "minItems": 1,
+      "items": { "type": "string", "description": "后果维度,与手段正交,见 dictionaries.yaml#consequences,允许'未披露'" }
     },
     "entry_vector": {
       "type": "array", "minItems": 1,
@@ -156,7 +174,8 @@
         "required": ["authority", "action"],
         "properties": {
           "authority": { "type": "string" },
-          "legal_basis": { "type": "string", "description": "依据法条,如《网络安全法》第五十九条" },
+          "legal_basis": { "type": "string", "description": "依据法条原文,如《网络安全法》第五十九条" },
+          "legal_basis_code": { "type": "string", "description": "规范化法规编码,见 dictionaries.yaml#legal_bases,用于聚合统计" },
           "doc_number": { "type": "string" },
           "action": { "type": "string" },
           "fine_amount": { "type": ["number", "null"] },
