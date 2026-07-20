@@ -42,6 +42,8 @@ CREATE TABLE dictionary_release (
 CREATE TABLE source (
   id              BIGSERIAL PRIMARY KEY,
   name            TEXT NOT NULL,
+  identity_key    TEXT UNIQUE,          -- 网站=注册域名(eTLD+1) / 公众号=账号标识; 源发现归一键
+  discovery_score REAL,                 -- 候选期评分(日更), 转正后置空
   homepage        TEXT,
   entry_url       TEXT,                 -- 列表页/接口入口(查询型可空)
   kind            TEXT NOT NULL CHECK (kind IN ('page','query')),
@@ -144,6 +146,37 @@ CREATE INDEX ON raw_document (screen_status, fetched_at DESC);
 CREATE INDEX ON raw_document (cluster_id);
 CREATE INDEX ON raw_document USING gin (text_tsv);
 CREATE INDEX ON raw_document (simhash);
+
+-- ============ M10 源发现(详细设计第 8 节) ============
+
+CREATE TABLE source_discovery_evidence (
+  id           BIGSERIAL PRIMARY KEY,
+  identity_key TEXT NOT NULL,           -- 域名 eTLD+1 或 公众号标识
+  display_name TEXT,                    -- 站点名/公众号名(最近一次观察值)
+  kind_guess   TEXT CHECK (kind_guess IN ('website','wechat_mp','forum','other')),
+  channel      TEXT NOT NULL CHECK (channel IN
+               ('event_search',        -- D1 事件检索伴生
+                'citation',            -- D2 引文/转载/首发溯源
+                'wechat_reference',    -- D3 公众号互推/白名单
+                'directory',           -- D4 导航与聚合站
+                'source_search',       -- D5 找源专用检索
+                'manual')),            -- D6 人工推荐
+  evidence_doc_id BIGINT REFERENCES raw_document(id),
+  evidence_url TEXT,
+  was_cluster_primary BOOLEAN NOT NULL DEFAULT FALSE,  -- 曾为同稿簇首发(高权重)
+  first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  hit_count    INT NOT NULL DEFAULT 1
+);
+CREATE INDEX ON source_discovery_evidence (identity_key);
+CREATE INDEX ON source_discovery_evidence (channel, last_seen DESC);
+
+CREATE TABLE source_blacklist (
+  identity_key TEXT PRIMARY KEY,
+  reason       TEXT NOT NULL,           -- 营销号/纯搬运/内容农场/违规站点
+  by_user      BIGINT REFERENCES app_user(id),
+  at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ============ M4/M5 事件 ============
 

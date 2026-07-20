@@ -14,6 +14,7 @@
 | [`design/schema.sql`](design/schema.sql) | PostgreSQL 建库 DDL(含发布硬校验触发器、pgvector 语义去重) |
 | [`config/seed_sources.yaml`](config/seed_sources.yaml) | 种子源清单(32 个,含适配器/频率/可信度/反爬备注) |
 | [`config/keyword_matrix.yaml`](config/keyword_matrix.yaml) | 每日定题检索关键词矩阵初版 |
+| [`config/discovery.yaml`](config/discovery.yaml) | 源发现引擎配置:导航/聚合站清单、找源检索词、候选评分与自动试运行阈值 |
 
 ## 核心设计要点
 

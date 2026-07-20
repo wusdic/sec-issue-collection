@@ -1,0 +1,52 @@
+# 源发现引擎配置 v0.1(详细设计第 8 节, M10)
+# D4 导航/聚合站 与 D5 找源专用检索 的配置; D1-D3 为文档流水线伴生, 无需配置
+
+version: "0.1"
+
+# ---------- D4: 导航与聚合站(每周爬取, 产出候选源而非事件文档) ----------
+directories:
+  - name: 腾讯玄武实验室每日安全动态
+    url: https://sec.today/
+    note: 每日聚合, 其引用的中文源是高质量候选
+  - name: SecWiki 安全维基聚合
+    url: https://www.sec-wiki.com/
+    note: 安全资讯聚合+导航, 周报页含大量渠道
+  - name: Sec-News 安全文摘(GitHub)
+    url: https://github.com/Le0nsec/SecCrawler
+    note: 代表性聚合项目, 同类 awesome 仓库由 github_awesome 适配器按 topic 检索扩展
+  - name: GitHub awesome 安全公众号/周报清单(topic 检索)
+    url: https://github.com/search?q=安全+公众号+awesome
+    note: 批量提取仓库 README 中的公众号名与站点链接
+  - name: 公开安全类 RSS/OPML 合集
+    url: multi
+    note: 命中一个 OPML 即批量导入其全部条目为候选
+
+# ---------- D5: 找源专用检索词(每周跑多引擎; 目的是找渠道, 不是找事件) ----------
+source_search_queries:
+  - 网络安全 事件 盘点 公众号
+  - 数据泄露 追踪 网站
+  - 勒索病毒 疫情 监测 平台
+  - 应急响应 案例 复盘 公众号
+  - 工控安全 事件 分析 网站
+  - 金融 网络安全 通报 解读 公众号
+  - 医疗 网络安全 事件 公众号
+  - 安全周报 汇总 推荐
+  - 网信办 处罚 解读 公众号
+  - 个人信息保护 案例 判决 分析
+  - 安全事件 时间线 梳理 论坛
+
+# ---------- 评分与自动试运行(8.2) ----------
+scoring:
+  weight_channels: 2.0        # 发现通道数
+  weight_hits30d: 0.5         # 近30天命中(封顶10次)
+  weight_cluster_primary: 3.0 # 曾为同稿簇首发
+  weight_llm_relevance: 2.0   # LLM 内容相关度 0-1
+  weight_freshness: 1.0       # 更新活跃度
+  auto_trial_threshold: 8.0   # ≥8 自动建 trial 源(14天试运行)
+  trial_days: 14
+
+# ---------- LLM 相关度初评抽样 ----------
+llm_relevance_probe:
+  pages: [首页, 最近文章列表]
+  sample_articles: 10
+  prompt_goal: 判断该渠道是否持续产出国内安全事件相关的原创或一手内容(0-1 打分+理由)
