@@ -1,0 +1,318 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sec-issue-collection/schema/event.schema.json",
+  "title": "国内行业安全事件记录",
+  "description": "事件库单条事件的字段规范 v1.0。金额一律使用 MoneyTriState 对象,严禁把'要求/索赔/估算'金额写入 confirmed 通道。",
+  "type": "object",
+  "required": [
+    "event_id", "title", "occurred_date", "disclosed_date", "industry", "region",
+    "org_type", "org_size", "affected_systems", "attack_type", "entry_vector",
+    "root_cause", "downtime_hours", "loss_L1", "loss_L2", "loss_L3", "loss_L4",
+    "loss_L5", "loss_L6", "ransom", "affected_users", "affected_records",
+    "secondary_impact", "disclosure_channel", "remediation_actions",
+    "accountability", "sellable_mapping", "sources", "confidence_overall",
+    "status", "review"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^SEC-\\d{8}-\\d{4}$" },
+    "title": { "type": "string", "maxLength": 120 },
+
+    "occurred_date": { "$ref": "#/$defs/DateWithPrecision" },
+    "disclosed_date": { "type": "string", "format": "date" },
+
+    "industry": {
+      "type": "object",
+      "required": ["level1"],
+      "properties": {
+        "level1": { "type": "string", "description": "一级行业,见 dictionaries.yaml#industries" },
+        "level2": { "type": "string", "description": "二级细分,可空" }
+      }
+    },
+    "region": {
+      "type": "object",
+      "required": ["province"],
+      "properties": {
+        "province": { "type": "string", "description": "省级行政区或'全国'" },
+        "city": { "type": "string" }
+      }
+    },
+    "org_type": { "type": "string", "description": "见 dictionaries.yaml#org_types" },
+    "org_name": { "type": "string", "description": "未公开时填'未披露'" },
+    "org_uscc": { "type": "string", "description": "统一社会信用代码,实体归一主键" },
+    "org_size": { "enum": ["特大", "大", "中", "小微", "未知"] },
+    "related_event_ids": { "type": "array", "items": { "type": "string" } },
+
+    "affected_systems": {
+      "type": "array", "minItems": 1,
+      "items": { "type": "string", "description": "见 dictionaries.yaml#affected_systems,允许'未披露'" }
+    },
+    "attack_type": {
+      "type": "array", "minItems": 1,
+      "items": { "type": "string", "description": "见 dictionaries.yaml#attack_types" }
+    },
+    "entry_vector": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["vector", "confidence"],
+        "properties": {
+          "vector": { "type": "string", "description": "见 dictionaries.yaml#entry_vectors,允许'未知'" },
+          "confidence": { "enum": ["确认", "高度可能", "推测"] }
+        }
+      }
+    },
+    "vulnerability_ids": { "type": "array", "items": { "type": "string" }, "description": "CVE/CNVD/CNNVD 编号" },
+    "attacker_attribution": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "组织/家族名,仅记录来源声称" },
+        "confidence": { "enum": ["来源确认", "来源推测"] },
+        "source_ref": { "type": "string" }
+      }
+    },
+    "ttp_tags": { "type": "array", "items": { "type": "string" }, "description": "ATT&CK 技术编号" },
+    "root_cause": {
+      "type": "object",
+      "required": ["category"],
+      "properties": {
+        "category": { "type": "string", "description": "见 dictionaries.yaml#root_causes,允许'未披露'" },
+        "detail": { "type": "string" }
+      }
+    },
+
+    "downtime_hours": { "$ref": "#/$defs/NumberWithStatus" },
+    "loss_L1": { "$ref": "#/$defs/MoneyTriState" },
+    "loss_L2": {
+      "allOf": [{ "$ref": "#/$defs/MoneyTriState" }],
+      "properties": {
+        "physical_quantity": { "type": "string", "description": "产量损失实物量,如'停产原油 4.2 万吨'" },
+        "conversion_method": { "type": "string", "description": "实物量折算金额的方法与单价来源" }
+      }
+    },
+    "loss_L3": { "$ref": "#/$defs/MoneyTriState" },
+    "loss_L4": {
+      "allOf": [{ "$ref": "#/$defs/MoneyTriState" }],
+      "properties": {
+        "case_numbers": { "type": "array", "items": { "type": "string" }, "description": "处罚文号/法院案号" }
+      }
+    },
+    "loss_L5": {
+      "allOf": [{ "$ref": "#/$defs/MoneyTriState" }],
+      "properties": {
+        "facts": { "type": "string", "description": "无法金额化时的事实描述(解约/除名/延期)" }
+      }
+    },
+    "loss_L6": {
+      "type": "object",
+      "required": ["severity"],
+      "properties": {
+        "severity": { "enum": ["无", "轻", "中", "重"] },
+        "facts": { "type": "string" },
+        "money": { "$ref": "#/$defs/MoneyTriState" }
+      }
+    },
+
+    "ransom": {
+      "type": "object",
+      "required": ["applicable"],
+      "properties": {
+        "applicable": { "type": "boolean", "description": "非勒索类事件填 false" },
+        "demanded_amount": { "type": ["number", "null"] },
+        "demanded_currency": { "type": "string" },
+        "negotiated": { "type": ["boolean", "null"] },
+        "paid": { "enum": ["已支付", "未支付", "未披露", null] },
+        "paid_amount": { "type": ["number", "null"], "description": "仅可信来源确认支付时填写;同时计入 loss_L1 confirmed 并备注'赎金支付'" },
+        "source_ref": { "type": "string" }
+      }
+    },
+
+    "affected_users": { "$ref": "#/$defs/NumberTriState" },
+    "affected_records": {
+      "allOf": [{ "$ref": "#/$defs/NumberTriState" }],
+      "properties": {
+        "data_types": { "type": "array", "items": { "type": "string" }, "description": "见 dictionaries.yaml#data_types" }
+      }
+    },
+    "secondary_impact": {
+      "type": "array",
+      "items": { "enum": ["客户合同", "供应链资格", "牌照或资质", "上市进程", "信用评级", "保险费率", "无", "未披露"] }
+    },
+    "insurance": {
+      "type": "object",
+      "properties": {
+        "has_cyber_insurance": { "type": ["boolean", "null"] },
+        "payout": { "$ref": "#/$defs/MoneyTriState" }
+      }
+    },
+
+    "disclosure_channel": {
+      "type": "array", "minItems": 1,
+      "items": { "enum": ["监管通报", "上市公告", "企业自披露", "媒体曝光", "攻击者泄露站", "判决文书", "招标信息反推", "其他"] }
+    },
+    "regulatory_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["authority", "action"],
+        "properties": {
+          "authority": { "type": "string" },
+          "legal_basis": { "type": "string", "description": "依据法条,如《网络安全法》第五十九条" },
+          "doc_number": { "type": "string" },
+          "action": { "type": "string" },
+          "fine_amount": { "type": ["number", "null"] },
+          "date": { "type": "string", "format": "date" },
+          "source_ref": { "type": "string" }
+        }
+      }
+    },
+    "remediation_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "evidence_level"],
+        "properties": {
+          "category": { "type": "string", "description": "采购/整改品类,见 dictionaries.yaml#procurement_categories" },
+          "vendor": { "type": "string" },
+          "amount": { "type": ["number", "null"] },
+          "evidence_level": { "enum": ["招标/合同证实", "企业披露", "媒体报道", "传闻"] },
+          "date": { "type": "string", "format": "date" },
+          "source_ref": { "type": "string" }
+        }
+      },
+      "description": "无信息时为空数组并由回访任务持续补采"
+    },
+    "accountability": {
+      "type": "object",
+      "properties": {
+        "responsible_parties": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": { "type": "string", "description": "如 CIO/运维负责人/外包商,仅记录公开披露的职务" },
+              "consequence": { "type": "string", "description": "免职/处分/追刑/未披露" }
+            }
+          }
+        },
+        "budget_approver": { "type": "string", "description": "整改预算审批方:董事会/集团/IT部/未披露" }
+      }
+    },
+    "sellable_mapping": {
+      "type": "array",
+      "items": { "type": "string", "description": "见 dictionaries.yaml#sellable_products" }
+    },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "milestone"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "milestone": { "enum": ["入侵", "发现", "披露", "恢复", "立案", "处罚", "判决", "整改采购", "其他"] },
+          "note": { "type": "string" }
+        }
+      }
+    },
+
+    "sources": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["ref_id", "url_or_doc_number", "publisher", "published_date", "credibility"],
+        "properties": {
+          "ref_id": { "type": "string", "description": "被其他字段的 source_ref 引用" },
+          "url_or_doc_number": { "type": "string" },
+          "title": { "type": "string" },
+          "publisher": { "type": "string" },
+          "published_date": { "type": "string", "format": "date" },
+          "credibility": { "enum": ["S1", "S2", "S3", "S4"] },
+          "snapshot_id": { "type": "string", "description": "快照存档 ID,采集软件强制生成" },
+          "supports_fields": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "confidence_overall": { "enum": ["已证实", "多源印证", "单源待证", "存疑"] },
+    "completeness_score": { "type": "number", "minimum": 0, "maximum": 100 },
+    "status": { "enum": ["draft", "published", "monitoring", "closed"] },
+    "review": {
+      "type": "object",
+      "required": ["created_by", "created_at"],
+      "properties": {
+        "created_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "reviewed_by": { "type": "string" },
+        "reviewed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "change_log": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "by": { "type": "string" },
+          "field": { "type": "string" },
+          "old_value": {},
+          "new_value": {},
+          "source_ref": { "type": "string" }
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "DateWithPrecision": {
+      "type": "object",
+      "required": ["date", "precision"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "precision": { "enum": ["日", "月", "季", "年", "未知"] }
+      }
+    },
+    "NumberWithStatus": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "value": { "type": ["number", "null"] },
+        "precision": { "enum": ["精确", "约数", "区间下限", null] },
+        "status": { "enum": ["已披露", "未披露", "待回访"] },
+        "source_ref": { "type": "string" }
+      }
+    },
+    "NumberTriState": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "claimed": { "type": ["number", "null"], "description": "声称值(攻击者/爆料)" },
+        "estimated": { "type": ["number", "null"], "description": "第三方估算" },
+        "confirmed": { "type": ["number", "null"], "description": "企业/监管/法院确认" },
+        "status": { "enum": ["已确认", "仅估算", "仅声称", "未披露", "待回访"] },
+        "source_refs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "MoneyTriState": {
+      "type": "object",
+      "required": ["status"],
+      "description": "金额三态对象。confirmed 通道只允许挂 S1(或支出类 S2)来源;claimed=要求/索赔/媒体转述;estimated=有方法论的第三方测算。区间金额记 low/high。",
+      "properties": {
+        "claimed_cny": { "$ref": "#/$defs/AmountRange" },
+        "estimated_cny": { "$ref": "#/$defs/AmountRange" },
+        "confirmed_cny": { "$ref": "#/$defs/AmountRange" },
+        "original_currency": { "type": "string", "description": "非人民币时的原币种" },
+        "original_amount": { "type": ["number", "null"] },
+        "fx_rate": { "type": ["number", "null"], "description": "披露日人行中间价" },
+        "status": { "enum": ["已确认", "仅估算", "仅声称", "无此类损失", "未披露", "待回访"] },
+        "source_refs": { "type": "array", "items": { "type": "string" } },
+        "note": { "type": "string", "description": "计提头寸、市值波动等只能写在这里,不得进任何金额通道" }
+      }
+    },
+    "AmountRange": {
+      "type": "object",
+      "properties": {
+        "low": { "type": ["number", "null"] },
+        "high": { "type": ["number", "null"] },
+        "point": { "type": ["number", "null"], "description": "单点金额;与 low/high 二选一" }
+      }
+    }
+  }
+}
