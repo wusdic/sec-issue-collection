@@ -288,7 +288,25 @@
           "publisher": { "type": "string" },
           "published_date": { "type": "string", "format": "date" },
           "credibility": { "enum": ["S1", "S2", "S3", "S4"] },
-          "snapshot_id": { "type": "string", "description": "快照存档 ID,采集软件强制生成" },
+          "snapshot_id": { "type": "string", "description": "存档目录 ID,对应 archive/{YYYY}/{MM}/{snapshot_id}/,采集软件强制生成" },
+          "archive": {
+            "type": "object",
+            "required": ["status", "captured_at"],
+            "description": "原文完整存档结果,规范见方案 7.3;存档为只读(WORM),内容以 manifest.json 为准",
+            "properties": {
+              "status": {
+                "enum": ["L-A完整原文", "L-B单文件归档", "L-C快照图片", "L-D失败待补"],
+                "description": "实际达到的存档层级(降级链:完整原文→单文件/PDF→分段截图→失败登记)"
+              },
+              "captured_at": { "type": "string", "format": "date-time" },
+              "final_url": { "type": "string", "description": "跳转后的真实抓取地址" },
+              "has_full_text": { "type": "boolean" },
+              "image_count": { "type": "integer", "description": "已下载正文图片数" },
+              "attachment_count": { "type": "integer", "description": "已下载附件数(处罚决定书/判决文书 PDF 等)" },
+              "screenshot_pages": { "type": "integer", "description": "分段截图张数,单页为 1" },
+              "manifest_sha256": { "type": "string" }
+            }
+          },
           "supports_fields": { "type": "array", "items": { "type": "string" } }
         }
       }
