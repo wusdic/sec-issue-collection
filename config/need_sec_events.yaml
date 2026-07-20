@@ -1,0 +1,82 @@
+# 需求画像:国内行业安全事件库(通用信息搜索框架 · 第一实例)
+# 依据 config/need_profile.template.yaml 实例化
+
+need:
+  id: sec_events
+  name: 国内行业安全事件库
+  owner: 数据运营负责人
+  priority: A
+  timeliness_sla: 日级
+  primary_behaviors: [G1]
+  languages: [zh, en]
+  regions: [中国大陆]
+
+compliance:
+  data_categories: [企业公开信息, 监管处罚公示, 司法公开文书, 公开报道]
+  personal_info: false          # 责任人仅记录公开披露的职务信息
+  collection_boundary: 仅公开渠道
+  retention: 已发布事件来源存档永久保留; 淘汰候选原文保留90天
+  usage_limit: 仅内部分析; 对外引用需法务审核; 竞争情报禁止贬损性使用
+
+record_schemas:
+  - file: schema/event.schema.json
+    archetype: 事件型
+    min_publish_fields: [event_id, title, occurred_date, disclosed_date, industry, region,
+                         org_type, org_size, severity, affected_systems, attack_type,
+                         consequences, root_cause, security_controls, sources]
+    dedup_key: [org_key, attack_type, occurred_date±14d]
+
+entity_links: [org, product]
+
+dictionaries:
+  file: schema/dictionaries.yaml
+  discovery_terms_file: config/keyword_matrix.yaml
+  source_search_terms_file: config/discovery.yaml
+
+sources:
+  seed_file: config/seed_sources.yaml
+  credibility_levels:
+    confirm_allowed: [S1, S2]   # 已确认金额只认监管/司法/公告(S1)与企业自披露支出(S2)
+    levels:
+      S1: 监管处罚/司法文书/官方通报/上市公司公告
+      S2: 企业自披露
+      S3: 主流媒体/厂商报告
+      S4: 社媒爆料/泄露站列名(需佐证)
+
+update:
+  lagged_fields:
+    - {field: loss_L4, typical_lag_days: 180}
+    - {field: remediation_actions, typical_lag_days: 120}
+    - {field: ransom.paid, typical_lag_days: 60}
+  followup_schedule: [30, 90, 180, 365]
+  watch_kinds: [org, product, attacker_group, topic]
+  expansion_rules:
+    - {trigger: affected_products, behavior: B6, query_template: "{product} 漏洞 OR 被利用 OR 中标"}
+  burst_signals: [微博热搜, 百度热榜]
+  close_condition: 全部金额通道落定 或 24个月无新信息
+
+quality:
+  model: 事实核实型
+  assertion_tristate_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5,
+                              affected_users, affected_records]
+  screen_prompt: 判断是否为发生在中国大陆(或受害主体为中国企业/机构)的网络安全事件报道;
+    漏洞预警(无受害方)、营销软文、纯趋势分析不算
+  double_review_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5, regulatory_actions]
+
+outputs:
+  reports:
+    - {name: 月度行业风险简报, cycle: 月, audience: 管理层}
+    - {name: 季度产品方向报告, cycle: 季, audience: 产品委员会}
+  leads:
+    - {name: 销售线索单, cycle: 周, min_score: 30}
+  api_subscriptions: [CRM]
+  alerts:
+    - {condition: "severity in [特别重大,重大]", channel: 内部IM, latency: 小时}
+  kpi: [金额字段可回溯率=100%, 存档覆盖率=100%, 披露到入库中位时延<=24h,
+        月度漏报率<=10%, 重复事件率<=1%]
+
+benchmark:
+  baselines:
+    - {name: CNCERT月度通报, type: 官方汇总, cycle: 月}
+    - {name: 主要厂商季度应急响应报告, type: 官方汇总, cycle: 季}
+  target_recall: 0.9

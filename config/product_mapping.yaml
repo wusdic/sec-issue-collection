@@ -1,0 +1,44 @@
+# 产品映射规则(方案 12.2):手段×入口×根因×后果×控制缺口 → 可售产品
+# 规则内各维为 OR,维间为 AND;需按公司实际产品线校准后冻结
+
+version: "0.1"
+rules:
+  - name: 勒索场景
+    match: {attack_type: [勒索软件]}
+    products: [备份与恢复, 灾备方案, EDR, 勒索评估服务, 应急响应服务]
+  - name: 备份缺失或失效
+    match: {security_controls: [数据备份, 灾备切换能力]}
+    products: [备份与恢复, 灾备方案]
+  - name: 数据泄露
+    match: {consequences: [数据泄露]}
+    products: [数据库审计, DLP, 数据分类分级服务, 零信任权限治理]
+  - name: 内部人员
+    match: {attack_type: [内部人员违规]}
+    products: [零信任权限治理, 数据库审计, DLP]
+  - name: 钓鱼与BEC
+    match: {attack_type: [钓鱼与BEC], entry_vector: [钓鱼邮件, 社会工程]}
+    products: [邮件安全网关, 安全意识培训, MFA]
+  - name: 边界与漏洞入侵
+    match: {entry_vector: [VPN或边界设备漏洞, 未修补已知漏洞, 0day漏洞]}
+    products: [攻击面管理, 漏洞管理, 渗透测试]
+  - name: 弱口令与凭据
+    match: {entry_vector: [弱口令与暴力破解, 凭据泄露复用]}
+    products: [MFA, 零信任权限治理]
+  - name: 供应链
+    match: {attack_type: [供应链攻击], entry_vector: [供应链或第三方, 外包运维通道]}
+    products: [软件供应链安全SBOM, 供应商安全评估]
+  - name: 云配置
+    match: {attack_type: [云配置错误暴露], entry_vector: [云配置错误]}
+    products: [CSPM云安全, 云安全托管]
+  - name: 工控
+    match: {attack_type: [工控物联网攻击]}
+    products: [工控安全审计, OT网络监测]
+  - name: 业务中断
+    match: {consequences: [业务中断]}
+    products: [灾备方案, 应急响应服务, MSS托管服务]
+  - name: 监管处罚驱动
+    match: {attack_type: [监管处罚事件]}
+    products: [等保辅导, 个保合规咨询, 密评]
+  - name: DDoS
+    match: {attack_type: [DDoS]}
+    products: [MSS托管服务]

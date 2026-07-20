@@ -1,0 +1,5 @@
+version: "0.1"
+sources:
+  - {name: 国家网信办-政策法规, entry_url: "https://www.cac.gov.cn/", kind: page, adapter: cac_gov, credibility: S1, tier: B}
+  - {name: 中国政府网-政策, entry_url: "https://www.gov.cn/zhengce/", kind: page, adapter: generic_list, credibility: S1, tier: B}
+  - {name: 国家标准全文公开系统, entry_url: "https://openstd.samr.gov.cn/", kind: query, adapter: baidu_search, credibility: S1, tier: C}

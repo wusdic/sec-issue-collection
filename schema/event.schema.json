@@ -179,7 +179,7 @@
       "properties": {
         "applicable": { "type": "boolean", "description": "非勒索类事件填 false" },
         "demanded_amount": { "type": ["number", "null"] },
-        "demanded_currency": { "type": "string" },
+        "demanded_currency": { "type": ["string", "null"] },
         "negotiated": { "type": ["boolean", "null"] },
         "paid": { "enum": ["已支付", "未支付", "未披露", null] },
         "paid_amount": { "type": ["number", "null"], "description": "仅可信来源确认支付时填写;同时计入 loss_L1 confirmed 并备注'赎金支付'" },

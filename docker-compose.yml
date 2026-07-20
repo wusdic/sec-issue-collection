@@ -1,0 +1,51 @@
+# 一期单机部署(详细设计 §7)。生产 PG/Redis/MinIO,开发可只起 api。
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sec
+      POSTGRES_PASSWORD: sec
+      POSTGRES_DB: sec_collection
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    ports: ["5432:5432"]
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    volumes: ["miniodata:/data"]
+    ports: ["9000:9000", "9001:9001"]
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file: [.env]
+    depends_on: [postgres, redis]
+    ports: ["8000:8000"]
+    volumes: [".:/app"]
+
+  worker:
+    build: .
+    command: celery -A tasks.celery_app worker -Q crawl,nlp,ops -l info
+    env_file: [.env]
+    depends_on: [postgres, redis, minio]
+    volumes: [".:/app"]
+
+  beat:
+    build: .
+    command: celery -A tasks.celery_app beat -l info
+    env_file: [.env]
+    depends_on: [redis]
+    volumes: [".:/app"]
+
+volumes:
+  pgdata:
+  miniodata:

@@ -1,0 +1,6 @@
+version: "1.0"
+time_filters: [近7天, 近30天]
+query_budget_per_source_daily: 30
+max_pages_per_query: 3
+event_terms: [网络安全法 修订, 数据安全 规定, 个人信息保护 征求意见, 关键信息基础设施 办法, 数据出境 评估, 等保 标准, 密码应用 要求, 人工智能 安全 管理]
+negative_terms: [招聘, 培训报名, 解读课程]

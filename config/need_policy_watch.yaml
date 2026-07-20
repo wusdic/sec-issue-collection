@@ -1,0 +1,69 @@
+# 需求画像:政策监管动态库(通用信息搜索框架 · 第二实例,P2)
+# 用途:验证框架泛化性——记录原型=文档型(与安全事件库的事件型不同)
+# 同一套引擎(采集/存档/去重/源发现/搜索行为)零改动,仅换画像与 Schema/词表
+
+need:
+  id: policy_watch
+  name: 政策监管动态库
+  owner: 合规负责人
+  priority: B
+  timeliness_sla: 日级
+  primary_behaviors: [G1, G5]     # 发现主驱动 + 对重点部委名单监控
+  languages: [zh]
+  regions: [中国大陆]
+
+compliance:
+  data_categories: [政策法规, 标准, 监管通报]
+  personal_info: false
+  collection_boundary: 仅公开渠道
+  retention: 永久保留
+  usage_limit: 内部决策参考
+
+record_schemas:
+  - file: schema/policy.schema.json
+    archetype: 文档型              # 内容发布后不变,监控状态跃迁(征求意见→发布→生效→修订→废止)
+    min_publish_fields: [doc_id, title, issuer, doc_type, status, published_date, sources]
+    dedup_key: [doc_number]        # 文号/标准号唯一
+
+entity_links: [issuer]
+
+dictionaries:
+  file: schema/policy_dictionaries.yaml
+  discovery_terms_file: config/keyword_matrix_policy.yaml
+
+sources:
+  seed_file: config/seed_sources_policy.yaml
+  credibility_levels:
+    confirm_allowed: [S1]         # 政策以官方发布为唯一确认口径
+    levels:
+      S1: 部委官网/全国人大/司法机关正式发布
+      S2: 行业协会转载
+      S3: 媒体解读
+
+update:
+  lagged_fields:
+    - {field: effective_date, typical_lag_days: 90}   # 发布到生效常有过渡期
+  followup_schedule: [30, 90, 180]                     # 跟踪状态跃迁(生效/修订)
+  watch_kinds: [issuer, topic]
+  expansion_rules: []
+  burst_signals: [部委发布会]
+  close_condition: 被后续法规废止 或 长期稳定生效
+
+quality:
+  model: 事实核实型                # 文档型也走事实核实(发布方即权威)
+  assertion_tristate_fields: []    # 无金额三态
+  screen_prompt: 判断是否为中国网络安全/数据安全/个人信息保护相关的法规、规章、
+    标准、征求意见稿或监管专项通知
+  double_review_fields: []
+
+outputs:
+  reports:
+    - {name: 月度政策动态简报, cycle: 月, audience: 合规与产品}
+  alerts:
+    - {condition: "doc_type in [法律,行政法规] 且 status=发布", channel: 内部IM, latency: 小时}
+  kpi: [覆盖率>=95%, 披露到入库<=24h]
+
+benchmark:
+  baselines:
+    - {name: 国务院政策文件库, type: 官方汇总, cycle: 月}
+  target_recall: 0.95
