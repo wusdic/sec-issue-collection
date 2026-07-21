@@ -17,6 +17,7 @@ from app.services import followup as followup_svc
 from app.services import kpi as kpi_svc
 from app.services import leads as leads_svc
 from app.services import review as review_svc
+from app.services import url_tools
 from app.services.events import PublishError, update_payload
 from app.services.extraction import load_record_schema
 from app.services.profiles import get_active_profile
@@ -59,11 +60,77 @@ def list_sources(lifecycle: str | None = None, db: Session = Depends(get_session
     if lifecycle:
         q = q.filter_by(lifecycle=lifecycle)
     return [{"id": s.id, "name": s.name, "kind": s.kind, "adapter": s.adapter,
+             "entry_url": s.entry_url, "note": s.note,
              "credibility": s.credibility, "tier": s.tier, "lifecycle": s.lifecycle,
              "identity_key": s.identity_key, "discovery_score": s.discovery_score,
              "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total,
+             "fail_streak": s.fail_streak, "discovered_from": s.discovered_from,
              "last_crawled": s.last_success_at.isoformat() if s.last_success_at else None}
             for s in q.order_by(Source.id).all()]
+
+
+class SourceIn(BaseModel):
+    name: str
+    entry_url: str | None = None
+    kind: str = "page"                 # page(栏目/RSS 抓取) / query(关键词检索)
+    adapter: str | None = None         # 留空自动:page→generic_rss/list,query→baidu_search
+    credibility: str = "S3"
+    tier: str = "B"
+    note: str | None = None
+    need_id: str = "sec_events"
+
+
+@api.post("/sources", status_code=201)
+def create_source(body: SourceIn, db: Session = Depends(get_session),
+                  _: AppUser = Depends(require_roles("analyst"))):
+    """手动添加数据源。零适配器:留空 adapter 时按类型自动选通用适配器(RSS/列表/搜索)。"""
+    kind = body.kind if body.kind in ("page", "query") else "page"
+    if body.credibility not in ("S1", "S2", "S3", "S4"):
+        raise HTTPException(422, "可信度须为 S1-S4")
+    entry = (body.entry_url or "").strip() or None
+    if kind == "page" and not entry:
+        raise HTTPException(422, "页面型源必须填入口链接(栏目页或 RSS 地址)")
+    adapter = (body.adapter or "").strip() or ("baidu_search" if kind == "query" else "generic_rss")
+    ident = None
+    if entry:
+        try:
+            ident = url_tools.identity_key_for(entry)
+        except Exception:  # noqa: BLE001
+            ident = None
+    # identity_key 唯一:已存在同域源则合并需求而非重复建
+    if ident and (dup := db.query(Source).filter_by(identity_key=ident).one_or_none()):
+        needs = sorted(set(dup.serves_needs or []) | {body.need_id})
+        dup.serves_needs = needs
+        if dup.lifecycle == "retired":
+            dup.lifecycle = "active"
+        db.commit()
+        return {"id": dup.id, "merged": True, "name": dup.name}
+    src = Source(name=body.name.strip(), entry_url=entry, kind=kind, adapter=adapter,
+                 adapter_config={}, credibility=body.credibility, tier=body.tier,
+                 lifecycle="active", serves_needs=[body.need_id],
+                 identity_key=ident, manual_assist=False, note=body.note,
+                 discovered_from="manual")
+    db.add(src)
+    db.commit()
+    return {"id": src.id, "merged": False, "name": src.name}
+
+
+@api.delete("/sources/{source_id}")
+def delete_source(source_id: int, db: Session = Depends(get_session),
+                  _: AppUser = Depends(require_roles("analyst"))):
+    """删除数据源:已采过文档的源转『停用』(保留历史与外键完整);无文档的源直接物理删除。"""
+    src = db.get(Source, source_id)
+    if not src:
+        raise HTTPException(404, "源不存在")
+    has_docs = db.query(RawDocument.id).filter_by(source_id=source_id).first() is not None
+    if has_docs:
+        src.lifecycle = "retired"
+        db.commit()
+        return {"id": source_id, "action": "retired",
+                "note": "该源已有采集文档,转为停用(不再采集,历史保留)"}
+    db.delete(src)
+    db.commit()
+    return {"id": source_id, "action": "deleted"}
 
 
 class PromoteIn(BaseModel):

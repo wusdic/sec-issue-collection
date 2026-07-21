@@ -388,21 +388,78 @@ async function vLeads(){
 }
 
 /* ---------- 数据源 ---------- */
+const canEditSrc=()=>["analyst","editor","admin"].includes(ROLE);
 async function vSources(){
   const v=document.getElementById("view");
-  v.innerHTML=`<h2>数据源</h2><p class="sub">32 个种子源 + 自动发现的候选源</p><div id="srcTable">加载中…</div>`;
+  v.innerHTML=`<h2>数据源</h2>
+    <p class="sub">种子源 + 自动发现的候选源。点入口链接可打开原站人工验证;不需要的源可删除/停用。</p>
+    ${canEditSrc()?`<div class="card" style="margin:10px 0;padding:14px">
+      <h3 style="margin:0 0 10px;font-size:15px">➕ 手动添加数据源</h3>
+      <div class="toolbar" style="flex-wrap:wrap;gap:8px">
+        <input id="nsName" placeholder="名称,如 FreeBuf 资讯" style="min-width:170px">
+        <input id="nsUrl" placeholder="入口链接:栏目页或 RSS 地址(检索型可留空)" style="min-width:300px;flex:1">
+        <select id="nsKind">
+          <option value="page">页面型(栏目/RSS,按链接定时抓)</option>
+          <option value="query">检索型(关键词搜索)</option></select>
+        <select id="nsCred">
+          <option value="S1">S1 官方权威</option><option value="S2">S2 企业自披露</option>
+          <option value="S3" selected>S3 专业媒体</option><option value="S4">S4 需佐证</option></select>
+        <button onclick="addSource()" id="nsBtn">添加</button>
+      </div>
+      <p class="sub" style="margin:8px 0 0">适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。</p>
+      <div id="nsMsg" class="sub" style="margin-top:6px"></div>
+    </div>`:''}
+    <div id="srcTable">加载中…</div>`;
+  loadSources();
+}
+async function loadSources(){
   try{
     const rows=await api(`/sources`);
-    document.getElementById("srcTable").innerHTML=`<table><thead><tr>
-      <th>名称</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>半自动</th><th>文档数</th><th>上次采集</th></tr></thead><tbody>`+
-      rows.map(s=>`<tr>
-        <td>${esc(s.name)}</td><td>${s.kind==="query"?"检索型":"页面型"}</td>
+    const act=rows.filter(s=>s.lifecycle!=="retired").length;
+    document.getElementById("srcTable").innerHTML=`<p class="sub">共 ${rows.length} 个源(生效 ${act})</p>
+      <table><thead><tr>
+      <th>名称</th><th>入口链接</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>文档数</th><th>上次采集</th>
+      ${canEditSrc()?"<th>操作</th>":""}</tr></thead><tbody>`+
+      rows.map(s=>{
+        const link=s.entry_url&&s.entry_url.startsWith("http")
+          ? `<a href="${esc(s.entry_url)}" target="_blank" rel="noopener" class="mono" title="${esc(s.entry_url)}">打开↗</a>`
+          : `<span class="muted">${s.kind==="query"?"检索型无固定入口":"—"}</span>`;
+        const retired=s.lifecycle==="retired";
+        const fail=s.fail_streak>=3?`<span class="pill warn" title="连续失败 ${s.fail_streak} 次,可能已失效">连败${s.fail_streak}</span>`:"";
+        return `<tr style="${retired?'opacity:.5':''}">
+        <td>${esc(s.name)} ${fail}</td><td>${link}</td>
+        <td>${s.kind==="query"?"检索型":"页面型"}</td>
         <td><span class="pill ${s.credibility==="S1"?"ok":s.credibility==="S4"?"warn":"info"}">${s.credibility}</span></td>
-        <td>${s.tier}</td><td>${esc(s.lifecycle)}</td>
-        <td>${s.manual_assist?'<span class="pill warn">是</span>':"否"}</td><td>${s.docs_total}</td>
+        <td>${s.tier}</td><td>${retired?'<span class="pill">已停用</span>':esc(s.lifecycle)}</td>
+        <td>${s.docs_total}</td>
         <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
-      </tr>`).join("")+`</tbody></table>`;
+        ${canEditSrc()?`<td>${retired?"":`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
+      </tr>`}).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("srcTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function addSource(){
+  const name=document.getElementById("nsName").value.trim();
+  const entry_url=document.getElementById("nsUrl").value.trim();
+  const kind=document.getElementById("nsKind").value;
+  const credibility=document.getElementById("nsCred").value;
+  const msg=document.getElementById("nsMsg");
+  if(!name){ msg.innerHTML=`<span class="pill warn">请填名称</span>`; return; }
+  if(kind==="page"&&!entry_url){ msg.innerHTML=`<span class="pill warn">页面型必须填入口链接</span>`; return; }
+  const btn=document.getElementById("nsBtn"); btn.disabled=true;
+  try{
+    const r=await api("/sources",{method:"POST",body:JSON.stringify({name,entry_url,kind,credibility,need_id:NEED})});
+    msg.innerHTML=r.merged?`<span class="pill ok">已合并到同域已有源「${esc(r.name)}」</span>`:`<span class="pill ok">已添加</span>`;
+    document.getElementById("nsName").value="";document.getElementById("nsUrl").value="";
+    loadSources();
+  }catch(e){ msg.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+  finally{ btn.disabled=false; }
+}
+async function delSource(id,name){
+  if(!confirm(`删除数据源「${name}」?\n\n若该源已采过文档,将转为「停用」(不再采集、历史保留);无文档则直接删除。`)) return;
+  try{
+    const r=await api(`/sources/${id}`,{method:"DELETE"});
+    loadSources();
+  }catch(e){ alert("删除失败:"+e.message); }
 }
 
 /* ---------- 采集 ---------- */
