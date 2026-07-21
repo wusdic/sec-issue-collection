@@ -212,3 +212,9 @@ def get_llm() -> BaseLLM:
 def set_llm(client: BaseLLM):
     global _client
     _client = client
+
+
+def reset():
+    """清空客户端缓存(配置变更后调用,下次 get_llm 用新配置重建)。"""
+    global _client
+    _client = None

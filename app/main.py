@@ -16,6 +16,14 @@ _WEB = Path(__file__).resolve().parent / "web" / "index.html"
 @app.on_event("startup")
 def _startup():
     init_db()
+    # 载入页面保存过的运行时配置(覆盖 .env 默认)
+    from app.db import SessionLocal
+    from app.services.settings_service import load_from_db
+    db = SessionLocal()
+    try:
+        load_from_db(db)
+    finally:
+        db.close()
 
 
 @app.get("/", include_in_schema=False)

@@ -40,6 +40,10 @@
   .card.clickable{cursor:pointer;transition:.15s}
   .card.clickable:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(37,99,235,.14);transform:translateY(-2px)}
   .card .k .arrow{float:right;color:var(--brand);font-weight:700}
+  .card .cardDesc{color:var(--muted);font-size:12px;margin-top:8px;line-height:1.45}
+  .formRow{display:grid;grid-template-columns:200px 1fr;gap:10px 16px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line)}
+  .formRow .fl{font-size:13px} .formRow .fd{color:var(--muted);font-size:12px;margin-top:2px}
+  .grpTitle{font-size:15px;font-weight:600;margin:22px 0 6px}
   /* 表格 */
   table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
   th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
@@ -102,7 +106,7 @@ let TOKEN = localStorage.getItem("tok") || "";
 let ROLE = localStorage.getItem("role") || "";
 const TABS = [
   ["dashboard","仪表盘"],["events","事件"],["review","复核台"],
-  ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],
+  ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],["settings","设置"],
 ];
 let PENDING = {};   // 下钻时携带的预设筛选,由目标页读取后清空
 function drill(tab, filter){ PENDING = filter || {}; go(tab); }
@@ -150,38 +154,48 @@ function boot(){
 function go(k){
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
   ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
-    leads:vLeads,sources:vSources,crawl:vCrawl}[k])();
+    leads:vLeads,sources:vSources,crawl:vCrawl,settings:vSettings}[k])();
 }
 
 /* ---------- 仪表盘 ---------- */
 async function vDashboard(){
   const v=document.getElementById("view");
-  v.innerHTML=`<h2>仪表盘</h2><p class="sub">需求实例:国内行业安全事件库(sec_events)</p>
-    <div id="seedBanner" class="banner">库里还没有数据?点这里
+  v.innerHTML=`<h2>仪表盘</h2>
+    <p class="sub">国内行业安全事件库(sec_events)· 每个卡片是一个关键指标,鼠标悬停有说明,点击卡片直接进对应明细页。数据流:采集文档 → 抽取成事件 → 待复核 → 发布 → 生成线索/回访。</p>
+    <div id="seedBanner" class="banner">第一次使用、库里还没数据?先点
       <button class="sm" onclick="seedDemo()">一键载入演示数据</button>
-      &nbsp;然后就能在各页面看到事件、线索、复核任务的效果。</div>
+      &nbsp;即可在各页面看到事件、线索、复核任务的样子(纯本地样例,不联网)。</div>
     <div class="cards" id="cards">加载中…</div>`;
   try{
     const d=await api(`/kpi/dashboard?need_id=${NEED}`);
     window.__trace = d.traceability;
     const trace = d.traceability.ok
       ? `<span class="pill ok">通过</span>` : `<span class="pill bad">违规 ${d.traceability.violations.length}</span>`;
-    // 每张卡片声明下钻目标:go=跳转的 tab,f=预设筛选;click=自定义动作
+    // 每张卡片:go=下钻目标 tab,f=预设筛选,click=自定义动作,desc=这个框是什么
     const cards=[
-      {k:"事件总数", v:d.events_total, go:"events"},
-      {k:"已发布", v:d.events_published, go:"events", f:{status:"live"}},
-      {k:"采集文档", v:d.docs_total, go:"crawl"},
-      {k:"待复核", v:d.pending_review, go:"review"},
-      {k:"新线索", v:d.leads_new, go:"leads"},
-      {k:"完备度均分", v:d.avg_completeness??"-", go:"events"},
-      {k:"回访待办", v:d.followups_open, go:"followups"},
-      {k:"金额可追溯硬约束", v:trace, small:true, click:"trace"},
+      {k:"事件总数", v:d.events_total, go:"events",
+        desc:"库里全部安全事件(草稿+已发布)。点击 → 事件列表(全部)"},
+      {k:"已发布", v:d.events_published, go:"events", f:{status:"live"},
+        desc:"已复核发布 / 跟踪中的事件,是能用于分析的正式数据。点击 → 事件列表(已发布)"},
+      {k:"采集文档", v:d.docs_total, go:"crawl",
+        desc:"从各数据源采集入库的原始网页/文章,是事件的原料。点击 → 采集页看文档与采集记录"},
+      {k:"待复核", v:d.pending_review, go:"review",
+        desc:"已抽取、等人工核对后才能发布的事件。点击 → 复核台处理"},
+      {k:"新线索", v:d.leads_new, go:"leads",
+        desc:"事件自动匹配出的、待销售跟进的商机。点击 → 线索列表"},
+      {k:"完备度均分", v:d.avg_completeness??"-", go:"events",
+        desc:"事件字段填充完整度平均分(满分100),越高信息越全。点击 → 事件列表"},
+      {k:"回访待办", v:d.followups_open, go:"followups",
+        desc:"待回访补全罚款/判决/整改采购等滞后信息的任务。点击 → 回访页"},
+      {k:"金额可追溯", v:trace, small:true, click:"trace",
+        desc:"红线校验:所有『已确认金额』是否都挂了权威来源(S1/S2)。点击查看详情"},
     ];
     const box=document.getElementById("cards");
     box.innerHTML = cards.map((c,i)=>
-      `<div class="card clickable" data-i="${i}">
+      `<div class="card clickable" data-i="${i}" title="${esc(c.desc)}">
          <div class="k">${c.k}<span class="arrow">›</span></div>
-         <div class="v ${c.small?'small':''}">${c.v??"-"}</div></div>`).join("");
+         <div class="v ${c.small?'small':''}">${c.v??"-"}</div>
+         <div class="cardDesc">${esc(c.desc)}</div></div>`).join("");
     box.querySelectorAll(".card").forEach((el,i)=>{
       const c=cards[i];
       el.onclick = c.click==="trace" ? showTrace : ()=>drill(c.go, c.f);
@@ -452,6 +466,59 @@ async function loadRuns(){
         <td class="muted">${esc((r.started_at||"").replace("T"," ").slice(0,16))}</td>
       </tr>`).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("runsTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+
+/* ---------- 设置 ---------- */
+async function vSettings(){
+  const v=document.getElementById("view");
+  const isAdmin = ROLE==="admin";
+  v.innerHTML=`<h2>设置</h2>
+    <p class="sub">配置大模型接口、采集、去重、存档参数。${isAdmin?'保存后即时生效(无需重启)。':'当前角色只读,仅 admin 可修改。'}</p>
+    <div class="banner">💡 用真实大模型:把「LLM 模式」改成 openai_compat,填接口地址/密钥/模型名(国内可用 Qwen、DeepSeek);
+      想离线测试就保持 mock。密钥留空表示不改动已保存的值。数据库地址、登录密钥等结构性配置仍在项目根 .env 中,改动需重启。</div>
+    <div id="setForm">加载中…</div>
+    ${isAdmin?`<div style="margin-top:18px"><button onclick="saveSettings()">保存配置</button>
+      <span id="setMsg" class="muted" style="margin-left:12px"></span></div>`:""}`;
+  try{
+    const cfg=await api("/settings");
+    document.getElementById("setForm").innerHTML = cfg.groups.map(g=>`
+      <div class="grpTitle">${esc(g.name)}</div>
+      ${g.fields.map(f=>settingRow(f,isAdmin)).join("")}`).join("");
+  }catch(e){ document.getElementById("setForm").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+function settingRow(f,editable){
+  const id="set_"+f.key;
+  let input;
+  if(!editable){
+    input=`<span class="mono">${f.type==="bool"?(f.value?"开":"关"):esc(f.value||"(空)")}</span>`;
+  }else if(f.type==="bool"){
+    input=`<select id="${id}"><option value="true"${f.value?" selected":""}>开启</option>
+      <option value="false"${!f.value?" selected":""}>关闭</option></select>`;
+  }else if(f.type.startsWith("enum:")){
+    const opts=f.type.slice(5).split(",");
+    input=`<select id="${id}">${opts.map(o=>`<option${o===f.value?" selected":""}>${o}</option>`).join("")}</select>`;
+  }else{
+    const ph=f.secret?"已配置,留空不修改":"";
+    const val=f.secret?"":esc(f.value??"");
+    input=`<input id="${id}" value="${val}" placeholder="${ph}" ${f.secret?'type="password"':''}>`;
+  }
+  return `<div class="formRow"><div><div class="fl">${esc(f.label)}</div><div class="fd">${esc(f.desc||"")}</div></div>
+    <div>${input}</div></div>`;
+}
+async function saveSettings(){
+  const cfg=await api("/settings");
+  const body={};
+  cfg.groups.forEach(g=>g.fields.forEach(f=>{
+    const el=document.getElementById("set_"+f.key); if(!el) return;
+    // 密钥留空则不提交(不覆盖已存值)
+    if(f.secret && !el.value) return;
+    body[f.key]=el.value;
+  }));
+  try{
+    const r=await api("/settings",{method:"PUT",body:JSON.stringify(body)});
+    document.getElementById("setMsg").textContent="已保存并生效:"+(r.applied||[]).join("、");
+    toast("配置已保存");
+  }catch(e){ document.getElementById("setMsg").textContent="失败:"+e.message; }
 }
 
 /* ---------- 抽屉 ---------- */

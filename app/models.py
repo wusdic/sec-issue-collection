@@ -365,3 +365,11 @@ class Lead(Base):
     feedback: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     __table_args__ = (UniqueConstraint("event_id", "target_org"),)
+
+
+class AppSetting(Base):
+    """运行时可配置项持久化(页面「设置」编辑,覆盖 .env 默认值)。"""
+    __tablename__ = "app_setting"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)

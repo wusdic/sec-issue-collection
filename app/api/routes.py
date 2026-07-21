@@ -372,6 +372,26 @@ def audit_logs(limit: int = 100, db: Session = Depends(get_session),
             for a in db.query(AuditLog).order_by(AuditLog.at.desc()).limit(limit).all()]
 
 
+# ---------- 系统配置(前端「设置」页) ----------
+
+@api.get("/settings")
+def get_settings(_: AppUser = Depends(require_roles("analyst"))):
+    from app.services import settings_service
+    return settings_service.current()
+
+
+@api.put("/settings")
+def put_settings(body: dict, db: Session = Depends(get_session),
+                 user: AppUser = Depends(require_roles("admin"))):
+    from app.services import settings_service
+    applied = settings_service.save(db, body)
+    db.add(AuditLog(user_id=user.id, action="settings.update", target="app_setting",
+                    detail={"keys": applied}))
+    db.commit()
+    return {"ok": True, "applied": applied,
+            "note": "已保存并即时生效(LLM/采集/去重/存档参数);数据库、密钥等结构性配置仍走 .env,需重启。"}
+
+
 # ---------- 采集触发与运行记录(前端"采集"页) ----------
 
 class CrawlIn(BaseModel):
