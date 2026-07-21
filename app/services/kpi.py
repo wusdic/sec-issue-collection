@@ -99,17 +99,28 @@ def traceability_check(db: Session, need_id: str) -> dict:
 
 
 def dashboard(db: Session, need_id: str) -> dict:
+    from app.models import ReviewTask
     total = db.query(Event).filter_by(need_id=need_id).count()
     published = db.query(Event).filter(Event.need_id == need_id,
                                        Event.status.in_(["published", "monitoring", "closed"])).count()
     docs = db.query(RawDocument).filter_by(need_id=need_id).count()
-    open_followups = db.query(FollowupTask).filter_by(status="open").count()
+    # 待复核 = 复核队列未完成(新抽取/待一审/待二审),与复核台"待复核(全部)"口径一致
+    pending_review = (
+        db.query(ReviewTask).join(Event, Event.event_id == ReviewTask.event_id)
+        .filter(Event.need_id == need_id,
+                ReviewTask.stage.in_(["extracted", "first_review", "second_review"])).count()
+    )
+    # 回访待办按 need 过滤(经 event 关联)
+    open_followups = (
+        db.query(FollowupTask).join(Event, Event.event_id == FollowupTask.event_id)
+        .filter(Event.need_id == need_id, FollowupTask.status == "open").count()
+    )
     leads_new = db.query(Lead).filter_by(need_id=need_id, status="new").count()
     scores = [ev.completeness_score for ev in db.query(Event).filter(
         Event.need_id == need_id, Event.completeness_score.isnot(None)).all()]
     return {
         "events_total": total, "events_published": published, "docs_total": docs,
-        "followups_open": open_followups, "leads_new": leads_new,
+        "pending_review": pending_review, "followups_open": open_followups, "leads_new": leads_new,
         "avg_completeness": round(sum(scores) / len(scores), 1) if scores else None,
         "traceability": traceability_check(db, need_id),
     }

@@ -171,7 +171,7 @@ async function vDashboard(){
       {k:"事件总数", v:d.events_total, go:"events"},
       {k:"已发布", v:d.events_published, go:"events", f:{status:"live"}},
       {k:"采集文档", v:d.docs_total, go:"crawl"},
-      {k:"待复核", v:d.events_total-d.events_published, go:"review"},
+      {k:"待复核", v:d.pending_review, go:"review"},
       {k:"新线索", v:d.leads_new, go:"leads"},
       {k:"完备度均分", v:d.avg_completeness??"-", go:"events"},
       {k:"回访待办", v:d.followups_open, go:"followups"},
@@ -284,8 +284,9 @@ async function vReview(){
   v.innerHTML=`<h2>复核台</h2><p class="sub">抽取后的事件需复核后才能发布;含已确认金额的需双人复核</p>
     <div class="toolbar">
       <select id="rStage" onchange="loadReview()">
-        <option value="first_review">待一审</option><option value="second_review">待二审(金额双签)</option>
-        <option value="extracted">新抽取</option></select>
+        <option value="pending">待复核(全部)</option>
+        <option value="extracted">新抽取</option>
+        <option value="first_review">待一审</option><option value="second_review">待二审(金额双签)</option></select>
       ${canReview?"":'<span class="pill warn">当前角色无复核权限,仅查看</span>'}
     </div><div id="rvTable">加载中…</div>`;
   loadReview();
@@ -300,14 +301,16 @@ async function loadReview(){
       <th>事件</th><th>阶段</th><th>金额双签</th><th>操作</th></tr></thead><tbody>`+
       rows.map(t=>`<tr>
         <td style="cursor:pointer" onclick="openEvent('${t.event_id}')"><span class="mono">${t.event_id}</span></td>
-        <td>${esc(t.stage)}</td><td>${t.needs_double?'<span class="pill warn">需双签</span>':'<span class="pill">否</span>'}</td>
+        <td>${stageLabel(t.stage)}</td><td>${t.needs_double?'<span class="pill warn">需双签</span>':'<span class="pill">否</span>'}</td>
         <td>
-          ${t.stage==="extracted"?`<button class="sm" onclick="rvAct('${t.event_id}','submit')">提交复核</button>`:""}
-          ${canReview&&t.stage!=="extracted"?`<button class="sm ok" onclick="rvAct('${t.event_id}','approve')">通过</button>
-          <button class="sm bad" onclick="rvReject('${t.event_id}')">驳回</button>`:""}
+          ${canReview?`<button class="sm ok" onclick="rvAct('${t.event_id}','approve')">通过</button>
+            <button class="sm bad" onclick="rvReject('${t.event_id}')">驳回</button>`
+          : t.stage==="extracted"?`<button class="sm" onclick="rvAct('${t.event_id}','submit')">提交复核</button>`:""}
         </td></tr>`).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("rvTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
 }
+function stageLabel(s){ return {extracted:"新抽取",first_review:"待一审",second_review:"待二审",
+  published:"已发布",rejected:"已驳回"}[s]||s; }
 async function rvAct(id,act){
   try{ await api(`/review/${id}/${act}`,{method:"POST"});
     toast(act==="approve"?"已通过":"已提交"); loadReview(); }
@@ -399,10 +402,29 @@ async function vCrawl(){
       <button class="ghost sm" onclick="loadRuns()">刷新记录</button>
     </div>
     <div id="crawlOut"></div>
+    <h3 style="font-size:15px;margin-top:20px">采集到的文档</h3>
+    <p class="sub">采集/演示入库的原始文档(粗筛后进入抽取)</p>
+    <div id="docsTable">加载中…</div>
     <h3 style="font-size:15px;margin-top:20px">最近采集记录 / 错误报告</h3>
     <div id="runsTable">加载中…</div>`;
-  loadRuns();
+  loadDocs(); loadRuns();
 }
+async function loadDocs(){
+  try{
+    const rows=await api(`/documents?need_id=${NEED}&limit=500`);
+    if(!rows.length){ document.getElementById("docsTable").innerHTML=`<p class="muted">暂无文档。上方“开始采集”跑一轮,或到仪表盘点“一键载入演示数据”。</p>`; return; }
+    document.getElementById("docsTable").innerHTML=`<table><thead><tr>
+      <th>标题</th><th>来源</th><th>粗筛</th><th>首发/转载</th></tr></thead><tbody>`+
+      rows.map(d=>`<tr>
+        <td>${esc(d.title||d.url)}</td><td class="muted">${esc(d.publisher||"")}</td>
+        <td>${screenPill(d.screen_status)}</td>
+        <td>${d.is_primary?'<span class="pill">首发</span>':'<span class="pill warn">转载</span>'}</td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("docsTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+function screenPill(s){ const m={screened_in:["ok","已入选"],screened_out:["","已过滤"],
+  manual_queue:["warn","待人工"],pending:["info","待粗筛"]}; const x=m[s]||["",s];
+  return `<span class="pill ${x[0]}">${x[1]}</span>`; }
 async function runCrawl(){
   const btn=document.getElementById("runBtn"); btn.disabled=true; btn.textContent="采集中…(可能需数十秒)";
   const limit=parseInt(document.getElementById("cLimit").value);
@@ -412,7 +434,7 @@ async function runCrawl(){
       本轮采集源 <b>${r.sources}</b> 个,处理文档 <b>${(r.processed||[]).length}</b> 条,
       候选新源 <b>${(r.candidates||[]).length}</b> 个,刷新线索 <b>${r.leads_refreshed}</b>。
       ${(r.processed||[]).filter(p=>p.action==="draft_created").length} 条生成草稿事件。</div>`;
-    toast("采集完成"); loadRuns();
+    toast("采集完成"); loadDocs(); loadRuns();
   }catch(e){ document.getElementById("crawlOut").innerHTML=`<p class="pill bad">采集失败:${esc(e.message)}</p>`; }
   finally{ btn.disabled=false; btn.textContent="开始采集"; }
 }

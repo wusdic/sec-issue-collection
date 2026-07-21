@@ -204,9 +204,14 @@ def event_changelog(event_id: str, db: Session = Depends(get_session),
 # ---------- 复核 M5 ----------
 
 @api.get("/review/queue")
-def review_queue(stage: str = "first_review", db: Session = Depends(get_session),
+def review_queue(stage: str = "pending", db: Session = Depends(get_session),
                  _: AppUser = Depends(current_user)):
-    rows = db.query(ReviewTask).filter_by(stage=stage).order_by(ReviewTask.updated_at).all()
+    q = db.query(ReviewTask)
+    if stage == "pending":   # 全部待复核(新抽取+待一审+待二审),与仪表盘"待复核"口径一致
+        q = q.filter(ReviewTask.stage.in_(["extracted", "first_review", "second_review"]))
+    else:
+        q = q.filter_by(stage=stage)
+    rows = q.order_by(ReviewTask.updated_at).all()
     return [{"task_id": t.id, "event_id": t.event_id, "stage": t.stage,
              "needs_double": t.needs_double} for t in rows]
 
@@ -416,6 +421,14 @@ def demo_seed(need_id: str = "sec_events", db: Session = Depends(get_session),
 
     need = db.get(NeedProfile, need_id)
     src = db.query(Source).first()
+    # 幂等:已注入过演示数据则不再重复,避免"采集文档"数字反复累加
+    existed = db.query(RawDocument).filter(
+        RawDocument.need_id == need_id,
+        RawDocument.url.like("https://demo.local/%")).count()
+    if existed:
+        return {"created": [], "published": [],
+                "note": f"演示数据已存在({existed} 条),未重复注入。"}
+
     samples = [
         ("某三甲医院遭勒索攻击 HIS系统瘫痪36小时",
          "某市第三人民医院遭勒索软件攻击,HIS 系统瘫痪超过36小时,门诊停诊。"
