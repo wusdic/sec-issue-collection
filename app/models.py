@@ -9,7 +9,7 @@
 from datetime import datetime, date
 
 from sqlalchemy import (
-    JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text,
+    JSON, BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -183,7 +183,8 @@ class RawDocument(Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    simhash: Mapped[int | None] = mapped_column(Integer, nullable=True)  # SQLite 用带符号 64bit
+    # 带符号 64bit SimHash;BigInteger 保证 PostgreSQL 不溢出(int4 存不下)
+    simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     cluster_id: Mapped[int | None] = mapped_column(ForeignKey("doc_cluster.id"), nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=True)
     snapshot_id: Mapped[str | None] = mapped_column(ForeignKey("archive_manifest.snapshot_id"), nullable=True)

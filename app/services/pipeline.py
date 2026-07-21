@@ -115,6 +115,9 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     # 记录级去重:指纹 → 语义召回
     existing = dedup.fingerprint_match(db, need.id, payload)
     if existing:
+        # 疑似同一事件:不建新记录,文档转人工队列并挂明疑似目标,等待人工合并(10.3 跨时间合并)
+        doc.screen_status = "manual_queue"
+        doc.screen_reason = f"疑似与 {existing.event_id} 为同一事件(指纹命中),请人工确认合并"
         result["action"] = "merge_suggested"
         result["event_id"] = existing.event_id
         result["extraction"] = extraction
@@ -158,11 +161,13 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                                 result_snapshot=[{"url": i.url, "title": i.title} for i in items[:50]])
                 db.add(kr)
                 found += len(items)
+                q_new = 0  # 本查询新增(C9 命中率统计依赖逐查询口径)
                 for item in items:
                     doc = ingest_item(db, need, source, item, run.id, do_archive=do_archive)
                     if doc:
-                        new_docs += 1
-                kr.new_docs = new_docs
+                        q_new += 1
+                new_docs += q_new
+                kr.new_docs = q_new
                 if wm:
                     wm.last_ran_at = datetime.utcnow()
                 else:

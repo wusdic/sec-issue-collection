@@ -29,7 +29,9 @@ def fetch(url: str, referer: str | None = None, timeout: float | None = None) ->
         with httpx.Client(follow_redirects=True, timeout=timeout or settings.fetch_timeout, headers=headers) as client:
             resp = client.get(url)
             final_url = str(resp.url)
-            html = resp.text if "text" in resp.headers.get("content-type", "text/html") or True else None
+            ctype = resp.headers.get("content-type", "text/html")
+            # 只对文本/HTML/XML 类响应解码为文本;二进制(PDF/图片等)不当 html 处理
+            html = resp.text if any(t in ctype for t in ("text", "html", "xml", "json")) else None
             # C8: 搜狗微信临时链 → 提取永久链再抓一次
             if "weixin.sogou.com" in final_url or ("sogou" in final_url and "mp.weixin" not in final_url):
                 perm = url_tools.extract_wechat_permalink(html or "")
