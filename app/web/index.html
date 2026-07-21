@@ -542,13 +542,72 @@ async function vSettings(){
       <button class="ghost" onclick="testLLM()">测试大模型连通</button>
       <span id="setMsg" style="margin-left:12px"></span>
     </div>
-    <div id="setTest" style="margin-top:12px"></div>`;
+    <div id="setTest" style="margin-top:12px"></div>
+
+    <div class="grpTitle" style="margin-top:32px">关键词矩阵(决定采集时搜什么、搜多少)</div>
+    <p class="sub">检索型源(百度/必应/搜狗微信/微博等)每次采集用这些词去搜。
+      系统把「事件词」「行业词」「后果词」「单位词」交叉组合成许多查询,再按下面的上限截取。
+      日志里“关键词 N 条”就是这里展开后的实际查询数。词太少会漏掉大量事件,可按需加词、调大上限。</p>
+    <div id="kwForm">加载中…</div>
+    ${["analyst","admin"].includes(ROLE)?`<div style="margin-top:14px">
+      <button onclick="saveKeywords()">保存关键词并生效</button>
+      <span id="kwMsg" style="margin-left:12px"></span></div>`:'<p class="muted">仅 analyst/admin 可编辑关键词</p>'}`;
   try{
     const cfg=await api("/settings");
     document.getElementById("setForm").innerHTML = cfg.groups.map(g=>`
       <div class="grpTitle">${esc(g.name)}</div>
       ${g.fields.map(f=>settingRow(f,isAdmin)).join("")}`).join("");
   }catch(e){ document.getElementById("setForm").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+  loadKeywords();
+}
+
+const KW_LISTS=[
+  ["event_terms","事件词","勒索病毒、数据泄露、被黑客攻击…(核心必填)"],
+  ["industry_terms","行业词","银行、医院、车企…(与事件词交叉)"],
+  ["consequence_terms","后果/处置词","网络安全法处罚、判决 侵犯公民个人信息…"],
+  ["org_terms","单位类型词","上市公司、央企、集团公司…(与后果词交叉)"],
+  ["negative_terms","排除词","招聘、课程、软件下载…(命中则降噪剔除)"],
+];
+const KW_NUMS=[
+  ["query_budget_per_source_daily","每源每次查询条数上限","展开后最多用多少条查询。默认200。越大覆盖越全,但越慢、越易触发反爬"],
+  ["max_pages_per_query","每个查询翻几页","每条查询在搜索引擎翻几页结果。默认3"],
+  ["cross_event_terms","交叉:取前几个事件词","事件×行业组合时,事件词取前几个。默认12"],
+  ["cross_industry_terms","交叉:取前几个行业词","默认20"],
+];
+let KW_CONTENT={};
+async function loadKeywords(){
+  const box=document.getElementById("kwForm"); if(!box) return;
+  const editable=["analyst","admin"].includes(ROLE);
+  try{
+    const r=await api(`/keywords?need_id=${NEED}`);
+    KW_CONTENT=r.content||{};
+    const numRows=KW_NUMS.map(([k,label,desc])=>{
+      const val=KW_CONTENT[k]??"";
+      const input=editable?`<input id="kw_${k}" value="${esc(val)}" style="width:120px">`:`<span class="mono">${esc(val)}</span>`;
+      return `<div class="formRow"><div><div class="fl">${esc(label)}</div><div class="fd">${esc(desc)}</div></div><div>${input}</div></div>`;
+    }).join("");
+    const listRows=KW_LISTS.map(([k,label,desc])=>{
+      const arr=KW_CONTENT[k]||[];
+      const ta=editable?`<textarea id="kw_${k}" rows="3" style="width:100%;font-size:13px" placeholder="每行一个词">${esc(arr.join("\n"))}</textarea>`
+        :`<div class="muted">${esc(arr.join("、"))||"(空)"}</div>`;
+      return `<div style="margin:10px 0"><div class="fl">${esc(label)} <span class="muted" style="font-weight:400;font-size:12px">${esc(desc)}</span></div>${ta}</div>`;
+    }).join("");
+    box.innerHTML=`<div class="lossbox" style="margin-bottom:10px">
+      当前版本 <b>${esc(r.version||"-")}</b> · 展开后实际查询 <b>${r.expanded_count}</b> 条
+      <div class="muted" style="margin-top:4px">示例:${(r.sample||[]).slice(0,8).map(esc).join(" / ")}…</div></div>
+      ${numRows}${listRows}`;
+  }catch(e){ box.innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function saveKeywords(){
+  const content=Object.assign({},KW_CONTENT);
+  KW_NUMS.forEach(([k])=>{ const el=document.getElementById("kw_"+k); if(el&&el.value!=="") content[k]=parseInt(el.value)||0; });
+  KW_LISTS.forEach(([k])=>{ const el=document.getElementById("kw_"+k); if(el) content[k]=el.value.split("\n").map(s=>s.trim()).filter(Boolean); });
+  const msg=document.getElementById("kwMsg"); msg.innerHTML='<span class="muted">保存中…</span>';
+  try{
+    const r=await api("/keywords",{method:"PUT",body:JSON.stringify({need_id:NEED,content})});
+    msg.innerHTML=`<span class="pill ok">已保存 v${r.version}</span> <span class="muted">展开后 ${r.expanded_count} 条查询,下次采集生效</span>`;
+    toast("关键词已更新"); KW_CONTENT=content; loadKeywords();
+  }catch(e){ msg.innerHTML=`<span class="pill bad">失败:${esc(e.message)}</span>`; }
 }
 function renderLLMTest(t){
   if(!t) return "";

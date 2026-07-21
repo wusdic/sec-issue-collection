@@ -4,8 +4,13 @@
 
 version: "0.1"
 time_filters: [近24小时, 近7天]        # 适配器映射为各平台的时间参数
-query_budget_per_source_daily: 60
-max_pages_per_query: 3                # C2: 翻页深度; 命中饱和时记录截断, 禁止无声截断
+query_budget_per_source_daily: 200    # 每源每次查询条数上限(页面可调; 越大覆盖越全但越慢、反爬风险越高)
+max_pages_per_query: 3                # C2: 每个查询翻几页搜索结果; 命中饱和时记录截断, 禁止无声截断
+# 交叉组合取词深度(控制事件×行业、后果×单位 组合规模)
+cross_event_terms: 12
+cross_industry_terms: 20
+cross_consequence_terms: 12
+cross_org_terms: 5
 
 event_terms:                # 核心事件词
   [勒索病毒, 勒索软件, 数据泄露, 信息泄露, 被黑客攻击, 网络攻击, 系统瘫痪,

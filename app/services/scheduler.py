@@ -34,17 +34,29 @@ def due_sources(db: Session, need: NeedProfile) -> list[Source]:
     return out
 
 
-def expand_queries(keyword_content: dict, max_queries: int = 60) -> list[str]:
-    """关键词矩阵展开(B1):事件词×时间由适配器处理;交叉组合按预算截断。"""
+def expand_queries(keyword_content: dict) -> list[str]:
+    """关键词矩阵展开(B1)。查询 = 事件词单独 + 事件×行业 + 后果×单位 交叉,去重后按
+    query_budget_per_source_daily 截断(该值即每源每次查询条数上限,页面可配,无隐藏硬上限)。"""
     events = keyword_content.get("event_terms") or []
     industries = keyword_content.get("industry_terms") or []
     consequences = keyword_content.get("consequence_terms") or []
     orgs = keyword_content.get("org_terms") or []
+    # 交叉组合的取词深度可配(cross_event/cross_industry/...),默认放大以覆盖更全
+    ce = int(keyword_content.get("cross_event_terms", 12))
+    ci = int(keyword_content.get("cross_industry_terms", 20))
+    cc = int(keyword_content.get("cross_consequence_terms", 12))
+    co = int(keyword_content.get("cross_org_terms", 5))
     queries = list(events)
-    queries += [f"{i} {e}" for e in events[:6] for i in industries[:8]]
-    queries += [f"{o} {c}" for c in consequences[:6] for o in orgs[:3]]
-    budget = int(keyword_content.get("query_budget_per_source_daily", max_queries))
-    return queries[: min(max_queries, budget)]
+    queries += [f"{i} {e}" for e in events[:ce] for i in industries[:ci]]
+    queries += [f"{o} {c}" for c in consequences[:cc] for o in orgs[:co]]
+    # 去重保序
+    seen, uniq = set(), []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            uniq.append(q)
+    budget = int(keyword_content.get("query_budget_per_source_daily", 200))
+    return uniq[:budget] if budget > 0 else uniq
 
 
 def run_daily(db: Session, need_id: str, do_archive: bool = True, limit_sources: int | None = None) -> dict:

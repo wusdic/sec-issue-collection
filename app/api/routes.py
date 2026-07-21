@@ -424,6 +424,50 @@ def test_llm_endpoint(_: AppUser = Depends(require_roles("analyst"))):
     return settings_service.test_llm()
 
 
+# ---------- 关键词矩阵(决定搜什么、搜多少) ----------
+
+@api.get("/keywords")
+def get_keywords(need_id: str = "sec_events", db: Session = Depends(get_session),
+                 _: AppUser = Depends(current_user)):
+    """当前生效的关键词矩阵内容 + 展开后的实际查询条数预览。"""
+    from app.models import KeywordSet
+    from app.services.scheduler import expand_queries
+    ks = db.query(KeywordSet).filter_by(need_id=need_id, is_active=True).first()
+    content = ks.content if ks else {}
+    expanded = expand_queries(content) if content else []
+    return {"version": ks.version if ks else None, "content": content,
+            "expanded_count": len(expanded), "sample": expanded[:20]}
+
+
+class KeywordsIn(BaseModel):
+    need_id: str = "sec_events"
+    content: dict
+
+
+@api.put("/keywords")
+def put_keywords(body: KeywordsIn, db: Session = Depends(get_session),
+                 user: AppUser = Depends(require_roles("admin", "analyst"))):
+    """保存关键词矩阵为新版本并激活;返回展开后实际查询条数。"""
+    from app.models import KeywordSet
+    from app.services.scheduler import expand_queries
+    content = dict(body.content or {})
+    # 版本号自增(基于已有最大数字版本)
+    existing = db.query(KeywordSet).filter_by(need_id=body.need_id).all()
+    nums = [float(k.version) for k in existing if str(k.version).replace(".", "").isdigit()]
+    content["version"] = str(round((max(nums) if nums else 0) + 0.1, 1))
+    db.query(KeywordSet).filter_by(need_id=body.need_id).update({"is_active": False})
+    ks = KeywordSet(need_id=body.need_id, version=content["version"], content=content, is_active=True)
+    from datetime import datetime
+    ks.published_at = datetime.utcnow()
+    db.add(ks)
+    db.add(AuditLog(user_id=user.id, action="keywords.update", target=body.need_id,
+                    detail={"version": content["version"]}))
+    db.commit()
+    expanded = expand_queries(content)
+    return {"ok": True, "version": content["version"], "expanded_count": len(expanded),
+            "sample": expanded[:20]}
+
+
 # ---------- 采集触发与运行记录(前端"采集"页) ----------
 
 class CrawlIn(BaseModel):
