@@ -19,7 +19,9 @@ EDITABLE = [
     ("llm_screen_model", "粗筛模型", "LLM 大模型", "str", False, "粗筛用小模型省钱,如 qwen-turbo;留空同抽取模型"),
     ("llm_embed_base_url", "向量接口地址", "LLM 大模型", "str", False, "Embedding 接口,留空回退 LLM 接口"),
     ("llm_embed_api_key", "向量接口密钥", "LLM 大模型", "str", True, "留空表示不修改"),
-    ("llm_embed_model", "向量模型", "LLM 大模型", "str", False, "语义去重用,如 text-embedding-v3;留空则禁用语义去重"),
+    ("llm_embed_model", "向量模型", "LLM 大模型", "str", False,
+     "语义去重用的 embedding 专用模型(不是聊天模型名!):MiniMax=embo-01、通义=text-embedding-v3、"
+     "智谱=embedding-3;留空则禁用语义去重(不影响文章抽取)"),
 
     ("fetch_timeout", "抓取超时(秒)", "采集", "float", False, "单页抓取超时,默认 20"),
     ("crawl_delay_seconds", "抓取间隔(秒)", "采集", "float", False, "请求之间的礼貌延时,默认 2"),
@@ -134,9 +136,15 @@ def test_llm(timeout: float = 15) -> dict:
             v = client.embed("连通性测试")
             res["embed_ok"], res["embed_detail"] = True, f"正常,向量维度 {len(v)}"
         except Exception as e:  # noqa: BLE001
-            res["embed_ok"], res["embed_detail"] = False, _friendly_err(e)
-    res["ok"] = bool(res.get("chat_ok"))
+            res["embed_ok"], res["embed_detail"] = False, _embed_err_hint(e)
+    res["ok"] = bool(res.get("chat_ok"))  # 主流程只看聊天接口;向量接口可选
     return res
+
+
+def _embed_err_hint(e: Exception) -> str:
+    return (_friendly_err(e) + " ｜ 向量接口仅用于语义去重(可选,失败不影响文章抽取)。"
+            "如要启用,请把「向量模型」填成该厂商的 embedding 专用模型"
+            "(MiniMax=embo-01、通义=text-embedding-v3),而非聊天模型名;不需要可留空禁用。")
 
 
 def _friendly_err(e: Exception) -> str:

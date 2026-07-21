@@ -500,8 +500,13 @@ function renderLLMTest(t){
   if(t.provider==="mock") return `<div class="banner">${esc(t.note)}</div>`;
   const pill=(ok)=> ok===true?'<span class="pill ok">通过</span>'
     : ok===false?'<span class="pill bad">失败</span>':'<span class="pill">跳过</span>';
+  // 整体结论:主流程只看聊天接口;向量接口可选
+  const verdict = t.ok
+    ? '<span class="pill ok">✓ 大模型已就绪,可开始采集与抽取</span>'
+    : '<span class="pill bad">✗ 聊天接口未通,修复后才能抽取</span>';
   return `<div class="lossbox">
-    <b>大模型连通测试</b> <span class="muted mono">${esc(t.base_url||"")} · ${esc(t.model||"")}</span><br>
+    <div style="margin-bottom:8px">${verdict} ${t.ok&&t.embed_ok!==true?'<span class="muted">(向量接口可选,不影响抽取)</span>':''}</div>
+    <b>连通详情</b> <span class="muted mono">${esc(t.base_url||"")} · ${esc(t.model||"")}</span><br>
     聊天接口(抽取/粗筛) ${pill(t.chat_ok)} <span class="muted">${esc(t.chat_detail||"")}</span><br>
     向量接口(语义去重) ${pill(t.embed_ok)} <span class="muted">${esc(t.embed_detail||"")}</span>
   </div>`;
