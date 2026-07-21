@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import (
-    CrawlRun, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
+    CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
 from app.services import archive, dedup, discovery, fetcher, reputation, url_tools
 from app.services.adapters import DiscoveredItem, get_adapter
@@ -55,16 +55,16 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
 
     fr = prefetched or fetcher.fetch(url)
     final_url = fr.final_url or url
-    snapshot = archive.archive_page(db, url, fr=fr) if do_archive else None
     text = archive.extract_text(fr.html) if fr.ok else None
 
+    # 先建文档(暂不存档),定完首发/转载后再决定存全量还是薄存(去重后存储,省空间)
     doc = RawDocument(
         need_id=need.id, source_id=source.id, crawl_run_id=crawl_run_id,
         url=url, url_normalized=url_tools.normalize_url(url), final_url=final_url,
         title=item.title, publisher=item.publisher or item.wechat_account or source.name,
         published_at=_parse_dt(item.published),
         http_status=fr.status, content_text=text,
-        snapshot_id=snapshot.snapshot_id if snapshot else None,
+        snapshot_id=None,
         screen_status="pending" if text else "screened_out",
         screen_reason=None if text else f"抓取失败: {fr.error or fr.status}",
     )
@@ -93,6 +93,19 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
                 for u in (rp["original_wechat_url"], rp["original_url"]):
                     if u:
                         discovery.record_evidence(db, u, "citation", doc_id=doc.id)
+
+    # 去重后存储(广采薄存):首发存完整原文(含图片附件),转载/重复副本只薄存文本,省空间
+    if do_archive:
+        primary_ref = None
+        if not doc.is_primary and doc.cluster_id:
+            cluster = db.get(DocCluster, doc.cluster_id)
+            primary = db.get(RawDocument, cluster.primary_doc_id) if cluster else None
+            primary_ref = primary.snapshot_id if primary else None
+        snap = archive.archive_page(db, url, fr=fr, lite=not doc.is_primary,
+                                    primary_snapshot_id=primary_ref)
+        doc.snapshot_id = snap.snapshot_id
+        db.flush()
+
     # D1/D3 发布方伴生登记
     if item.wechat_account:
         discovery.record_evidence(db, None, "wechat_reference", display_name=item.wechat_account,

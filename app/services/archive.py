@@ -42,8 +42,13 @@ def extract_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def archive_page(db: Session, url: str, fr: fetcher.FetchResult | None = None) -> ArchiveManifest:
-    """执行存档降级链,返回 manifest 记录(已 add 未 commit)。"""
+def archive_page(db: Session, url: str, fr: fetcher.FetchResult | None = None,
+                 lite: bool = False, primary_snapshot_id: str | None = None) -> ArchiveManifest:
+    """执行存档降级链,返回 manifest 记录(已 add 未 commit)。
+
+    lite=True(去重后薄存):转载/重复副本只存正文文本+HTML,不下载图片/附件/截图,
+    体积从数 MB 降到数 KB;完整原文由同稿簇首发(primary_snapshot_id)保存。
+    """
     now = datetime.utcnow()
     snapshot_id = f"{now:%Y%m%d}-{uuid.uuid4().hex[:12]}"
     rel_dir = Path(f"{now:%Y}") / f"{now:%m}" / snapshot_id
@@ -56,7 +61,15 @@ def archive_page(db: Session, url: str, fr: fetcher.FetchResult | None = None) -
     fr = fr or fetcher.fetch(url)
     final_url = fr.final_url or url
 
-    if fr.ok:
+    if fr.ok and lite:
+        # ---- L-B(薄存):只存文本 + 原始 HTML,不拉图片/附件,指向首发全量存档 ----
+        text = extract_text(fr.html)
+        if text:
+            files["text.txt"] = _write(dirpath, "text.txt", text.encode("utf-8"))
+            has_full_text = True
+        files["page.html"] = _write(dirpath, "page.html", (fr.html or "").encode("utf-8"))
+        status = "L-B"
+    elif fr.ok:
         # ---- L-A: HTML + 图片/附件本地化 ----
         soup = BeautifulSoup(fr.html, "lxml")
         asset_fail = 0
@@ -109,6 +122,7 @@ def archive_page(db: Session, url: str, fr: fetcher.FetchResult | None = None) -
     manifest = {
         "url": url, "final_url": final_url, "captured_at": now.isoformat(),
         "status": status, "files": files,
+        "lite": lite, "full_archive_ref": primary_snapshot_id,  # 薄存副本指向首发全量存档
     }
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=1).encode("utf-8")
     manifest_sha = None
