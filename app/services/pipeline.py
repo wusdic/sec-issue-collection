@@ -12,7 +12,7 @@ from app.config import settings
 from app.models import (
     CrawlRun, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
-from app.services import archive, dedup, discovery, fetcher, url_tools
+from app.services import archive, dedup, discovery, fetcher, url_tools, wechat
 from app.services.adapters import DiscoveredItem, get_adapter
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
@@ -34,6 +34,9 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
                 crawl_run_id: int | None = None, do_archive: bool = True,
                 prefetched: fetcher.FetchResult | None = None) -> RawDocument | None:
     """单条 URL 入库:URL 去重 → 抓取+当刻存档 → 文本提取 → 同稿聚类 → 源发现伴生。"""
+    # 公众号黑名单(营销/搬运/标题党)直接丢弃,不抓取、不入库
+    if item.wechat_account and wechat.is_blacklisted(item.wechat_account):
+        return None
     url = item.url
     if url_tools.is_search_redirect(url):
         fr0 = prefetched or fetcher.fetch(url)  # C3 跳转还原
@@ -62,7 +65,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
 
     if text:
         dedup.assign_cluster(db, doc)
-        # D2 引文/转载溯源
+        # D2 引文/转载溯源(通用)
         for m in CITATION_RE.finditer(text[:5000]):
             ref = m.group(1)
             if ref.startswith("http"):
@@ -70,6 +73,18 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
             elif "公众号" in ref or len(ref) <= 20:
                 discovery.record_evidence(db, None, "wechat_reference",
                                           display_name=ref, wechat_account=ref, doc_id=doc.id)
+        # 公众号专项:转载溯源——识别转载并把原始出处登记为候选源、标记本篇为转载(非首发)
+        if wechat.is_wechat_source(source, doc.publisher):
+            rp = wechat.detect_repost(text)
+            if rp["is_repost"]:
+                doc.is_primary = False   # 转载版不作首发,优先追原始号
+                if rp["original_account"]:
+                    discovery.record_evidence(db, None, "citation",
+                                              display_name=rp["original_account"],
+                                              wechat_account=rp["original_account"], doc_id=doc.id)
+                for u in (rp["original_wechat_url"], rp["original_url"]):
+                    if u:
+                        discovery.record_evidence(db, u, "citation", doc_id=doc.id)
     # D1/D3 发布方伴生登记
     if item.wechat_account:
         discovery.record_evidence(db, None, "wechat_reference", display_name=item.wechat_account,
@@ -125,8 +140,12 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         return result
 
     src = db.get(Source, doc.source_id)
+    # 公众号来源:按发布号主体重定级可信度(官方号→S1/S2),而非笼统用渠道 S4
+    src_cred = src.credibility if src else "S4"
+    if wechat.is_wechat_source(src, doc.publisher):
+        src_cred = wechat.account_credibility(doc.publisher, channel_default=src_cred)
     ev = create_draft(db, need.id, payload, doc=doc,
-                      source_credibility=src.credibility if src else "S4",
+                      source_credibility=src_cred,
                       dict_version=str(dictionaries.get("version") or ""))
     recall = dedup.semantic_recall(db, need.id, ev.embedding, exclude_event_id=ev.event_id)
     if recall:

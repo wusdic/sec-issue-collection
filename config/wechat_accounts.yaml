@@ -1,0 +1,37 @@
+# 公众号名录 v0.1 —— 把每个公众号当作独立数据源,按主体定可信度
+# 用途:采集到公众号文章时,用发布号主体把渠道级 S4 重定级到该号应有等级;
+#       黑名单号(营销/搬运/标题党)直接丢弃。
+# 定级口径:
+#   S1 官方权威(监管/CERT/公安等机构官方号,内容等同官方通报)
+#   S2 企业自披露级(受害企业官方号声明)
+#   S3 专业媒体/厂商研究号(有编辑核实的原创报道与分析)
+#   S4 其它未核实号(需佐证,默认)
+# 说明:名单需人工持续维护;新号先进 S4,经源发现评分与人工确认后升级。
+
+version: "0.1"
+
+accounts:
+  # -------- S1 官方权威机构号 --------
+  国家网络安全通报中心: {credibility: S1, category: 官方}
+  网信中国:            {credibility: S1, category: 官方}     # 国家网信办
+  CNVD漏洞平台:        {credibility: S1, category: 官方}
+  国家计算机病毒应急处理中心: {credibility: S1, category: 官方}
+  公安部网安局:        {credibility: S1, category: 官方}
+
+  # -------- S3 专业安全媒体/厂商研究号 --------
+  安全内参:      {credibility: S3, category: 媒体}
+  FreeBuf:       {credibility: S3, category: 媒体}
+  安全客:        {credibility: S3, category: 媒体}
+  安全牛:        {credibility: S3, category: 媒体}
+  嘶吼专业版:    {credibility: S3, category: 媒体}
+  奇安信威胁情报中心: {credibility: S3, category: 厂商}
+  奇安信集团:    {credibility: S3, category: 厂商}
+  360数字安全:   {credibility: S3, category: 厂商}
+  绿盟科技:      {credibility: S3, category: 厂商}
+  深信服科技:    {credibility: S3, category: 厂商}
+  安恒信息:      {credibility: S3, category: 厂商}
+  微步在线:      {credibility: S3, category: 厂商}
+
+# 黑名单:命中即丢弃(纯搬运/营销/标题党),不入库、不计源发现证据
+blacklist:
+  - 网络安全那些事儿营销号示例   # 占位,按实际发现补充
