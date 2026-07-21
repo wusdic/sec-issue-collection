@@ -130,21 +130,25 @@ class SearchEngineAdapter(BaseAdapter):
                 out.append(DiscoveredItem(url=href, title=title[:200]))
         return out
 
+    def search_page(self, query: str, page: int, time_filter: str | None = None) -> list[DiscoveredItem] | None:
+        """抓取单页结果。返回该页 items;None 表示抓取失败/无更多页(供流水线逐页早停)。"""
+        fr = fetcher.fetch(self.build_url(query, page, time_filter))
+        if not fr.ok:
+            return None
+        return self.parse(fr.html) or []
+
     def search(self, query: str, time_filter: str | None = None, max_pages: int = 1):
+        """一次性抓多页(兼容旧调用)。逐页早停由流水线用 search_page 实现。"""
         items: list[DiscoveredItem] = []
         truncated = False
         for page in range(max_pages):
-            fr = fetcher.fetch(self.build_url(query, page, time_filter))
-            if not fr.ok:
-                break
-            page_items = self.parse(fr.html)
+            page_items = self.search_page(query, page, time_filter)
             if not page_items:
                 break
             items.extend(page_items)
             if page == max_pages - 1 and len(page_items) >= 8:
                 truncated = True  # 最后一页仍然饱和 → 截断上报
             time.sleep(settings.crawl_delay_seconds)
-        # C3: 跳转还原交由流水线(入库前统一处理)
         return items, truncated
 
 

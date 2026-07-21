@@ -3,6 +3,7 @@
 同时承担搜索行为 B1(事件发现)与源发现 D1/D2/D3 的伴生登记。
 """
 import re
+import time
 from datetime import datetime
 
 from dateutil import parser as dtparser
@@ -214,21 +215,52 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     found = 0
     try:
         if source.kind == "query":
+            # 增量翻页早停:列表按时间倒序,连续遇到 N 条已采过即停翻(no_early_stop 源除外)
+            no_early_stop = bool((source.adapter_config or {}).get("no_early_stop"))
+            stop_th = settings.crawl_stop_consecutive_seen
+            has_pager = hasattr(adapter, "search_page")
             for q in queries or []:
                 qh = url_tools.query_hash(q)
                 wm = db.get(SearchWatermark, (source.id, qh))
-                items, truncated = adapter.search(q, max_pages=max_pages)
+                before = stats["new"]
+                q_found, pages_used, truncated, snapshot = 0, 0, False, []
+                consecutive_seen = 0
+                early = False
+                for page in range(max_pages):
+                    page_items = adapter.search_page(q, page) if has_pager else (
+                        adapter.search(q, max_pages=1)[0] if page == 0 else None)
+                    if not page_items:
+                        break
+                    pages_used += 1
+                    q_found += len(page_items)
+                    snapshot += [{"url": i.url, "title": i.title} for i in page_items[:20]]
+                    page_new = 0
+                    for item in page_items:
+                        prev_skip = stats["skipped"]
+                        ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
+                        if stats["skipped"] > prev_skip:      # 这条已采过
+                            consecutive_seen += 1
+                            if not no_early_stop and consecutive_seen >= stop_th:
+                                early = True
+                                break
+                        else:                                  # 新增(或失败)→ 重置连续计数
+                            consecutive_seen = 0
+                            page_new += 1
+                    if early:
+                        break
+                    if not no_early_stop and page_new == 0 and page_items:
+                        early = True  # 整页无新增 → 后续更旧,停翻
+                        break
+                    if page < max_pages - 1:
+                        time.sleep(settings.crawl_delay_seconds)
+                if pages_used == max_pages and not early:
+                    truncated = True  # 翻满仍未遇到重复区,可能还有更多
                 kr = KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
-                                query=q, pages_fetched=max_pages, truncated=truncated,
-                                results=len(items),
-                                result_snapshot=[{"url": i.url, "title": i.title} for i in items[:50]])
+                                query=q, pages_fetched=pages_used, truncated=truncated,
+                                results=q_found, new_docs=stats["new"] - before,
+                                result_snapshot=snapshot[:50])
                 db.add(kr)
-                found += len(items)
-                before = stats["new"]  # 本查询新增(C9 命中率统计依赖逐查询口径)
-                for item in items:
-                    ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
-                kr.new_docs = stats["new"] - before
-                # 水位线:记录该查询上次成功执行时间(用于增量与调度)
+                found += q_found
                 if wm:
                     wm.last_ran_at = datetime.utcnow()
                 else:

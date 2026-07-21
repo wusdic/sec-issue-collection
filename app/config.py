@@ -62,6 +62,9 @@ class Settings:
     screen_keep_threshold: float = float(os.getenv("SCREEN_KEEP_THRESHOLD", "0.6"))
     screen_manual_threshold: float = float(os.getenv("SCREEN_MANUAL_THRESHOLD", "0.4"))
 
+    # 增量翻页早停:列表/公众号按时间倒序,连续遇到 N 条已采过即判定"新内容抓全",停止翻页
+    crawl_stop_consecutive_seen: int = int(os.getenv("CRAWL_STOP_CONSECUTIVE_SEEN", "15"))
+
     # Celery
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
