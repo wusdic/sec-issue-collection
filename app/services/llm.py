@@ -27,10 +27,12 @@ class BaseLLM:
 
 class OpenAICompatLLM(BaseLLM):
     def __init__(self, base_url: str, api_key: str, model: str,
-                 embed_base_url: str = "", embed_api_key: str = "", embed_model: str = ""):
+                 embed_base_url: str = "", embed_api_key: str = "", embed_model: str = "",
+                 timeout: float = 120):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.timeout = timeout
         # Embedding 独立配置;留空回退聊天接口/模型
         self.embed_base_url = (embed_base_url or base_url).rstrip("/")
         self.embed_api_key = embed_api_key or api_key
@@ -49,7 +51,7 @@ class OpenAICompatLLM(BaseLLM):
                 "temperature": 0,
                 "response_format": {"type": "json_object"},
             },
-            timeout=120,
+            timeout=self.timeout,
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
@@ -69,7 +71,7 @@ class OpenAICompatLLM(BaseLLM):
             f"{self.embed_base_url}/embeddings",
             headers={"Authorization": f"Bearer {self.embed_api_key}"},
             json={"model": self.embed_model, "input": text[:8000]},
-            timeout=60,
+            timeout=self.timeout,
         )
         resp.raise_for_status()
         return resp.json()["data"][0]["embedding"]

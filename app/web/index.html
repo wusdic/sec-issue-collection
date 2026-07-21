@@ -482,14 +482,36 @@ async function vSettings(){
     <div class="banner">💡 用真实大模型:把「LLM 模式」改成 openai_compat,填接口地址/密钥/模型名(国内可用 Qwen、DeepSeek);
       想离线测试就保持 mock。密钥留空表示不改动已保存的值。数据库地址、登录密钥等结构性配置仍在项目根 .env 中,改动需重启。</div>
     <div id="setForm">加载中…</div>
-    ${isAdmin?`<div style="margin-top:18px"><button onclick="saveSettings()">保存配置</button>
-      <span id="setMsg" class="muted" style="margin-left:12px"></span></div>`:""}`;
+    <div style="margin-top:18px">
+      ${isAdmin?`<button onclick="saveSettings()">保存并生效</button>`:""}
+      <button class="ghost" onclick="testLLM()">测试大模型连通</button>
+      <span id="setMsg" style="margin-left:12px"></span>
+    </div>
+    <div id="setTest" style="margin-top:12px"></div>`;
   try{
     const cfg=await api("/settings");
     document.getElementById("setForm").innerHTML = cfg.groups.map(g=>`
       <div class="grpTitle">${esc(g.name)}</div>
       ${g.fields.map(f=>settingRow(f,isAdmin)).join("")}`).join("");
   }catch(e){ document.getElementById("setForm").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+function renderLLMTest(t){
+  if(!t) return "";
+  if(t.provider==="mock") return `<div class="banner">${esc(t.note)}</div>`;
+  const pill=(ok)=> ok===true?'<span class="pill ok">通过</span>'
+    : ok===false?'<span class="pill bad">失败</span>':'<span class="pill">跳过</span>';
+  return `<div class="lossbox">
+    <b>大模型连通测试</b> <span class="muted mono">${esc(t.base_url||"")} · ${esc(t.model||"")}</span><br>
+    聊天接口(抽取/粗筛) ${pill(t.chat_ok)} <span class="muted">${esc(t.chat_detail||"")}</span><br>
+    向量接口(语义去重) ${pill(t.embed_ok)} <span class="muted">${esc(t.embed_detail||"")}</span>
+  </div>`;
+}
+async function testLLM(){
+  document.getElementById("setTest").innerHTML='<span class="muted">测试中…(最多约15秒)</span>';
+  try{
+    const t=await api("/settings/test-llm",{method:"POST"});
+    document.getElementById("setTest").innerHTML=renderLLMTest(t);
+  }catch(e){ document.getElementById("setTest").innerHTML=`<span class="pill bad">测试失败:${esc(e.message)}</span>`; }
 }
 function settingRow(f,editable){
   const id="set_"+f.key;
@@ -519,11 +541,16 @@ async function saveSettings(){
     if(f.secret && !el.value) return;
     body[f.key]=el.value;
   }));
+  const msg=document.getElementById("setMsg");
+  msg.innerHTML='<span class="muted">保存中…</span>';
   try{
     const r=await api("/settings",{method:"PUT",body:JSON.stringify(body)});
-    document.getElementById("setMsg").textContent="已保存并生效:"+(r.applied||[]).join("、");
-    toast("配置已保存");
-  }catch(e){ document.getElementById("setMsg").textContent="失败:"+e.message; }
+    msg.innerHTML=`<span class="pill ok">已保存并即时生效</span> <span class="muted">${(r.applied||[]).join("、")||"无改动"}</span>`;
+    toast("配置已保存并生效");
+    // 动了 LLM 配置 → 显示连通测试结果(后端已随保存回测)
+    if(r.llm_test) document.getElementById("setTest").innerHTML=renderLLMTest(r.llm_test);
+    else if(Object.keys(body).some(k=>k.startsWith("llm_"))) testLLM();
+  }catch(e){ msg.innerHTML=`<span class="pill bad">保存失败:${esc(e.message)}</span>`; }
 }
 
 /* ---------- 抽屉 ---------- */

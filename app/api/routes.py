@@ -388,8 +388,19 @@ def put_settings(body: dict, db: Session = Depends(get_session),
     db.add(AuditLog(user_id=user.id, action="settings.update", target="app_setting",
                     detail={"keys": applied}))
     db.commit()
-    return {"ok": True, "applied": applied,
+    resp = {"ok": True, "applied": applied,
             "note": "已保存并即时生效(LLM/采集/去重/存档参数);数据库、密钥等结构性配置仍走 .env,需重启。"}
+    # 若本次动到了 LLM 配置,顺带回连通测试结果
+    if any(k.startswith("llm_") for k in applied):
+        resp["llm_test"] = settings_service.test_llm()
+    return resp
+
+
+@api.post("/settings/test-llm")
+def test_llm_endpoint(_: AppUser = Depends(require_roles("analyst"))):
+    """用当前已生效配置实测大模型连通(聊天+向量),供设置页「测试连通」按钮调用。"""
+    from app.services import settings_service
+    return settings_service.test_llm()
 
 
 # ---------- 采集触发与运行记录(前端"采集"页) ----------

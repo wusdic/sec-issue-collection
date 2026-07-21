@@ -98,3 +98,57 @@ def load_from_db(db: Session):
                 setattr(settings, row.key, _cast(row.key, row.value))
             except (ValueError, TypeError):
                 pass
+
+
+def test_llm(timeout: float = 15) -> dict:
+    """用当前已生效配置实测大模型连通:聊天接口 + 向量接口各调一次,快速失败。"""
+    from app.services.llm import OpenAICompatLLM
+
+    if settings.llm_provider != "openai_compat" or not settings.llm_base_url:
+        return {"provider": "mock", "ok": None,
+                "note": "当前为 mock 离线模式,未连真实大模型。要联网抽取请把「LLM 模式」设为 "
+                        "openai_compat 并填接口地址/密钥/模型,再测试。"}
+
+    client = OpenAICompatLLM(
+        settings.llm_base_url, settings.llm_api_key, settings.llm_model,
+        settings.llm_embed_base_url, settings.llm_embed_api_key, settings.llm_embed_model,
+        timeout=timeout,
+    )
+    res = {"provider": "openai_compat", "base_url": settings.llm_base_url,
+           "model": settings.llm_model or "(未填模型名)"}
+    # 聊天接口(抽取/粗筛用)
+    if not settings.llm_model:
+        res["chat_ok"], res["chat_detail"] = False, "未填「抽取模型」名称"
+    else:
+        try:
+            out = client.complete_json("你是连通性自检助手,只输出 JSON。",
+                                       '返回 {"ok": true}', retries=0)
+            res["chat_ok"], res["chat_detail"] = True, f"正常,返回 {str(out)[:80]}"
+        except Exception as e:  # noqa: BLE001
+            res["chat_ok"], res["chat_detail"] = False, _friendly_err(e)
+    # 向量接口(语义去重用,可选)
+    if not (settings.llm_embed_model or settings.llm_embed_base_url):
+        res["embed_ok"], res["embed_detail"] = None, "未配置向量模型 → 语义去重将禁用(不影响主流程)"
+    else:
+        try:
+            v = client.embed("连通性测试")
+            res["embed_ok"], res["embed_detail"] = True, f"正常,向量维度 {len(v)}"
+        except Exception as e:  # noqa: BLE001
+            res["embed_ok"], res["embed_detail"] = False, _friendly_err(e)
+    res["ok"] = bool(res.get("chat_ok"))
+    return res
+
+
+def _friendly_err(e: Exception) -> str:
+    s = str(e)
+    if "ConnectError" in type(e).__name__ or "Connection" in s or "getaddrinfo" in s:
+        return "连不上接口地址,检查「LLM 接口地址」是否正确、网络是否可达"
+    if "timeout" in s.lower() or "Timeout" in type(e).__name__:
+        return "接口超时,地址可达但响应太慢或被拦截"
+    if "401" in s or "403" in s:
+        return "认证失败(401/403),检查「LLM 密钥」是否正确"
+    if "404" in s:
+        return "接口路径 404,检查地址是否以 /v1 结尾、模型名是否正确"
+    if "429" in s:
+        return "被限流(429),稍后再试或检查额度"
+    return s[:200]
