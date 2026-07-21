@@ -151,4 +151,8 @@ def _friendly_err(e: Exception) -> str:
         return "接口路径 404,检查地址是否以 /v1 结尾、模型名是否正确"
     if "429" in s:
         return "被限流(429),稍后再试或检查额度"
+    if "status_code" in s or "base_resp" in s:  # MiniMax 等 HTTP200 业务错误
+        return "接口返回业务错误(密钥/模型名/额度之一有误):" + s[:160]
+    if "无法解析向量" in s:
+        return "向量接口返回格式不识别,确认「向量模型」名称正确、且该模型是 embedding 模型"
     return s[:200]

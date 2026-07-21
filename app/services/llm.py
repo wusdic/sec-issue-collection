@@ -38,33 +38,54 @@ class OpenAICompatLLM(BaseLLM):
         self.embed_api_key = embed_api_key or api_key
         self.embed_model = embed_model or model
 
-    def _chat(self, system: str, user: str) -> str:
+    def _chat(self, system: str, user: str, use_json_format: bool = True) -> str:
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+        }
+        # 部分接口(如 MiniMax abab)不支持 response_format,故做成可关闭并自动降级
+        if use_json_format:
+            body["response_format"] = {"type": "json_object"}
         resp = httpx.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=self.timeout,
+            json=body, timeout=self.timeout,
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        if resp.status_code >= 400:
+            raise LLMError(f"HTTP {resp.status_code}: {_api_err(resp)}")
+        data = resp.json()
+        content = _extract_chat_content(data)
+        if content is None:
+            # HTTP 200 但业务错误(MiniMax base_resp 等)或结构异常
+            raise LLMError(_api_err(resp) or f"响应无 choices: {str(data)[:200]}")
+        return content
 
     def complete_json(self, system: str, user: str, retries: int = 2) -> dict:
         last_err = None
-        for attempt in range(retries + 1):
+        use_json = True
+        format_fallback_used = False
+        left = retries + 1
+        while left > 0:
             try:
-                raw = self._chat(system, user if attempt == 0 else f"{user}\n\n上次输出不是合法 JSON({last_err}),请修正。")
-                return json.loads(_strip_fence(raw))
-            except (json.JSONDecodeError, httpx.HTTPError) as e:  # noqa: PERF203
+                u = user if last_err is None else f"{user}\n\n注意:只输出合法 JSON,不要多余文字。"
+                raw = self._chat(system, u, use_json_format=use_json)
+                return _parse_json(raw)
+            except LLMError as e:
                 last_err = str(e)
-        raise LLMError(f"LLM JSON 输出失败: {last_err}")
+                # response_format 不被支持 → 关掉该参数再试(不消耗重试次数)
+                if use_json and not format_fallback_used and _looks_like_format_unsupported(last_err):
+                    use_json = False
+                    format_fallback_used = True
+                    continue
+                left -= 1
+            except json.JSONDecodeError as e:
+                last_err = f"输出非 JSON: {e}"
+                left -= 1
+        raise LLMError(f"LLM 调用失败: {last_err}")
 
     def embed(self, text: str) -> list[float]:
         resp = httpx.post(
@@ -73,8 +94,75 @@ class OpenAICompatLLM(BaseLLM):
             json={"model": self.embed_model, "input": text[:8000]},
             timeout=self.timeout,
         )
-        resp.raise_for_status()
-        return resp.json()["data"][0]["embedding"]
+        if resp.status_code >= 400:
+            raise LLMError(f"HTTP {resp.status_code}: {_api_err(resp)}")
+        vec = _extract_embedding(resp.json())
+        if vec is None:
+            raise LLMError(f"无法解析向量返回(接口格式不识别): {str(resp.json())[:200]}")
+        return vec
+
+
+# ---- 跨厂商兼容工具:响应解析与错误提取(不针对某一家特判) ----
+
+def _api_err(resp) -> str:
+    """从响应体提取错误信息(兼容 OpenAI error / MiniMax base_resp / 通用 message)。"""
+    try:
+        j = resp.json()
+    except Exception:  # noqa: BLE001
+        return (resp.text or "")[:300]
+    for k in ("error", "base_resp", "message", "msg"):
+        if k in j and j[k]:
+            v = j[k]
+            if isinstance(v, dict):
+                # MiniMax base_resp: {status_code, status_msg}
+                if v.get("status_code") in (0, None) and k == "base_resp":
+                    return ""  # 业务成功
+                return json.dumps(v, ensure_ascii=False)[:300]
+            return str(v)[:300]
+    return ""
+
+
+def _extract_chat_content(data: dict):
+    """兼容多种 chat 返回结构提取正文。"""
+    try:
+        ch = data.get("choices")
+        if ch:
+            msg = ch[0].get("message") or {}
+            if msg.get("content"):
+                return msg["content"]
+            if ch[0].get("text"):  # 旧式 completion
+                return ch[0]["text"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    return None
+
+
+def _extract_embedding(data: dict):
+    """兼容多种 embedding 返回结构(OpenAI/Qwen data[].embedding、MiniMax vectors、顶层 embedding)。"""
+    d = data.get("data")
+    if isinstance(d, list) and d and isinstance(d[0], dict) and "embedding" in d[0]:
+        return d[0]["embedding"]
+    if isinstance(d, dict) and "embedding" in d:
+        return d["embedding"]
+    v = data.get("vectors")  # MiniMax
+    if isinstance(v, list) and v and isinstance(v[0], list):
+        return v[0]
+    if isinstance(data.get("embedding"), list):
+        return data["embedding"]
+    out = data.get("output")  # 部分兼容层
+    if isinstance(out, dict):
+        embs = out.get("embeddings")
+        if isinstance(embs, list) and embs and isinstance(embs[0], dict) and "embedding" in embs[0]:
+            return embs[0]["embedding"]
+    return None
+
+
+def _looks_like_format_unsupported(err: str) -> bool:
+    e = (err or "").lower()
+    return any(x in e for x in (
+        "response_format", "json_object", "not support", "unsupported",
+        "invalid parameter", "unknown", "not allowed", "unexpected", "invalid_request",
+    ))
 
 
 def _strip_fence(raw: str) -> str:
@@ -82,7 +170,51 @@ def _strip_fence(raw: str) -> str:
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
-    return raw
+    return raw.strip()
+
+
+def _extract_balanced(raw: str):
+    """从文本中提取第一个平衡的 {...} 或 [...](容忍模型输出前后解释文字)。"""
+    start = None
+    for i, ch in enumerate(raw):
+        if ch in "{[":
+            start = i
+            open_ch, close_ch = ch, ("}" if ch == "{" else "]")
+            break
+    if start is None:
+        return None
+    depth, in_str, esc = 0, False, False
+    for j in range(start, len(raw)):
+        c = raw[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c == open_ch:
+                depth += 1
+            elif c == close_ch:
+                depth -= 1
+                if depth == 0:
+                    return raw[start:j + 1]
+    return None
+
+
+def _parse_json(raw: str) -> dict:
+    """鲁棒 JSON 解析:去 markdown fence → 直接解析 → 提取平衡括号子串再解析。"""
+    cleaned = _strip_fence(raw)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        sub = _extract_balanced(cleaned)
+        if sub:
+            return json.loads(sub)
+        raise
 
 
 class MockLLM(BaseLLM):
