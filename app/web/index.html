@@ -152,6 +152,7 @@ function boot(){
   go("dashboard");
 }
 function go(k){
+  if(k!=="crawl" && typeof crawlStopPoll==="function") crawlStopPoll();  // 离开采集页停轮询(重进自动恢复)
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
   ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
     leads:vLeads,sources:vSources,crawl:vCrawl,settings:vSettings}[k])();
@@ -404,74 +405,128 @@ async function vSources(){
 }
 
 /* ---------- 采集 ---------- */
+let CRAWL_POLL=null;          // 采集进度轮询定时器(切页面时清除)
+let DOCS_RELEVANT_ONLY=true;  // 文档列表默认只看相关
+
 async function vCrawl(){
   const v=document.getElementById("view");
   const canRun=["analyst","editor","admin"].includes(ROLE);
-  v.innerHTML=`<h2>采集</h2><p class="sub">手动触发一轮采集(真实访问互联网),并查看执行记录与错误</p>
-    <div class="banner">⚠️ 点击“开始采集”会真实访问网站,当场同步抓取(每个源都要抓取→存档→抽取,较慢)。
-      部分源需人工辅助或有反爬,失败会记录在下方错误报告中,属正常现象。
-      正式运行时采集由后台定时自动跑全部源,这里是手动试跑。</div>
+  v.innerHTML=`<h2>采集</h2>
+    <p class="sub">后台采集任务:点击后立即返回,进度实时更新,切换页面/刷新回来仍能看到运行状态。</p>
+    <div class="banner">⚠️ 采集会真实访问网站。部分源有反爬/需登录,失败属正常,详情见下方日志。正式运行由后台定时自动跑;这里是手动试跑。</div>
     <div class="toolbar">
-      <label style="margin:0" title="本次点击只抓取前 N 个最该更新的源。库里源较多,一次全跑很慢,先小量试跑。不影响质量,只控制单次采集量。">本轮抓取源数 ⓘ</label>
+      <label style="margin:0" title="本次只抓取前 N 个源。库里源多,一次全跑很慢,先小量试。">本轮抓取源数 ⓘ</label>
       <select id="cLimit"><option value="3">3 个(快速试跑)</option>
         <option value="5">5 个</option><option value="10">10 个</option>
         <option value="999">全部(慢,谨慎)</option></select>
       ${canRun?`<button onclick="runCrawl()" id="runBtn">开始采集</button>`:'<span class="pill warn">当前角色无采集权限</span>'}
-      <button class="ghost sm" onclick="loadRuns()">刷新记录</button>
     </div>
-    <p class="sub">“本轮抓取源数”= 这次点击只处理前几个数据源;是单次采集的量控开关,与数据质量无关。</p>
-    <div id="crawlOut"></div>
-    <h3 style="font-size:15px;margin-top:20px">采集到的文档</h3>
-    <p class="sub">采集/演示入库的原始文档(粗筛后进入抽取)</p>
+    <div id="jobStatus" style="margin:14px 0">加载中…</div>
+    <h3 style="font-size:15px;margin-top:18px">采集到的文档
+      <label style="font-size:12px;font-weight:400;margin-left:12px">
+        <input type="checkbox" id="relOnly" ${DOCS_RELEVANT_ONLY?"checked":""} onchange="toggleRel()"> 只看相关(过滤不相干)</label>
+    </h3>
+    <p class="sub">点标题看抓回的正文,点“原文↗”打开来源链接。不相干内容默认已隐藏。</p>
     <div id="docsTable">加载中…</div>
-    <h3 style="font-size:15px;margin-top:20px">最近采集记录 / 错误报告</h3>
-    <div id="runsTable">加载中…</div>`;
-  loadDocs(); loadRuns();
+    <h3 style="font-size:15px;margin-top:20px">采集日志 <span class="muted" style="font-size:12px">(排查用,最新在上)</span>
+      <button class="ghost sm" style="margin-left:10px" onclick="loadJobLogs()">刷新日志</button></h3>
+    <div id="logBox"><span class="muted">运行/选中一个采集任务后显示日志</span></div>`;
+  refreshJob();
+  loadDocs();
 }
-async function loadDocs(){
+function crawlStopPoll(){ if(CRAWL_POLL){ clearInterval(CRAWL_POLL); CRAWL_POLL=null; } }
+async function refreshJob(){
   try{
-    const rows=await api(`/documents?need_id=${NEED}&limit=500`);
-    if(!rows.length){ document.getElementById("docsTable").innerHTML=`<p class="muted">暂无文档。上方“开始采集”跑一轮,或到仪表盘点“一键载入演示数据”。</p>`; return; }
-    document.getElementById("docsTable").innerHTML=`<table><thead><tr>
-      <th>标题</th><th>来源</th><th>粗筛</th><th>首发/转载</th></tr></thead><tbody>`+
-      rows.map(d=>`<tr>
-        <td>${esc(d.title||d.url)}</td><td class="muted">${esc(d.publisher||"")}</td>
-        <td>${screenPill(d.screen_status)}</td>
-        <td>${d.is_primary?'<span class="pill">首发</span>':'<span class="pill warn">转载</span>'}</td>
-      </tr>`).join("")+`</tbody></table>`;
-  }catch(e){ document.getElementById("docsTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+    const {job}=await api(`/crawl/current?need_id=${NEED}`);
+    if(!document.getElementById("jobStatus")) return;  // 已切走
+    renderJob(job);
+    if(job) window.__jobId=job.id;
+    if(job && job.status==="running"){
+      if(!CRAWL_POLL) CRAWL_POLL=setInterval(refreshJob,2000);
+      loadJobLogs();
+    }else{ crawlStopPoll(); loadDocs(); }
+  }catch(e){ /* 页面可能已切走 */ }
 }
-function screenPill(s){ const m={screened_in:["ok","已入选"],screened_out:["","已过滤"],
-  manual_queue:["warn","待人工"],pending:["info","待粗筛"]}; const x=m[s]||["",s];
-  return `<span class="pill ${x[0]}">${x[1]}</span>`; }
+function renderJob(job){
+  const el=document.getElementById("jobStatus"); if(!el) return;
+  if(!job){ el.innerHTML=`<span class="muted">尚无采集任务。点“开始采集”试跑一轮。</span>`; return; }
+  const st={running:["info","运行中"],done:["ok","已完成"],failed:["bad","失败"],canceled:["warn","已取消"]}[job.status]||["",job.status];
+  const srcPct=job.total_sources?Math.round(job.done_sources/job.total_sources*100):0;
+  const docPct=job.total_docs?Math.round(job.done_docs/job.total_docs*100):0;
+  const bar=(pct,label)=>`<div style="background:#eef2f7;border-radius:6px;height:16px;position:relative;margin:4px 0">
+    <div style="background:var(--brand);height:100%;width:${pct}%;border-radius:6px;transition:.3s"></div>
+    <span style="position:absolute;left:8px;top:0;font-size:11px;line-height:16px;color:#334155">${label}</span></div>`;
+  el.innerHTML=`<div class="lossbox">
+    <b>任务 #${job.id}</b> <span class="pill ${st[0]}">${st[1]}</span> <span class="muted">${esc(job.phase||"")}</span>
+    ${job.status==="running"?`<button class="sm bad" style="float:right" onclick="cancelJob(${job.id})">取消</button>`:""}
+    ${bar(srcPct,`源 ${job.done_sources}/${job.total_sources}`)}
+    ${job.total_docs?bar(docPct,`文档处理 ${job.done_docs}/${job.total_docs}`):""}
+    <div style="font-size:13px;margin-top:6px">新入库 <b>${job.new_docs}</b> ·
+      <span style="color:var(--ok)">相关 ${job.kept_docs}</span> ·
+      <span class="muted">过滤 ${job.dropped_docs}</span> · 生成事件 <b>${job.new_events}</b></div>
+    ${job.error?`<div class="pill bad" style="margin-top:6px">错误:${esc(job.error.slice(0,300))}</div>`:""}
+  </div>`;
+}
 async function runCrawl(){
-  const btn=document.getElementById("runBtn"); btn.disabled=true; btn.textContent="采集中…(可能需数十秒)";
+  const btn=document.getElementById("runBtn"); btn.disabled=true; btn.textContent="启动中…";
   const limit=parseInt(document.getElementById("cLimit").value);
   try{
     const r=await api("/crawl/run",{method:"POST",body:JSON.stringify({need_id:NEED,limit_sources:limit})});
-    document.getElementById("crawlOut").innerHTML=`<div class="lossbox">
-      本轮采集源 <b>${r.sources}</b> 个,处理文档 <b>${(r.processed||[]).length}</b> 条,
-      候选新源 <b>${(r.candidates||[]).length}</b> 个,刷新线索 <b>${r.leads_refreshed}</b>。
-      ${(r.processed||[]).filter(p=>p.action==="draft_created").length} 条生成草稿事件。</div>`;
-    toast("采集完成"); loadDocs(); loadRuns();
-  }catch(e){ document.getElementById("crawlOut").innerHTML=`<p class="pill bad">采集失败:${esc(e.message)}</p>`; }
+    toast(r.already_running?"已有任务在运行":"采集已在后台启动");
+    refreshJob();
+  }catch(e){ toast("启动失败:"+e.message); }
   finally{ btn.disabled=false; btn.textContent="开始采集"; }
 }
-async function loadRuns(){
-  try{
-    const rows=await api("/crawl/runs?limit=40");
-    if(!rows.length){ document.getElementById("runsTable").innerHTML=`<p class="muted">尚无采集记录。</p>`; return; }
-    document.getElementById("runsTable").innerHTML=`<table><thead><tr>
-      <th>源</th><th>状态</th><th>发现</th><th>新增</th><th>错误</th><th>时间</th></tr></thead><tbody>`+
-      rows.map(r=>`<tr>
-        <td>${esc(r.source)}</td>
-        <td>${r.status==="ok"?'<span class="pill ok">成功</span>':r.status==="failed"?'<span class="pill bad">失败</span>':'<span class="pill warn">部分</span>'}</td>
-        <td>${r.found}</td><td>${r.new}</td>
-        <td class="muted" style="max-width:280px">${esc(r.error||"")}</td>
-        <td class="muted">${esc((r.started_at||"").replace("T"," ").slice(0,16))}</td>
-      </tr>`).join("")+`</tbody></table>`;
-  }catch(e){ document.getElementById("runsTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+async function cancelJob(id){
+  try{ await api(`/crawl/jobs/${id}/cancel`,{method:"POST"}); toast("已请求取消"); }catch(e){ toast(e.message); }
 }
+async function loadJobLogs(){
+  const box=document.getElementById("logBox"); if(!box||!window.__jobId) return;
+  try{
+    const rows=await api(`/crawl/jobs/${window.__jobId}/logs?limit=300`);
+    if(!rows.length){ box.innerHTML=`<span class="muted">暂无日志</span>`; return; }
+    box.innerHTML=`<div style="max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px"><table><tbody>`+
+      rows.map(l=>{ const c=l.level==="error"?"var(--bad)":l.level==="warn"?"var(--warn)":"var(--muted)";
+        return `<tr><td class="muted mono" style="white-space:nowrap">${esc((l.at||"").replace("T"," ").slice(5,19))}</td>
+          <td style="color:${c}">${esc(l.level)}</td><td class="muted">${esc(l.source||"")}</td>
+          <td>${esc(l.message||"")}</td></tr>`;}).join("")+`</tbody></table></div>`;
+  }catch(e){ box.innerHTML=`<span class="muted">${esc(e.message)}</span>`; }
+}
+function toggleRel(){ DOCS_RELEVANT_ONLY=document.getElementById("relOnly").checked; loadDocs(); }
+async function loadDocs(){
+  const box=document.getElementById("docsTable"); if(!box) return;
+  try{
+    const q=DOCS_RELEVANT_ONLY?`&relevant=true`:``;
+    const rows=await api(`/documents?need_id=${NEED}&limit=200${q}`);
+    if(!rows.length){ box.innerHTML=`<p class="muted">${DOCS_RELEVANT_ONLY?"暂无相关文档。取消“只看相关”可查看全部,或先跑一轮采集。":"暂无文档。点“开始采集”跑一轮,或到仪表盘载入演示数据。"}</p>`; return; }
+    box.innerHTML=`<table><thead><tr><th>标题</th><th>来源</th><th>粗筛</th><th>首发</th><th>原文</th></tr></thead><tbody>`+
+      rows.map(d=>`<tr>
+        <td style="cursor:pointer;color:var(--brand)" onclick="openDoc(${d.id})">${esc(d.title||d.url)}</td>
+        <td class="muted">${esc(d.publisher||"")}</td>
+        <td title="${esc(d.screen_reason||'')}">${screenPill(d.screen_status)}${d.screen_score!=null?` <span class="muted">${d.screen_score}</span>`:""}</td>
+        <td>${d.is_primary?'首发':'<span class="muted">转载</span>'}</td>
+        <td>${d.url?`<a href="${esc(d.url)}" target="_blank" rel="noopener">原文↗</a>`:'<span class="muted">-</span>'}</td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ box.innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function openDoc(id){
+  try{
+    const d=await api(`/documents/${id}`);
+    drawer(`<h3>${esc(d.title||"(无标题)")}</h3>
+      <div class="kv">
+        <span class="lbl">来源</span><span>${esc(d.publisher||"-")}</span>
+        <span class="lbl">粗筛</span><span>${screenPill(d.screen_status)} <span class="muted">${esc(d.screen_reason||"")}</span></span>
+        <span class="lbl">原文链接</span><span>${d.url?`<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}↗</a>`:"-"}</span>
+        <span class="lbl">抓取时间</span><span class="muted">${esc((d.fetched_at||"").replace("T"," ").slice(0,16))}</span>
+        <span class="lbl">HTTP</span><span class="muted">${d.http_status??"-"}</span>
+      </div>
+      <b style="font-size:13px">抓回的正文</b>
+      <div style="margin-top:6px;white-space:pre-wrap;font-size:13px;max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:10px">${esc(d.content_text||"(未抓到正文)")}</div>`);
+  }catch(e){ toast(e.message); }
+}
+function screenPill(s){ const m={screened_in:["ok","相关·已抽取"],screened_out:["","已过滤"],
+  manual_queue:["warn","待人工"],pending:["info","待粗筛"]}; const x=m[s]||["",s];
+  return `<span class="pill ${x[0]}">${x[1]}</span>`; }
 
 /* ---------- 设置 ---------- */
 async function vSettings(){
