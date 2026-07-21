@@ -53,3 +53,25 @@ def test_has_running_gate(db, need):
     j.status = "done"
     db.commit()
     assert crawl_runner.has_running(db, need.id) is None
+
+
+def test_incremental_skip_stats(db, need, monkeypatch):
+    """第二次采集同一 URL 应被记为 skipped(增量:不重复处理)。"""
+    from app.services import pipeline
+    from app.services.adapters import DiscoveredItem
+    from app.services.fetcher import FetchResult
+    from app.models import Source, CrawlRun
+
+    src = db.query(Source).first()
+    html = "<html><body><p>某医院遭勒索攻击系统瘫痪</p></body></html>"
+    fr = FetchResult(url="https://ex.com/inc1", final_url="https://ex.com/inc1", status=200, html=html)
+    monkeypatch.setattr(pipeline.fetcher, "fetch", lambda url, **k: fr)
+
+    item = DiscoveredItem(url="https://ex.com/inc1", title="医院遭勒索")
+    s1 = {}
+    d1 = pipeline.ingest_item(db, need, src, item, do_archive=False, prefetched=fr, stats=s1)
+    assert d1 is not None and s1.get("new") == 1
+    # 第二次同一 URL
+    s2 = {}
+    d2 = pipeline.ingest_item(db, need, src, item, do_archive=False, prefetched=fr, stats=s2)
+    assert d2 is None and s2.get("skipped") == 1  # 已采过 → 跳过

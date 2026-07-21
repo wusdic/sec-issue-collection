@@ -90,7 +90,8 @@ def _run(job_id: int):
                 run = pipeline.crawl_source(db, need, src, queries=queries,
                                             max_pages=max_pages, do_archive=True)
                 lvl = "info" if run.status == "ok" else "error"
-                msg = f"完成:发现 {run.urls_found} 条、新增入库 {run.urls_new} 条、状态 {run.status}"
+                msg = (f"完成:发现 {run.urls_found} 条、新增 {run.urls_new} 条、"
+                       f"已采过跳过 {run.urls_skipped} 条、抓取失败 {run.urls_failed} 条、状态 {run.status}")
                 if run.error:
                     msg += f" | 错误:{run.error}"
                 _log(db, job_id, lvl, src.name, msg)

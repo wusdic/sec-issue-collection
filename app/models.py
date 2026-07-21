@@ -140,6 +140,8 @@ class CrawlRun(Base):
     status: Mapped[str] = mapped_column(String(16), default="running")  # running/ok/partial/failed
     urls_found: Mapped[int] = mapped_column(Integer, default=0)
     urls_new: Mapped[int] = mapped_column(Integer, default=0)
+    urls_skipped: Mapped[int] = mapped_column(Integer, default=0)  # 已采过、本次自动跳过(增量)
+    urls_failed: Mapped[int] = mapped_column(Integer, default=0)   # 抓取失败
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

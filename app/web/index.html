@@ -394,12 +394,13 @@ async function vSources(){
   try{
     const rows=await api(`/sources`);
     document.getElementById("srcTable").innerHTML=`<table><thead><tr>
-      <th>名称</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>半自动</th><th>文档数</th></tr></thead><tbody>`+
+      <th>名称</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>半自动</th><th>文档数</th><th>上次采集</th></tr></thead><tbody>`+
       rows.map(s=>`<tr>
         <td>${esc(s.name)}</td><td>${s.kind==="query"?"检索型":"页面型"}</td>
         <td><span class="pill ${s.credibility==="S1"?"ok":s.credibility==="S4"?"warn":"info"}">${s.credibility}</span></td>
         <td>${s.tier}</td><td>${esc(s.lifecycle)}</td>
         <td>${s.manual_assist?'<span class="pill warn">是</span>':"否"}</td><td>${s.docs_total}</td>
+        <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
       </tr>`).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("srcTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
 }
@@ -413,7 +414,8 @@ async function vCrawl(){
   const canRun=["analyst","editor","admin"].includes(ROLE);
   v.innerHTML=`<h2>采集</h2>
     <p class="sub">后台采集任务:点击后立即返回,进度实时更新,切换页面/刷新回来仍能看到运行状态。</p>
-    <div class="banner">⚠️ 采集会真实访问网站。部分源有反爬/需登录,失败属正常,详情见下方日志。正式运行由后台定时自动跑;这里是手动试跑。</div>
+    <div class="banner">⚠️ 采集会真实访问网站。部分源有反爬/需登录,失败属正常,详情见下方日志。正式运行由后台定时自动跑;这里是手动试跑。<br>
+      ♻️ 增量采集:每篇文章按网址记录,已采过的会自动跳过,重复采集同一源只处理新出现的内容——日志会显示“新增 X、已采过跳过 Y”。</div>
     <div class="toolbar">
       <label style="margin:0" title="本次只抓取前 N 个源。库里源多,一次全跑很慢,先小量试。">本轮抓取源数 ⓘ</label>
       <select id="cLimit"><option value="3">3 个(快速试跑)</option>

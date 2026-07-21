@@ -61,7 +61,8 @@ def list_sources(lifecycle: str | None = None, db: Session = Depends(get_session
     return [{"id": s.id, "name": s.name, "kind": s.kind, "adapter": s.adapter,
              "credibility": s.credibility, "tier": s.tier, "lifecycle": s.lifecycle,
              "identity_key": s.identity_key, "discovery_score": s.discovery_score,
-             "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total}
+             "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total,
+             "last_crawled": s.last_success_at.isoformat() if s.last_success_at else None}
             for s in q.order_by(Source.id).all()]
 
 
@@ -542,7 +543,7 @@ def crawl_runs(limit: int = 30, db: Session = Depends(get_session),
         src = db.get(Source, r.source_id)
         out.append({"id": r.id, "source": src.name if src else r.source_id,
                     "status": r.status, "found": r.urls_found, "new": r.urls_new,
-                    "error": r.error,
+                    "skipped": r.urls_skipped, "failed": r.urls_failed, "error": r.error,
                     "started_at": r.started_at.isoformat() if r.started_at else None})
     return out
 

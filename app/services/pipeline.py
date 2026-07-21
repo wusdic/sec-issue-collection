@@ -39,11 +39,20 @@ def _reputation(need: NeedProfile):
 
 def ingest_item(db: Session, need: NeedProfile, source: Source, item: DiscoveredItem,
                 crawl_run_id: int | None = None, do_archive: bool = True,
-                prefetched: fetcher.FetchResult | None = None) -> RawDocument | None:
-    """单条 URL 入库:URL 去重 → 抓取+当刻存档 → 文本提取 → 同稿聚类 → 源发现伴生。"""
+                prefetched: fetcher.FetchResult | None = None,
+                stats: dict | None = None) -> RawDocument | None:
+    """单条 URL 入库:URL 去重 → 抓取+当刻存档 → 文本提取 → 同稿聚类 → 源发现伴生。
+
+    stats(可选)记录本源本轮:skipped(已采过跳过,增量核心)/blacklist/failed/new。
+    """
+    def _bump(key):
+        if stats is not None:
+            stats[key] = stats.get(key, 0) + 1
+
     reg, repost_on = _reputation(need)
     # 黑名单主体(默认空,仅真正垃圾源)直接丢弃;其余主体一律保留并按名录定级
     if reg is not None and reputation.is_blacklisted(reg, item.wechat_account or item.publisher):
+        _bump("blacklist")
         return None
     url = item.url
     if url_tools.is_search_redirect(url):
@@ -51,11 +60,16 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
         url = fr0.final_url if fr0.final_url else url
         prefetched = fr0 if fr0.ok else None
     if dedup.find_existing_url(db, url):
+        _bump("skipped")   # 已采过 → 增量跳过(只累加热度,不重复处理)
         return None
 
     fr = prefetched or fetcher.fetch(url)
     final_url = fr.final_url or url
     text = archive.extract_text(fr.html) if fr.ok else None
+    if not fr.ok:
+        _bump("failed")
+    else:
+        _bump("new")
 
     # 先建文档(暂不存档),定完首发/转载后再决定存全量还是薄存(去重后存储,省空间)
     doc = RawDocument(
@@ -196,7 +210,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     db.add(run)
     db.flush()
     adapter = get_adapter(source)
-    new_docs = 0
+    stats = {"new": 0, "skipped": 0, "failed": 0, "blacklist": 0}
     found = 0
     try:
         if source.kind == "query":
@@ -210,13 +224,11 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                                 result_snapshot=[{"url": i.url, "title": i.title} for i in items[:50]])
                 db.add(kr)
                 found += len(items)
-                q_new = 0  # 本查询新增(C9 命中率统计依赖逐查询口径)
+                before = stats["new"]  # 本查询新增(C9 命中率统计依赖逐查询口径)
                 for item in items:
-                    doc = ingest_item(db, need, source, item, run.id, do_archive=do_archive)
-                    if doc:
-                        q_new += 1
-                new_docs += q_new
-                kr.new_docs = q_new
+                    ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
+                kr.new_docs = stats["new"] - before
+                # 水位线:记录该查询上次成功执行时间(用于增量与调度)
                 if wm:
                     wm.last_ran_at = datetime.utcnow()
                 else:
@@ -226,9 +238,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
             items = adapter.discover()
             found = len(items)
             for item in items:
-                doc = ingest_item(db, need, source, item, run.id, do_archive=do_archive)
-                if doc:
-                    new_docs += 1
+                ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
         run.status = "ok"
         source.last_success_at = datetime.utcnow()
         source.fail_streak = 0
@@ -237,7 +247,9 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
         run.error = str(e)[:500]
         source.fail_streak += 1
     run.urls_found = found
-    run.urls_new = new_docs
+    run.urls_new = stats["new"]
+    run.urls_skipped = stats["skipped"]
+    run.urls_failed = stats["failed"]
     run.finished_at = datetime.utcnow()
     db.flush()
     return run
