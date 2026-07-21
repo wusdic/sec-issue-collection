@@ -12,7 +12,7 @@ from app.config import settings
 from app.models import (
     CrawlRun, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
-from app.services import archive, dedup, discovery, fetcher, url_tools, wechat
+from app.services import archive, dedup, discovery, fetcher, reputation, url_tools
 from app.services.adapters import DiscoveredItem, get_adapter
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
@@ -30,12 +30,20 @@ def _parse_dt(s: str | None):
         return None
 
 
+def _reputation(need: NeedProfile):
+    """取该需求的发布主体信誉名录与转载检测开关(通用能力,见 services/reputation)。"""
+    path, repost_on = reputation.registry_path_for(need.config)
+    reg = reputation.load_registry(path) if path else None
+    return reg, repost_on
+
+
 def ingest_item(db: Session, need: NeedProfile, source: Source, item: DiscoveredItem,
                 crawl_run_id: int | None = None, do_archive: bool = True,
                 prefetched: fetcher.FetchResult | None = None) -> RawDocument | None:
     """单条 URL 入库:URL 去重 → 抓取+当刻存档 → 文本提取 → 同稿聚类 → 源发现伴生。"""
-    # 公众号黑名单(营销/搬运/标题党)直接丢弃,不抓取、不入库
-    if item.wechat_account and wechat.is_blacklisted(item.wechat_account):
+    reg, repost_on = _reputation(need)
+    # 黑名单主体(默认空,仅真正垃圾源)直接丢弃;其余主体一律保留并按名录定级
+    if reg is not None and reputation.is_blacklisted(reg, item.wechat_account or item.publisher):
         return None
     url = item.url
     if url_tools.is_search_redirect(url):
@@ -73,15 +81,15 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
             elif "公众号" in ref or len(ref) <= 20:
                 discovery.record_evidence(db, None, "wechat_reference",
                                           display_name=ref, wechat_account=ref, doc_id=doc.id)
-        # 公众号专项:转载溯源——识别转载并把原始出处登记为候选源、标记本篇为转载(非首发)
-        if wechat.is_wechat_source(source, doc.publisher):
-            rp = wechat.detect_repost(text)
+        # 转载溯源(通用能力,任何需求可用):识别转载→本篇不作首发,原始出处登记候选源
+        if reg is not None and repost_on:
+            rp = reputation.detect_repost(text)
             if rp["is_repost"]:
-                doc.is_primary = False   # 转载版不作首发,优先追原始号
-                if rp["original_account"]:
+                doc.is_primary = False   # 转载版不作首发,优先追原始出处
+                if rp["original_subject"]:
                     discovery.record_evidence(db, None, "citation",
-                                              display_name=rp["original_account"],
-                                              wechat_account=rp["original_account"], doc_id=doc.id)
+                                              display_name=rp["original_subject"],
+                                              wechat_account=rp["original_subject"], doc_id=doc.id)
                 for u in (rp["original_wechat_url"], rp["original_url"]):
                     if u:
                         discovery.record_evidence(db, u, "citation", doc_id=doc.id)
@@ -140,10 +148,12 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         return result
 
     src = db.get(Source, doc.source_id)
-    # 公众号来源:按发布号主体重定级可信度(官方号→S1/S2),而非笼统用渠道 S4
     src_cred = src.credibility if src else "S4"
-    if wechat.is_wechat_source(src, doc.publisher):
-        src_cred = wechat.account_credibility(doc.publisher, channel_default=src_cred)
+    # 通用:发布主体命中该需求信誉名录 → 按主体重定级(官方号/权威机关→S1/S2);
+    # 未命中则保留渠道默认等级(不丢弃)
+    reg, _ = _reputation(need)
+    if reg is not None and doc.publisher:
+        src_cred = reputation.subject_credibility(reg, doc.publisher, src_cred)
     ev = create_draft(db, need.id, payload, doc=doc,
                       source_credibility=src_cred,
                       dict_version=str(dictionaries.get("version") or ""))

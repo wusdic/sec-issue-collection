@@ -35,6 +35,8 @@ dictionaries:
 
 sources:
   seed_file: config/seed_sources.yaml
+  reputation_registry: config/wechat_accounts.yaml   # 发布主体信誉名录(公众号→可信度)
+  repost_detection: true                             # 启用转载溯源(追原始出处)
   credibility_levels:
     confirm_allowed: [S1, S2]   # 已确认金额只认监管/司法/公告(S1)与企业自披露支出(S2)
     levels:

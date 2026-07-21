@@ -33,6 +33,8 @@ dictionaries:
 
 sources:
   seed_file: config/seed_sources_policy.yaml
+  reputation_registry: config/policy_issuers.yaml   # 发布主体信誉名录(发布机关→可信度)
+  repost_detection: true                            # 通用能力复用:转载/转发溯源
   credibility_levels:
     confirm_allowed: [S1]         # 政策以官方发布为唯一确认口径
     levels:

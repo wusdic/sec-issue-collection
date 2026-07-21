@@ -14,8 +14,14 @@ def test_account_credibility_reclassify():
 
 
 def test_blacklist():
-    assert wechat.is_blacklisted("网络安全那些事儿营销号示例")
+    # 默认名单为空:公众号一律保留(不丢),只定级
     assert not wechat.is_blacklisted("FreeBuf")
+    assert not wechat.is_blacklisted("某未知营销号")
+    # 机制正确性:命中黑名单才丢(用内联名录验证泛化的 reputation 层)
+    from app.services import reputation
+    reg = {"subjects": {}, "blacklist": {"垃圾搬运号"}}
+    assert reputation.is_blacklisted(reg, "垃圾搬运号")
+    assert not reputation.is_blacklisted(reg, "FreeBuf")
 
 
 def test_detect_repost_by_source_line():

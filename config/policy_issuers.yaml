@@ -1,0 +1,16 @@
+# 政策库发布主体信誉名录(通用能力 reputation 的第二个实例)
+# 主体=发布机关;证明"按发布主体定级"不限公众号,任何需求可复用
+version: "1.0"
+subjects:
+  全国人大常委会:   {credibility: S1, category: 立法}
+  国务院:           {credibility: S1, category: 行政}
+  国家网信办:       {credibility: S1, category: 监管}
+  工业和信息化部:   {credibility: S1, category: 监管}
+  公安部:           {credibility: S1, category: 监管}
+  国家标准委:       {credibility: S1, category: 标准}
+  中国人民银行:     {credibility: S1, category: 金融监管}
+  国家金融监督管理总局: {credibility: S1, category: 金融监管}
+  中国证监会:       {credibility: S1, category: 金融监管}
+  国家密码管理局:   {credibility: S1, category: 监管}
+  行业协会:         {credibility: S2, category: 协会}
+blacklist: []

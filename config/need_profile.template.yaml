@@ -38,6 +38,8 @@ dictionaries:
 # ③ 来源策略
 sources:
   seed_file: ""               # 种子源清单
+  reputation_registry: ""     # 发布主体信誉名录(通用能力): 主体名→可信度; 默认按主体定级、不丢弃
+  repost_detection: true      # 是否启用转载/转发溯源(识别转载并追原始出处)
   credibility_levels:         # 本需求的可信度分级定义与"确认"授权等级
     confirm_allowed: []       # 允许支撑 confirmed 断言的等级, 如 [S1, S2]
     levels: {}                # S1..Sn: 定义说明
