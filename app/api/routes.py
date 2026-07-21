@@ -148,7 +148,9 @@ def list_events(need_id: str, status: str | None = None, industry: str | None = 
                 limit: int = Query(50, le=500), db: Session = Depends(get_session),
                 _: AppUser = Depends(current_user)):
     q = db.query(Event).filter_by(need_id=need_id)
-    if status:
+    if status == "live":   # 已发布口径 = 已发布 + 跟踪中 + 已关闭(与 KPI 一致)
+        q = q.filter(Event.status.in_(["published", "monitoring", "closed"]))
+    elif status:
         q = q.filter_by(status=status)
     if industry:
         q = q.filter_by(industry_l1=industry)

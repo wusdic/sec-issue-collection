@@ -37,6 +37,9 @@
   .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
   .card .k{color:var(--muted);font-size:13px} .card .v{font-size:26px;font-weight:700;margin-top:6px}
   .card .v.small{font-size:15px;font-weight:600}
+  .card.clickable{cursor:pointer;transition:.15s}
+  .card.clickable:hover{border-color:var(--brand);box-shadow:0 6px 18px rgba(37,99,235,.14);transform:translateY(-2px)}
+  .card .k .arrow{float:right;color:var(--brand);font-weight:700}
   /* 表格 */
   table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
   th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
@@ -99,8 +102,10 @@ let TOKEN = localStorage.getItem("tok") || "";
 let ROLE = localStorage.getItem("role") || "";
 const TABS = [
   ["dashboard","仪表盘"],["events","事件"],["review","复核台"],
-  ["leads","销售线索"],["sources","数据源"],["crawl","采集"],
+  ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],
 ];
+let PENDING = {};   // 下钻时携带的预设筛选,由目标页读取后清空
+function drill(tab, filter){ PENDING = filter || {}; go(tab); }
 
 /* ---------- 通用请求 ---------- */
 async function api(path, opts={}){
@@ -144,7 +149,8 @@ function boot(){
 }
 function go(k){
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
-  ({dashboard:vDashboard,events:vEvents,review:vReview,leads:vLeads,sources:vSources,crawl:vCrawl}[k])();
+  ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
+    leads:vLeads,sources:vSources,crawl:vCrawl}[k])();
 }
 
 /* ---------- 仪表盘 ---------- */
@@ -157,16 +163,37 @@ async function vDashboard(){
     <div class="cards" id="cards">加载中…</div>`;
   try{
     const d=await api(`/kpi/dashboard?need_id=${NEED}`);
+    window.__trace = d.traceability;
     const trace = d.traceability.ok
       ? `<span class="pill ok">通过</span>` : `<span class="pill bad">违规 ${d.traceability.violations.length}</span>`;
-    document.getElementById("cards").innerHTML = [
-      ["事件总数", d.events_total],["已发布", d.events_published],["采集文档", d.docs_total],
-      ["待复核", d.followups_open!=null?d.events_total-d.events_published:"-"],
-      ["新线索", d.leads_new],["完备度均分", d.avg_completeness??"-"],
-      ["回访待办", d.followups_open],
-    ].map(([k,val])=>`<div class="card"><div class="k">${k}</div><div class="v">${val??"-"}</div></div>`).join("")
-     + `<div class="card"><div class="k">金额可追溯硬约束</div><div class="v small">${trace}</div></div>`;
+    // 每张卡片声明下钻目标:go=跳转的 tab,f=预设筛选;click=自定义动作
+    const cards=[
+      {k:"事件总数", v:d.events_total, go:"events"},
+      {k:"已发布", v:d.events_published, go:"events", f:{status:"live"}},
+      {k:"采集文档", v:d.docs_total, go:"crawl"},
+      {k:"待复核", v:d.events_total-d.events_published, go:"review"},
+      {k:"新线索", v:d.leads_new, go:"leads"},
+      {k:"完备度均分", v:d.avg_completeness??"-", go:"events"},
+      {k:"回访待办", v:d.followups_open, go:"followups"},
+      {k:"金额可追溯硬约束", v:trace, small:true, click:"trace"},
+    ];
+    const box=document.getElementById("cards");
+    box.innerHTML = cards.map((c,i)=>
+      `<div class="card clickable" data-i="${i}">
+         <div class="k">${c.k}<span class="arrow">›</span></div>
+         <div class="v ${c.small?'small':''}">${c.v??"-"}</div></div>`).join("");
+    box.querySelectorAll(".card").forEach((el,i)=>{
+      const c=cards[i];
+      el.onclick = c.click==="trace" ? showTrace : ()=>drill(c.go, c.f);
+    });
   }catch(e){ document.getElementById("cards").innerHTML=`<div class="muted">加载失败:${esc(e.message)}</div>`; }
+}
+function showTrace(){
+  const t=window.__trace||{};
+  if(t.ok){ toast("金额可追溯:全部已确认金额均有 S1/S2 权威来源支撑 ✓"); return; }
+  drawer(`<h3>金额可追溯性违规</h3>
+    <p class="muted">以下事件存在“已确认金额”但缺少 S1/S2 权威来源,报表层会拒绝出数,请复核补来源或降级金额通道。</p>
+    ${(t.violations||[]).map(v=>`<div class="lossbox"><span class="mono" style="cursor:pointer" onclick="openEvent('${v.event_id}')">${v.event_id}</span> · 字段:${(v.fields||[]).join(", ")}</div>`).join("")}`);
 }
 async function seedDemo(){
   try{ const r=await api("/demo/seed?need_id="+NEED,{method:"POST"});
@@ -181,11 +208,16 @@ async function vEvents(){
     <div class="toolbar">
       <select id="fStatus" onchange="loadEvents()">
         <option value="">全部状态</option><option value="draft">草稿</option>
-        <option value="published">已发布</option><option value="monitoring">跟踪中</option></select>
+        <option value="live">已发布/跟踪中</option>
+        <option value="published">仅已发布</option><option value="monitoring">仅跟踪中</option></select>
       <select id="fSev" onchange="loadEvents()">
         <option value="">全部严重度</option><option>特别重大</option><option>重大</option>
         <option>较大</option><option>一般</option><option>未定级</option></select>
     </div><div id="evTable">加载中…</div>`;
+  // 应用仪表盘下钻带来的预设筛选
+  if(PENDING.status) document.getElementById("fStatus").value = PENDING.status;
+  if(PENDING.severity) document.getElementById("fSev").value = PENDING.severity;
+  PENDING = {};
   loadEvents();
 }
 async function loadEvents(){
@@ -285,6 +317,38 @@ async function rvReject(id){
   const reason=prompt("驳回原因:"); if(!reason)return;
   try{ await api(`/review/${id}/reject`,{method:"POST",body:JSON.stringify({reason})});
     toast("已驳回"); loadReview(); }catch(e){ toast("失败:"+e.message); }
+}
+
+/* ---------- 回访 ---------- */
+async function vFollowups(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<h2>回访</h2><p class="sub">罚款、判决、整改采购等滞后信息,按 T+30/90/180/365 到期回访补全</p>
+    <div id="fuTable">加载中…</div>`;
+  try{
+    const rows=await api("/followups?due=2099-12-31");   // 拉全部未完成回访(含未来到期)
+    if(!rows.length){ document.getElementById("fuTable").innerHTML=`<p class="muted">暂无回访任务。事件发布且存在未落地字段(金额/采购/赎金等)时自动生成。</p>`; return; }
+    document.getElementById("fuTable").innerHTML=`<table><thead><tr>
+      <th>事件</th><th>类型</th><th>到期日</th><th>回访原因</th><th>一键检索</th></tr></thead><tbody>`+
+      rows.map(t=>`<tr>
+        <td class="mono" style="cursor:pointer" onclick="openEvent('${t.event_id}')">${t.event_id}</td>
+        <td><span class="pill info">${esc(t.kind)}</span></td>
+        <td class="muted">${esc(t.due)}</td>
+        <td class="muted" style="max-width:360px">${esc(t.reason||"")}</td>
+        <td><button class="sm ghost" onclick="showPack(${t.id})">检索链接</button></td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("fuTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function showPack(id){
+  try{
+    const p=await api(`/followups/${id}/search-pack`);
+    if(p.note){ drawer(`<h3>一键检索包</h3><p class="muted">${esc(p.note)}</p>`); return; }
+    drawer(`<h3>一键检索包</h3>
+      <p class="muted">用单位名在权威渠道定向核查处罚/判决/中标,补全滞后字段。</p>
+      <b style="font-size:13px">检索词</b>
+      <div style="margin:6px 0">${(p.queries||[]).map(q=>`<span class="tag">${esc(q)}</span>`).join("")}</div>
+      <b style="font-size:13px">直达链接</b>
+      ${Object.entries(p.links||{}).map(([k,u])=>`<div class="lossbox"><a href="${esc(u)}" target="_blank">${esc(k)} ↗</a></div>`).join("")}`);
+  }catch(e){ toast(e.message); }
 }
 
 /* ---------- 线索 ---------- */
