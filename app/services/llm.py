@@ -26,10 +26,15 @@ class BaseLLM:
 
 
 class OpenAICompatLLM(BaseLLM):
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 embed_base_url: str = "", embed_api_key: str = "", embed_model: str = ""):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        # Embedding 独立配置;留空回退聊天接口/模型
+        self.embed_base_url = (embed_base_url or base_url).rstrip("/")
+        self.embed_api_key = embed_api_key or api_key
+        self.embed_model = embed_model or model
 
     def _chat(self, system: str, user: str) -> str:
         resp = httpx.post(
@@ -61,9 +66,9 @@ class OpenAICompatLLM(BaseLLM):
 
     def embed(self, text: str) -> list[float]:
         resp = httpx.post(
-            f"{self.base_url}/embeddings",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": settings.llm_model, "input": text[:8000]},
+            f"{self.embed_base_url}/embeddings",
+            headers={"Authorization": f"Bearer {self.embed_api_key}"},
+            json={"model": self.embed_model, "input": text[:8000]},
             timeout=60,
         )
         resp.raise_for_status()
@@ -195,7 +200,10 @@ def get_llm() -> BaseLLM:
     global _client
     if _client is None:
         if settings.llm_provider == "openai_compat" and settings.llm_base_url:
-            _client = OpenAICompatLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
+            _client = OpenAICompatLLM(
+                settings.llm_base_url, settings.llm_api_key, settings.llm_model,
+                settings.llm_embed_base_url, settings.llm_embed_api_key, settings.llm_embed_model,
+            )
         else:
             _client = MockLLM()
     return _client

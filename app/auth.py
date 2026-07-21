@@ -7,7 +7,8 @@ import os
 import time
 from datetime import datetime, timedelta
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -15,6 +16,7 @@ from app.db import get_session
 from app.models import AppUser
 
 _ITER = 200_000
+_bearer = HTTPBearer(auto_error=False)  # 让 Swagger /docs 出现 Authorize 按钮
 
 
 def _b64u(data: bytes) -> str:
@@ -71,12 +73,12 @@ def create_token(user: AppUser) -> str:
     return jwt_encode(payload, settings.jwt_secret)
 
 
-def current_user(request: Request, db: Session = Depends(get_session)) -> AppUser:
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+def current_user(cred: HTTPAuthorizationCredentials = Depends(_bearer),
+                 db: Session = Depends(get_session)) -> AppUser:
+    if cred is None or not cred.credentials:
         raise HTTPException(401, "缺少 Bearer token")
     try:
-        data = jwt_decode(auth[7:], settings.jwt_secret)
+        data = jwt_decode(cred.credentials, settings.jwt_secret)
     except ValueError as e:
         raise HTTPException(401, f"token 无效: {e}") from e
     user = db.get(AppUser, int(data["sub"]))

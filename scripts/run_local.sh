@@ -32,11 +32,11 @@ cat <<EOF
 
 =========================================================
 本地试用完成 ✓  数据都在 ${PROJECT_DIR}/data/(SQLite + 存档)
-下一步(可选):
-  想点 Web 界面看 API,在项目目录执行:
+下一步(可选):打开管理后台
     source .venv/bin/activate
     LLM_PROVIDER=mock uvicorn app.main:app --port 8000
-  然后浏览器打开 http://127.0.0.1:8000/docs   (Ctrl+C 停止)
+  浏览器打开 http://127.0.0.1:8000/  (中文管理后台,非接口页)
+  登录 admin / ChangeMe!2026,点“一键载入演示数据”即可看到效果  (Ctrl+C 停止)
 彻底清除:退出 venv(deactivate)后删除 .venv/ 与 data/ 即可,系统无残留。
 =========================================================
 EOF

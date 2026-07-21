@@ -363,3 +363,91 @@ def audit_logs(limit: int = 100, db: Session = Depends(get_session),
                _: AppUser = Depends(require_roles("analyst"))):
     return [{"at": a.at.isoformat(), "user_id": a.user_id, "action": a.action, "target": a.target}
             for a in db.query(AuditLog).order_by(AuditLog.at.desc()).limit(limit).all()]
+
+
+# ---------- 采集触发与运行记录(前端"采集"页) ----------
+
+class CrawlIn(BaseModel):
+    need_id: str = "sec_events"
+    limit_sources: int = 3
+    do_archive: bool = True
+
+
+@api.post("/crawl/run")
+def crawl_run_now(body: CrawlIn, db: Session = Depends(get_session),
+                  _: AppUser = Depends(require_roles("analyst", "editor"))):
+    """手动触发一轮采集(真实访问网络)。前端按钮调用;limit_sources 控制规模。"""
+    from app.services.scheduler import run_daily as _run
+    stats = _run(db, body.need_id, do_archive=body.do_archive, limit_sources=body.limit_sources)
+    return stats
+
+
+@api.get("/crawl/runs")
+def crawl_runs(limit: int = 30, db: Session = Depends(get_session),
+               _: AppUser = Depends(current_user)):
+    """采集执行记录 + 错误报告(失败源、原因)。"""
+    from app.models import CrawlRun
+    rows = db.query(CrawlRun).order_by(CrawlRun.id.desc()).limit(limit).all()
+    out = []
+    for r in rows:
+        src = db.get(Source, r.source_id)
+        out.append({"id": r.id, "source": src.name if src else r.source_id,
+                    "status": r.status, "found": r.urls_found, "new": r.urls_new,
+                    "error": r.error,
+                    "started_at": r.started_at.isoformat() if r.started_at else None})
+    return out
+
+
+# ---------- 演示数据(前端"一键载入演示",空库也能看到界面效果) ----------
+
+@api.post("/demo/seed")
+def demo_seed(need_id: str = "sec_events", db: Session = Depends(get_session),
+              user: AppUser = Depends(require_roles("analyst", "editor"))):
+    """注入 3 条样例事件(已发布/待复核各态),便于快速体验界面。仅演示用。"""
+    from datetime import datetime
+    from app.models import Event, RawDocument
+    from app.services import dedup
+    from app.services.followup import schedule_followups
+    from app.services.leads import generate_leads
+    from app.services.pipeline import process_document
+    from app.services.review import approve
+
+    need = db.get(NeedProfile, need_id)
+    src = db.query(Source).first()
+    samples = [
+        ("某三甲医院遭勒索攻击 HIS系统瘫痪36小时",
+         "某市第三人民医院遭勒索软件攻击,HIS 系统瘫痪超过36小时,门诊停诊。"
+         "攻击者要求支付200万元赎金,医院未支付,数据由备份恢复,部分备份也被加密。"
+         "初步判断与某VPN设备未修补漏洞有关,监管部门已介入。"),
+        ("某城商行网银系统遭DDoS攻击 交易中断3小时",
+         "某城市商业银行网上银行遭大规模DDoS攻击,交易系统中断约3小时,大量客户无法转账。"
+         "银行称已启用流量清洗,未造成资金损失。"),
+        ("某车企供应商数据泄露 涉及生产数据",
+         "某汽车零部件供应商因第三方运维通道被入侵导致生产数据泄露,"
+         "攻击者在泄露站列名索要赎金。企业尚未公开回应。"),
+    ]
+    created, published = [], []
+    for i, (title, text) in enumerate(samples):
+        url = f"https://demo.local/seed-{datetime.utcnow():%Y%m%d%H%M%S}-{i}"
+        doc = RawDocument(need_id=need_id, source_id=src.id, url=url, url_normalized=url,
+                          final_url=url, title=title, publisher=src.name,
+                          published_at=datetime.utcnow(), content_text=text, screen_status="pending")
+        db.add(doc)
+        db.flush()
+        dedup.assign_cluster(db, doc)
+        result = process_document(db, need, doc)
+        if result.get("event_id"):
+            created.append(result["event_id"])
+            if i == 0:  # 第一条走完复核发布,展示已发布态+回访+线索
+                ev = db.get(Event, result["event_id"])
+                try:
+                    approve(db, ev.event_id, user.id, _record_schema(db, need_id),
+                            _confirm_allowed(db, need_id))
+                    schedule_followups(db, ev)
+                    generate_leads(db, ev)
+                    published.append(ev.event_id)
+                except Exception:  # noqa: BLE001 演示容错
+                    pass
+    db.commit()
+    return {"created": created, "published": published,
+            "note": "已注入演示事件;第1条已走完复核发布并生成回访与线索"}

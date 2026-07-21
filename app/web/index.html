@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>国内行业安全事件库 · 管理后台</title>
+<style>
+  :root{--bg:#0f172a;--panel:#fff;--muted:#64748b;--line:#e2e8f0;--brand:#2563eb;
+        --ok:#16a34a;--warn:#d97706;--bad:#dc2626;--soft:#f1f5f9;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
+       background:#f8fafc;color:#0f172a;font-size:14px}
+  a{color:var(--brand);text-decoration:none}
+  /* 登录 */
+  #login{max-width:360px;margin:12vh auto;background:#fff;padding:32px;border-radius:14px;
+         box-shadow:0 10px 40px rgba(2,6,23,.12)}
+  #login h1{font-size:18px;margin:0 0 4px} #login p{color:var(--muted);margin:0 0 20px;font-size:13px}
+  input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:#fff}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}
+  button{cursor:pointer;border:0;border-radius:8px;padding:10px 16px;font-size:14px;background:var(--brand);color:#fff}
+  button.ghost{background:#fff;color:var(--brand);border:1px solid var(--brand)}
+  button.sm{padding:5px 10px;font-size:13px}
+  button.ok{background:var(--ok)} button.bad{background:var(--bad)} button.warn{background:var(--warn)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  /* 布局 */
+  #app{display:none;min-height:100vh}
+  header{background:var(--bg);color:#fff;display:flex;align-items:center;gap:20px;padding:0 20px;height:56px;position:sticky;top:0;z-index:5}
+  header .logo{font-weight:700}
+  nav{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+  nav a{color:#cbd5e1;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px}
+  nav a.active{background:rgba(255,255,255,.14);color:#fff}
+  header .user{color:#cbd5e1;font-size:13px}
+  main{max-width:1200px;margin:0 auto;padding:24px 20px}
+  h2{font-size:18px;margin:0 0 4px} .sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+  /* 卡片 */
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;margin-bottom:22px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card .k{color:var(--muted);font-size:13px} .card .v{font-size:26px;font-weight:700;margin-top:6px}
+  .card .v.small{font-size:15px;font-weight:600}
+  /* 表格 */
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;vertical-align:top}
+  th{background:var(--soft);color:var(--muted);font-weight:600;white-space:nowrap}
+  tr:last-child td{border-bottom:0}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  .toolbar select{width:auto}
+  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px;background:var(--soft);color:#334155}
+  .pill.ok{background:#dcfce7;color:#166534}.pill.warn{background:#fef3c7;color:#92400e}
+  .pill.bad{background:#fee2e2;color:#991b1b}.pill.info{background:#dbeafe;color:#1e40af}
+  .tag{display:inline-block;padding:1px 7px;border-radius:6px;background:#eef2ff;color:#3730a3;font-size:12px;margin:1px}
+  /* 抽屉 */
+  #drawer{position:fixed;top:0;right:0;width:min(560px,92vw);height:100vh;background:#fff;
+          box-shadow:-8px 0 30px rgba(2,6,23,.2);transform:translateX(100%);transition:.25s;overflow:auto;z-index:20;padding:22px}
+  #drawer.open{transform:none}
+  #drawer h3{margin:0 0 12px}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;font-size:13px;margin:10px 0}
+  .kv .lbl{color:var(--muted)}
+  .lossbox{border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0;font-size:13px}
+  .close{position:absolute;top:16px;right:18px;cursor:pointer;color:var(--muted);font-size:22px}
+  #mask{position:fixed;inset:0;background:rgba(2,6,23,.35);display:none;z-index:15}
+  #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;
+         padding:10px 18px;border-radius:8px;opacity:0;transition:.3s;z-index:30;font-size:14px}
+  .muted{color:var(--muted)} .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .banner{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;padding:10px 14px;border-radius:10px;margin-bottom:16px;font-size:13px}
+  pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font-size:12px;max-height:340px}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="login">
+  <h1>国内行业安全事件库</h1>
+  <p>管理后台 · 请登录</p>
+  <label>用户名</label><input id="u" value="admin" autocomplete="username">
+  <label>口令</label><input id="p" type="password" value="ChangeMe!2026" autocomplete="current-password">
+  <div style="margin-top:18px"><button onclick="login()" style="width:100%">登录</button></div>
+  <p id="loginErr" style="color:var(--bad);margin-top:10px;display:none"></p>
+  <p class="muted" style="margin-top:16px;font-size:12px">默认账号 admin / ChangeMe!2026(首次登录后请修改)</p>
+</div>
+
+<!-- 主应用 -->
+<div id="app">
+  <header>
+    <span class="logo">🛡️ 安全事件库</span>
+    <nav id="nav"></nav>
+    <span class="user" id="whoami"></span>
+    <button class="sm ghost" onclick="logout()">退出</button>
+  </header>
+  <main id="view"></main>
+</div>
+
+<div id="mask" onclick="closeDrawer()"></div>
+<div id="drawer"><span class="close" onclick="closeDrawer()">×</span><div id="drawerBody"></div></div>
+<div id="toast"></div>
+
+<script>
+const NEED = "sec_events";
+let TOKEN = localStorage.getItem("tok") || "";
+let ROLE = localStorage.getItem("role") || "";
+const TABS = [
+  ["dashboard","仪表盘"],["events","事件"],["review","复核台"],
+  ["leads","销售线索"],["sources","数据源"],["crawl","采集"],
+];
+
+/* ---------- 通用请求 ---------- */
+async function api(path, opts={}){
+  opts.headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
+  if(TOKEN) opts.headers["Authorization"] = "Bearer "+TOKEN;
+  const r = await fetch("/api/v1"+path, opts);
+  if(r.status===401){ logout(); throw new Error("登录已过期,请重新登录"); }
+  const txt = await r.text();
+  let data; try{ data = txt?JSON.parse(txt):null; }catch{ data = txt; }
+  if(!r.ok) throw new Error((data&&data.detail)?JSON.stringify(data.detail):("HTTP "+r.status));
+  return data;
+}
+function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.style.opacity=1;
+  setTimeout(()=>t.style.opacity=0,2600); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+/* ---------- 登录 ---------- */
+async function login(){
+  const u=document.getElementById("u").value, p=document.getElementById("p").value;
+  try{
+    const r = await fetch("/api/v1/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:u,password:p})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail||"登录失败");
+    TOKEN=d.token; ROLE=d.role; localStorage.setItem("tok",TOKEN); localStorage.setItem("role",ROLE);
+    localStorage.setItem("user",u); boot();
+  }catch(e){ const el=document.getElementById("loginErr"); el.textContent=e.message; el.style.display="block"; }
+}
+function logout(){ TOKEN=""; localStorage.clear();
+  document.getElementById("app").style.display="none";
+  document.getElementById("login").style.display="block"; }
+
+function boot(){
+  document.getElementById("login").style.display="none";
+  document.getElementById("app").style.display="block";
+  document.getElementById("whoami").textContent = (localStorage.getItem("user")||"")+" · "+ROLE;
+  const nav=document.getElementById("nav"); nav.innerHTML="";
+  TABS.forEach(([k,label])=>{ const a=document.createElement("a"); a.textContent=label;
+    a.dataset.k=k; a.onclick=()=>go(k); nav.appendChild(a); });
+  go("dashboard");
+}
+function go(k){
+  document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
+  ({dashboard:vDashboard,events:vEvents,review:vReview,leads:vLeads,sources:vSources,crawl:vCrawl}[k])();
+}
+
+/* ---------- 仪表盘 ---------- */
+async function vDashboard(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<h2>仪表盘</h2><p class="sub">需求实例:国内行业安全事件库(sec_events)</p>
+    <div id="seedBanner" class="banner">库里还没有数据?点这里
+      <button class="sm" onclick="seedDemo()">一键载入演示数据</button>
+      &nbsp;然后就能在各页面看到事件、线索、复核任务的效果。</div>
+    <div class="cards" id="cards">加载中…</div>`;
+  try{
+    const d=await api(`/kpi/dashboard?need_id=${NEED}`);
+    const trace = d.traceability.ok
+      ? `<span class="pill ok">通过</span>` : `<span class="pill bad">违规 ${d.traceability.violations.length}</span>`;
+    document.getElementById("cards").innerHTML = [
+      ["事件总数", d.events_total],["已发布", d.events_published],["采集文档", d.docs_total],
+      ["待复核", d.followups_open!=null?d.events_total-d.events_published:"-"],
+      ["新线索", d.leads_new],["完备度均分", d.avg_completeness??"-"],
+      ["回访待办", d.followups_open],
+    ].map(([k,val])=>`<div class="card"><div class="k">${k}</div><div class="v">${val??"-"}</div></div>`).join("")
+     + `<div class="card"><div class="k">金额可追溯硬约束</div><div class="v small">${trace}</div></div>`;
+  }catch(e){ document.getElementById("cards").innerHTML=`<div class="muted">加载失败:${esc(e.message)}</div>`; }
+}
+async function seedDemo(){
+  try{ const r=await api("/demo/seed?need_id="+NEED,{method:"POST"});
+    toast(`已载入 ${r.created.length} 条演示事件`); go("dashboard"); }
+  catch(e){ toast("失败:"+e.message); }
+}
+
+/* ---------- 事件 ---------- */
+async function vEvents(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<h2>事件</h2><p class="sub">采集抽取后的安全事件记录</p>
+    <div class="toolbar">
+      <select id="fStatus" onchange="loadEvents()">
+        <option value="">全部状态</option><option value="draft">草稿</option>
+        <option value="published">已发布</option><option value="monitoring">跟踪中</option></select>
+      <select id="fSev" onchange="loadEvents()">
+        <option value="">全部严重度</option><option>特别重大</option><option>重大</option>
+        <option>较大</option><option>一般</option><option>未定级</option></select>
+    </div><div id="evTable">加载中…</div>`;
+  loadEvents();
+}
+async function loadEvents(){
+  const st=document.getElementById("fStatus").value, sv=document.getElementById("fSev").value;
+  let q=`/events?need_id=${NEED}&limit=200`; if(st)q+=`&status=${st}`; if(sv)q+=`&severity=${encodeURIComponent(sv)}`;
+  try{
+    const rows=await api(q);
+    if(!rows.length){ document.getElementById("evTable").innerHTML=`<p class="muted">暂无事件。去「仪表盘」点“一键载入演示数据”,或到「采集」页跑一轮真实采集。</p>`; return; }
+    document.getElementById("evTable").innerHTML=`<table><thead><tr>
+      <th>标题</th><th>行业</th><th>严重度</th><th>手段</th><th>状态</th><th>完备度</th><th>披露日</th></tr></thead><tbody>`+
+      rows.map(e=>`<tr style="cursor:pointer" onclick="openEvent('${e.event_id}')">
+        <td>${esc(e.title||e.event_id)}</td><td>${esc(e.industry||"-")}</td>
+        <td>${sevPill(e.severity)}</td><td>${(e.attack_types||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")}</td>
+        <td>${statusPill(e.status)}</td><td>${e.completeness??"-"}</td><td class="muted">${esc(e.disclosed_date||"-")}</td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("evTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+function sevPill(s){ const m={"特别重大":"bad","重大":"bad","较大":"warn","一般":"info"};
+  return s?`<span class="pill ${m[s]||''}">${esc(s)}</span>`:"-"; }
+function statusPill(s){ const m={published:"ok",monitoring:"info",draft:"",closed:""};
+  const t={published:"已发布",monitoring:"跟踪中",draft:"草稿",closed:"已关闭"};
+  return `<span class="pill ${m[s]||''}">${t[s]||s}</span>`; }
+
+async function openEvent(id){
+  try{
+    const d=await api(`/events/${id}`); const p=d.payload||{};
+    const losses=["loss_L1","loss_L2","loss_L3","loss_L4","loss_L5"];
+    const lname={loss_L1:"L1 直接资金",loss_L2:"L2 收入/产量",loss_L3:"L3 处置成本",loss_L4:"L4 罚款诉讼",loss_L5:"L5 商业机会"};
+    const money=(m)=>{ if(!m)return"未披露"; const f=(c)=>c?(c.point??c.low??"?"):null;
+      const parts=[]; if(f(m.confirmed_cny))parts.push(`<span class="pill ok">已确认 ${f(m.confirmed_cny)}</span>`);
+      if(f(m.estimated_cny))parts.push(`<span class="pill info">估算 ${f(m.estimated_cny)}</span>`);
+      if(f(m.claimed_cny))parts.push(`<span class="pill warn">声称 ${f(m.claimed_cny)}</span>`);
+      return parts.length?parts.join(" "):`<span class="muted">${esc(m.status||"未披露")}</span>`; };
+    const r=p.ransom||{};
+    drawer(`
+      <h3>${esc(p.title||id)}</h3>
+      <div class="kv">
+        <span class="lbl">事件编号</span><span class="mono">${id} ${statusPill(d.status)}</span>
+        <span class="lbl">单位/行业</span><span>${esc(p.org_name||"未披露")} / ${esc((p.industry||{}).level1||"-")}</span>
+        <span class="lbl">地区</span><span>${esc((p.region||{}).province||"-")}</span>
+        <span class="lbl">严重度</span><span>${sevPill(p.severity&&p.severity.level)}</span>
+        <span class="lbl">手段</span><span>${(p.attack_type||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")||"-"}</span>
+        <span class="lbl">后果</span><span>${(p.consequences||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")||"-"}</span>
+        <span class="lbl">完备度</span><span>${d.completeness??"-"}</span>
+      </div>
+      <div class="lossbox"><b>赎金(要求≠损失)</b><br>
+        ${r.applicable?`要求:${r.demanded_amount??"?"} ${esc(r.demanded_currency||"")} · 是否支付:${esc(r.paid||"未披露")}`:'<span class="muted">非勒索事件</span>'}
+      </div>
+      <b style="font-size:13px">损失六分类</b>
+      ${losses.map(k=>`<div class="lossbox"><b>${lname[k]}</b><br>${money(p[k])}</div>`).join("")}
+      <b style="font-size:13px">可售产品映射</b>
+      <div style="margin:6px 0">${(p.sellable_mapping||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join("")||'<span class="muted">无</span>'}</div>
+      <b style="font-size:13px">来源</b>
+      <div style="margin:6px 0">${(p.sources||[]).map(s=>`<div class="muted mono">[${esc(s.credibility)}] ${esc(s.url_or_doc_number||s.publisher||"")}</div>`).join("")||'<span class="muted">无</span>'}</div>
+      <details style="margin-top:10px"><summary class="muted">查看完整 JSON</summary><pre>${esc(JSON.stringify(p,null,2))}</pre></details>
+    `);
+  }catch(e){ toast(e.message); }
+}
+
+/* ---------- 复核台 ---------- */
+async function vReview(){
+  const v=document.getElementById("view");
+  const canReview = ["reviewer","admin"].includes(ROLE);
+  v.innerHTML=`<h2>复核台</h2><p class="sub">抽取后的事件需复核后才能发布;含已确认金额的需双人复核</p>
+    <div class="toolbar">
+      <select id="rStage" onchange="loadReview()">
+        <option value="first_review">待一审</option><option value="second_review">待二审(金额双签)</option>
+        <option value="extracted">新抽取</option></select>
+      ${canReview?"":'<span class="pill warn">当前角色无复核权限,仅查看</span>'}
+    </div><div id="rvTable">加载中…</div>`;
+  loadReview();
+}
+async function loadReview(){
+  const stage=document.getElementById("rStage").value;
+  const canReview=["reviewer","admin"].includes(ROLE);
+  try{
+    const rows=await api(`/review/queue?stage=${stage}`);
+    if(!rows.length){ document.getElementById("rvTable").innerHTML=`<p class="muted">该阶段暂无待办。新事件默认在「新抽取」,提交后进入「待一审」。</p>`; return; }
+    document.getElementById("rvTable").innerHTML=`<table><thead><tr>
+      <th>事件</th><th>阶段</th><th>金额双签</th><th>操作</th></tr></thead><tbody>`+
+      rows.map(t=>`<tr>
+        <td style="cursor:pointer" onclick="openEvent('${t.event_id}')"><span class="mono">${t.event_id}</span></td>
+        <td>${esc(t.stage)}</td><td>${t.needs_double?'<span class="pill warn">需双签</span>':'<span class="pill">否</span>'}</td>
+        <td>
+          ${t.stage==="extracted"?`<button class="sm" onclick="rvAct('${t.event_id}','submit')">提交复核</button>`:""}
+          ${canReview&&t.stage!=="extracted"?`<button class="sm ok" onclick="rvAct('${t.event_id}','approve')">通过</button>
+          <button class="sm bad" onclick="rvReject('${t.event_id}')">驳回</button>`:""}
+        </td></tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("rvTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function rvAct(id,act){
+  try{ await api(`/review/${id}/${act}`,{method:"POST"});
+    toast(act==="approve"?"已通过":"已提交"); loadReview(); }
+  catch(e){ toast("失败:"+e.message); }
+}
+async function rvReject(id){
+  const reason=prompt("驳回原因:"); if(!reason)return;
+  try{ await api(`/review/${id}/reject`,{method:"POST",body:JSON.stringify({reason})});
+    toast("已驳回"); loadReview(); }catch(e){ toast("失败:"+e.message); }
+}
+
+/* ---------- 线索 ---------- */
+async function vLeads(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<h2>销售线索</h2><p class="sub">事件→产品映射与评分,按采购窗口分阶段</p><div id="ldTable">加载中…</div>`;
+  try{
+    const rows=await api(`/leads?need_id=${NEED}`);
+    if(!rows.length){ document.getElementById("ldTable").innerHTML=`<p class="muted">暂无线索。事件发布后自动生成。</p>`; return; }
+    document.getElementById("ldTable").innerHTML=`<table><thead><tr>
+      <th>目标单位</th><th>评分</th><th>采购窗口</th><th>建议产品</th><th>话术依据</th></tr></thead><tbody>`+
+      rows.map(l=>`<tr>
+        <td>${esc(l.target_org)}</td><td><b>${l.score}</b></td>
+        <td><span class="pill info">${esc(l.window_stage)}</span></td>
+        <td>${(l.products||[]).map(p=>`<span class="tag">${esc(p)}</span>`).join("")}</td>
+        <td class="muted" style="max-width:340px">${esc(l.talk_track||"")}</td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("ldTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+
+/* ---------- 数据源 ---------- */
+async function vSources(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<h2>数据源</h2><p class="sub">32 个种子源 + 自动发现的候选源</p><div id="srcTable">加载中…</div>`;
+  try{
+    const rows=await api(`/sources`);
+    document.getElementById("srcTable").innerHTML=`<table><thead><tr>
+      <th>名称</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>半自动</th><th>文档数</th></tr></thead><tbody>`+
+      rows.map(s=>`<tr>
+        <td>${esc(s.name)}</td><td>${s.kind==="query"?"检索型":"页面型"}</td>
+        <td><span class="pill ${s.credibility==="S1"?"ok":s.credibility==="S4"?"warn":"info"}">${s.credibility}</span></td>
+        <td>${s.tier}</td><td>${esc(s.lifecycle)}</td>
+        <td>${s.manual_assist?'<span class="pill warn">是</span>':"否"}</td><td>${s.docs_total}</td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("srcTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+
+/* ---------- 采集 ---------- */
+async function vCrawl(){
+  const v=document.getElementById("view");
+  const canRun=["analyst","editor","admin"].includes(ROLE);
+  v.innerHTML=`<h2>采集</h2><p class="sub">手动触发一轮采集(真实访问互联网),并查看执行记录与错误</p>
+    <div class="banner">⚠️ 点击“开始采集”会真实访问网站。部分源需人工辅助或有反爬,失败会记录在下方错误报告中,属正常现象。</div>
+    <div class="toolbar">
+      <label style="margin:0">源数量上限</label>
+      <select id="cLimit"><option>3</option><option>5</option><option>10</option></select>
+      ${canRun?`<button onclick="runCrawl()" id="runBtn">开始采集</button>`:'<span class="pill warn">当前角色无采集权限</span>'}
+      <button class="ghost sm" onclick="loadRuns()">刷新记录</button>
+    </div>
+    <div id="crawlOut"></div>
+    <h3 style="font-size:15px;margin-top:20px">最近采集记录 / 错误报告</h3>
+    <div id="runsTable">加载中…</div>`;
+  loadRuns();
+}
+async function runCrawl(){
+  const btn=document.getElementById("runBtn"); btn.disabled=true; btn.textContent="采集中…(可能需数十秒)";
+  const limit=parseInt(document.getElementById("cLimit").value);
+  try{
+    const r=await api("/crawl/run",{method:"POST",body:JSON.stringify({need_id:NEED,limit_sources:limit})});
+    document.getElementById("crawlOut").innerHTML=`<div class="lossbox">
+      本轮采集源 <b>${r.sources}</b> 个,处理文档 <b>${(r.processed||[]).length}</b> 条,
+      候选新源 <b>${(r.candidates||[]).length}</b> 个,刷新线索 <b>${r.leads_refreshed}</b>。
+      ${(r.processed||[]).filter(p=>p.action==="draft_created").length} 条生成草稿事件。</div>`;
+    toast("采集完成"); loadRuns();
+  }catch(e){ document.getElementById("crawlOut").innerHTML=`<p class="pill bad">采集失败:${esc(e.message)}</p>`; }
+  finally{ btn.disabled=false; btn.textContent="开始采集"; }
+}
+async function loadRuns(){
+  try{
+    const rows=await api("/crawl/runs?limit=40");
+    if(!rows.length){ document.getElementById("runsTable").innerHTML=`<p class="muted">尚无采集记录。</p>`; return; }
+    document.getElementById("runsTable").innerHTML=`<table><thead><tr>
+      <th>源</th><th>状态</th><th>发现</th><th>新增</th><th>错误</th><th>时间</th></tr></thead><tbody>`+
+      rows.map(r=>`<tr>
+        <td>${esc(r.source)}</td>
+        <td>${r.status==="ok"?'<span class="pill ok">成功</span>':r.status==="failed"?'<span class="pill bad">失败</span>':'<span class="pill warn">部分</span>'}</td>
+        <td>${r.found}</td><td>${r.new}</td>
+        <td class="muted" style="max-width:280px">${esc(r.error||"")}</td>
+        <td class="muted">${esc((r.started_at||"").replace("T"," ").slice(0,16))}</td>
+      </tr>`).join("")+`</tbody></table>`;
+  }catch(e){ document.getElementById("runsTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+
+/* ---------- 抽屉 ---------- */
+function drawer(html){ document.getElementById("drawerBody").innerHTML=html;
+  document.getElementById("drawer").classList.add("open"); document.getElementById("mask").style.display="block"; }
+function closeDrawer(){ document.getElementById("drawer").classList.remove("open");
+  document.getElementById("mask").style.display="none"; }
+
+/* ---------- 启动 ---------- */
+if(TOKEN) boot();
+document.getElementById("p").addEventListener("keydown",e=>{ if(e.key==="Enter")login(); });
+</script>
+</body>
+</html>

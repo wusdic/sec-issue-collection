@@ -5,6 +5,21 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _load_dotenv(path: Path):
+    """轻量 .env 加载:CLI 与 API 都自动读取项目根目录 .env;已存在的环境变量优先。"""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
+_load_dotenv(BASE_DIR / ".env")
+
+
 class Settings:
     # 数据库:默认 SQLite(开发/测试),生产用 PostgreSQL
     database_url: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/data/app.db")
@@ -15,6 +30,10 @@ class Settings:
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
     llm_screen_model: str = os.getenv("LLM_SCREEN_MODEL", "")  # 粗筛用小模型,空则同 llm_model
+    # Embedding 独立配置(很多聊天模型不支持向量接口,需分开);留空则回退聊天模型/接口
+    llm_embed_model: str = os.getenv("LLM_EMBED_MODEL", "")
+    llm_embed_base_url: str = os.getenv("LLM_EMBED_BASE_URL", "")
+    llm_embed_api_key: str = os.getenv("LLM_EMBED_API_KEY", "")
 
     # 原文存档
     archive_root: str = os.getenv("ARCHIVE_ROOT", str(BASE_DIR / "data" / "archive"))

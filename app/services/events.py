@@ -87,7 +87,10 @@ def create_draft(db: Session, need_id: str, payload: dict, doc=None,
             "snapshot_id": doc.snapshot_id or "",
         }]
     summary = f"{payload.get('title','')} {payload.get('org_name','')} {' '.join(payload.get('attack_type') or [])}"
-    ev.embedding = get_llm().embed(summary)
+    try:
+        ev.embedding = get_llm().embed(summary)
+    except Exception:  # noqa: BLE001 embedding 服务不可用时降级:跳过第三层语义去重,不阻断入库
+        ev.embedding = None
     _sync_columns(ev)
     db.add(ev)
     db.flush()
