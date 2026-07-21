@@ -112,3 +112,38 @@ def test_search_engine_not_early_stopped(db, need, monkeypatch):
     pipeline.crawl_source(db, need, src, queries=["词"], max_pages=3, do_archive=False)
     # 搜索引擎不早停 → 翻满3页,拿到第2页的新内容
     assert 2 in fetched, f"搜索引擎应翻满不早停: {fetched}"
+
+
+def test_page_source_paginates_and_early_stops(db, need, monkeypatch):
+    """页面型(官方栏目/公众号历史,时间倒序)现在也能翻页+早停。"""
+    settings.crawl_stop_consecutive_seen = 4
+    from app.models import Source, RawDocument
+    from app.services import url_tools
+    src = Source(name="某官网栏目", kind="page", adapter="generic_list", credibility="S1",
+                 tier="B", lifecycle="active", serves_needs=[need.id], adapter_config={})
+    db.add(src); db.flush()
+    olds = [f"https://gov/old{i}" for i in range(8)]
+    for u in olds:
+        db.add(RawDocument(need_id=need.id, source_id=src.id, url=u,
+                           url_normalized=url_tools.normalize_url(u), content_text="旧"))
+    db.flush()
+
+    pages = {0: [DiscoveredItem(url=f"https://gov/new{i}", title=f"新{i}") for i in range(2)],
+             1: [DiscoveredItem(url=u, title="旧") for u in olds[:4]],
+             2: [DiscoveredItem(url=u, title="旧") for u in olds[4:8]]}
+    fetched = []
+
+    class _PageAdapter:
+        kind = "page"
+        def discover_page(self, page):
+            fetched.append(page)
+            return pages.get(page)
+
+    monkeypatch.setattr(pipeline, "get_adapter", lambda source: _PageAdapter())
+    monkeypatch.setattr(pipeline.fetcher, "fetch",
+                        lambda url, **k: pipeline.fetcher.FetchResult(url, url, 200, "<p>x</p>"))
+    monkeypatch.setattr("time.sleep", lambda *a: None)
+    run = pipeline.crawl_source(db, need, src, max_pages=3, do_archive=False)
+    # 第0页2条新,第1页连续4条已采过 → 早停,不翻第2页
+    assert 2 not in fetched, f"页面型应早停不翻第2页: {fetched}"
+    assert run.urls_new == 2

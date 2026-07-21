@@ -203,75 +203,91 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     return result
 
 
+def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
+    """早停开关与阈值。搜索引擎(相关性排序)默认不早停;时间倒序列表/公众号历史早停。
+    adapter_config: list_order(time_desc/relevance)、no_early_stop、stop_consecutive 可覆盖。"""
+    cfg_order = (source.adapter_config or {}).get("list_order")
+    if cfg_order == "time_desc":
+        ordered = True
+    elif cfg_order == "relevance":
+        ordered = False
+    else:
+        ordered = not isinstance(adapter, SearchEngineAdapter)
+    no_early_stop = bool((source.adapter_config or {}).get("no_early_stop"))
+    early_enabled = ordered and not no_early_stop
+    stop_th = int((source.adapter_config or {}).get("stop_consecutive")
+                  or settings.crawl_stop_consecutive_seen)
+    return early_enabled, stop_th
+
+
+def _consume_paginated(db, need, source, run, fetch_page, max_pages,
+                       early_enabled, stop_th, do_archive, stats):
+    """逐页消费 + 连续重复早停(query/page 共用)。fetch_page(page)->list|None。
+    返回 (found, pages_used, truncated, snapshot)。"""
+    found, pages_used, truncated, snapshot = 0, 0, False, []
+    consecutive_seen = 0
+    early = False
+    for page in range(max_pages):
+        page_items = fetch_page(page)
+        if not page_items:
+            break
+        pages_used += 1
+        found += len(page_items)
+        snapshot += [{"url": i.url, "title": i.title} for i in page_items[:20]]
+        page_new = 0
+        for item in page_items:
+            prev_skip = stats["skipped"]
+            ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
+            if stats["skipped"] > prev_skip:          # 已采过
+                consecutive_seen += 1
+                if early_enabled and consecutive_seen >= stop_th:
+                    early = True
+                    break
+            else:                                      # 新增(或失败)→ 重置连续计数
+                consecutive_seen = 0
+                page_new += 1
+        if early:
+            break
+        if early_enabled and page_new == 0 and page_items:
+            early = True  # 整页无新增 → 后续更旧,停翻
+            break
+        if page < max_pages - 1:
+            time.sleep(settings.crawl_delay_seconds)
+    if pages_used == max_pages and not early:
+        truncated = True  # 翻满仍未遇到重复区,可能还有更多
+    return found, pages_used, truncated, snapshot
+
+
 def crawl_source(db: Session, need: NeedProfile, source: Source,
                  queries: list[str] | None = None, behavior: str = "B1",
                  max_pages: int = 1, do_archive: bool = True) -> CrawlRun:
-    """执行一个源的抓取(页面型 discover / 查询型 search),含水位线与截断上报。"""
+    """执行一个源的抓取(页面型 discover / 查询型 search),含翻页早停增量与截断上报。"""
     run = CrawlRun(source_id=source.id)
     db.add(run)
     db.flush()
     adapter = get_adapter(source)
     stats = {"new": 0, "skipped": 0, "failed": 0, "blacklist": 0}
     found = 0
+    early_enabled, stop_th = _early_stop_config(source, adapter)
     try:
         if source.kind == "query":
-            # 翻页早停仅对"时间倒序"的源安全:搜索引擎按相关性排序,连续重复不代表后面无新,
-            # 故默认对搜索引擎类不早停(翻满去重),仅对时间倒序的列表/公众号历史早停。
-            # adapter_config.list_order = time_desc/relevance 可覆盖;no_early_stop 强制关闭;
-            # adapter_config.stop_consecutive 可源级覆盖全局阈值。
-            cfg_order = (source.adapter_config or {}).get("list_order")
-            if cfg_order == "time_desc":
-                ordered = True
-            elif cfg_order == "relevance":
-                ordered = False
-            else:
-                ordered = not isinstance(adapter, SearchEngineAdapter)
-            no_early_stop = bool((source.adapter_config or {}).get("no_early_stop"))
-            early_enabled = ordered and not no_early_stop
-            stop_th = int((source.adapter_config or {}).get("stop_consecutive")
-                          or settings.crawl_stop_consecutive_seen)
             has_pager = hasattr(adapter, "search_page")
             for q in queries or []:
                 qh = url_tools.query_hash(q)
                 wm = db.get(SearchWatermark, (source.id, qh))
                 before = stats["new"]
-                q_found, pages_used, truncated, snapshot = 0, 0, False, []
-                consecutive_seen = 0
-                early = False
-                for page in range(max_pages):
-                    page_items = adapter.search_page(q, page) if has_pager else (
-                        adapter.search(q, max_pages=1)[0] if page == 0 else None)
-                    if not page_items:
-                        break
-                    pages_used += 1
-                    q_found += len(page_items)
-                    snapshot += [{"url": i.url, "title": i.title} for i in page_items[:20]]
-                    page_new = 0
-                    for item in page_items:
-                        prev_skip = stats["skipped"]
-                        ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
-                        if stats["skipped"] > prev_skip:      # 这条已采过
-                            consecutive_seen += 1
-                            if early_enabled and consecutive_seen >= stop_th:
-                                early = True
-                                break
-                        else:                                  # 新增(或失败)→ 重置连续计数
-                            consecutive_seen = 0
-                            page_new += 1
-                    if early:
-                        break
-                    if early_enabled and page_new == 0 and page_items:
-                        early = True  # 整页无新增 → 后续更旧,停翻
-                        break
-                    if page < max_pages - 1:
-                        time.sleep(settings.crawl_delay_seconds)
-                if pages_used == max_pages and not early:
-                    truncated = True  # 翻满仍未遇到重复区,可能还有更多
-                kr = KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
-                                query=q, pages_fetched=pages_used, truncated=truncated,
-                                results=q_found, new_docs=stats["new"] - before,
-                                result_snapshot=snapshot[:50])
-                db.add(kr)
+
+                def fetch_page(page, _q=q):
+                    if has_pager:
+                        return adapter.search_page(_q, page)
+                    return adapter.search(_q, max_pages=1)[0] if page == 0 else None
+
+                q_found, pages_used, truncated, snapshot = _consume_paginated(
+                    db, need, source, run, fetch_page, max_pages, early_enabled, stop_th, do_archive, stats)
+                db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
+                                  query=q, pages_fetched=pages_used, truncated=truncated,
+                                  results=q_found, new_docs=stats["new"] - before,
+                                  result_snapshot=snapshot[:50]))
                 found += q_found
                 if wm:
                     wm.last_ran_at = datetime.utcnow()
@@ -279,10 +295,10 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                     db.add(SearchWatermark(source_id=source.id, query_hash=qh,
                                            last_ran_at=datetime.utcnow()))
         else:
-            items = adapter.discover()
-            found = len(items)
-            for item in items:
-                ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
+            # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
+            found, _pu, _tr, _sn = _consume_paginated(
+                db, need, source, run, lambda page: adapter.discover_page(page),
+                max_pages, early_enabled, stop_th, do_archive, stats)
         run.status = "ok"
         source.last_success_at = datetime.utcnow()
         source.fail_streak = 0
