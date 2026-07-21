@@ -14,7 +14,7 @@ from app.models import (
     CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
 from app.services import archive, dedup, discovery, fetcher, reputation, url_tools
-from app.services.adapters import DiscoveredItem, get_adapter
+from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
 from app.services.profiles import get_active_dictionaries
@@ -215,9 +215,21 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     found = 0
     try:
         if source.kind == "query":
-            # 增量翻页早停:列表按时间倒序,连续遇到 N 条已采过即停翻(no_early_stop 源除外)
+            # 翻页早停仅对"时间倒序"的源安全:搜索引擎按相关性排序,连续重复不代表后面无新,
+            # 故默认对搜索引擎类不早停(翻满去重),仅对时间倒序的列表/公众号历史早停。
+            # adapter_config.list_order = time_desc/relevance 可覆盖;no_early_stop 强制关闭;
+            # adapter_config.stop_consecutive 可源级覆盖全局阈值。
+            cfg_order = (source.adapter_config or {}).get("list_order")
+            if cfg_order == "time_desc":
+                ordered = True
+            elif cfg_order == "relevance":
+                ordered = False
+            else:
+                ordered = not isinstance(adapter, SearchEngineAdapter)
             no_early_stop = bool((source.adapter_config or {}).get("no_early_stop"))
-            stop_th = settings.crawl_stop_consecutive_seen
+            early_enabled = ordered and not no_early_stop
+            stop_th = int((source.adapter_config or {}).get("stop_consecutive")
+                          or settings.crawl_stop_consecutive_seen)
             has_pager = hasattr(adapter, "search_page")
             for q in queries or []:
                 qh = url_tools.query_hash(q)
@@ -240,7 +252,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                         ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
                         if stats["skipped"] > prev_skip:      # 这条已采过
                             consecutive_seen += 1
-                            if not no_early_stop and consecutive_seen >= stop_th:
+                            if early_enabled and consecutive_seen >= stop_th:
                                 early = True
                                 break
                         else:                                  # 新增(或失败)→ 重置连续计数
@@ -248,7 +260,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                             page_new += 1
                     if early:
                         break
-                    if not no_early_stop and page_new == 0 and page_items:
+                    if early_enabled and page_new == 0 and page_items:
                         early = True  # 整页无新增 → 后续更旧,停翻
                         break
                     if page < max_pages - 1:

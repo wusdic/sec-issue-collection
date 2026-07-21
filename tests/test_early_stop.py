@@ -78,3 +78,37 @@ def test_no_early_stop_flag(db, need, monkeypatch):
     pipeline.crawl_source(db, need, src, queries=["词"], max_pages=3, do_archive=False)
     # no_early_stop:即使前两页全重复也翻到第2页拿到新内容
     assert 2 in adapter.fetched_pages
+
+
+def test_search_engine_not_early_stopped(db, need, monkeypatch):
+    """搜索引擎(相关性排序)即使前面全重复也不早停,翻满 max_pages 避免漏采。"""
+    from app.services.adapters import BaiduSearchAdapter
+    settings.crawl_stop_consecutive_seen = 3
+    from app.models import Source
+    src = Source(name="百度搜索", kind="query", adapter="baidu_search", credibility="S4",
+                 tier="A", lifecycle="active", serves_needs=[need.id], adapter_config={})
+    db.add(src); db.flush()
+    from app.models import RawDocument
+    from app.services import url_tools
+    olds = [f"https://se/old{i}" for i in range(8)]
+    for u in olds:
+        db.add(RawDocument(need_id=need.id, source_id=src.id, url=u,
+                           url_normalized=url_tools.normalize_url(u), content_text="旧"))
+    db.flush()
+
+    # 真实 BaiduSearchAdapter(SearchEngineAdapter 子类),但 search_page 用假数据
+    pages = [[DiscoveredItem(url=u, title="旧") for u in olds[:4]],
+             [DiscoveredItem(url=u, title="旧") for u in olds[4:8]],
+             [DiscoveredItem(url="https://se/new", title="新")]]
+    fetched = []
+    class _FakeBaidu(BaiduSearchAdapter):
+        def search_page(self, query, page, time_filter=None):
+            fetched.append(page)
+            return pages[page] if page < len(pages) else None
+    monkeypatch.setattr(pipeline, "get_adapter", lambda source: _FakeBaidu(source))
+    monkeypatch.setattr(pipeline.fetcher, "fetch",
+                        lambda url, **k: pipeline.fetcher.FetchResult(url, url, 200, "<p>x</p>"))
+    monkeypatch.setattr("time.sleep", lambda *a: None)
+    pipeline.crawl_source(db, need, src, queries=["词"], max_pages=3, do_archive=False)
+    # 搜索引擎不早停 → 翻满3页,拿到第2页的新内容
+    assert 2 in fetched, f"搜索引擎应翻满不早停: {fetched}"
