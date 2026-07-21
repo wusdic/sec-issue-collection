@@ -147,3 +147,58 @@ def test_page_source_paginates_and_early_stops(db, need, monkeypatch):
     # 第0页2条新,第1页连续4条已采过 → 早停,不翻第2页
     assert 2 not in fetched, f"页面型应早停不翻第2页: {fetched}"
     assert run.urls_new == 2
+
+
+def test_generic_list_auto_follows_next_page(db, need, monkeypatch):
+    """GenericListAdapter 零配置自动跟随「下一页」锚点翻页,无需人工配 page_url_template。"""
+    from app.models import Source
+    from app.services import adapters
+    from app.services.adapters import GenericListAdapter, find_next_page_url
+    from bs4 import BeautifulSoup
+
+    # find_next_page_url 单元:rel=next / 「下一页」文本都能识别,「上一页」不误判
+    soup = BeautifulSoup(
+        '<a rel="next" href="/p2">继续</a>'
+        '<a href="/prev">上一页</a><a href="/nx">下一页 »</a>', "lxml")
+    assert find_next_page_url(soup, "https://x.com/list") == "https://x.com/p2"
+    soup2 = BeautifulSoup('<a href="/prev">上一页</a><a href="/nx?pg=2">下一页</a>', "lxml")
+    assert find_next_page_url(soup2, "https://x.com/list") == "https://x.com/nx?pg=2"
+    assert find_next_page_url(BeautifulSoup("<a href='/prev'>上一页</a>", "lxml"), "https://x.com/") is None
+
+    # 端到端:三页 HTML,页间靠「下一页」锚点自动串联(不提供任何翻页模板)
+    pages_html = {
+        "https://gl.test/list": (
+            '<div class="art"><a href="/a/new1">安全事件新一</a></div>'
+            '<div class="art"><a href="/a/new2">安全事件新二</a></div>'
+            '<a class="pager" href="/list?p=2">下一页</a>'),
+        "https://gl.test/list?p=2": (
+            '<div class="art"><a href="/a/old1">安全事件旧一</a></div>'
+            '<a class="pager" href="/list?p=3">下一页</a>'),
+        "https://gl.test/list?p=3": '<div class="art"><a href="/a/old2">安全事件旧二</a></div>',
+    }
+    fetched_urls = []
+
+    def fake_fetch(url, **k):
+        # 列表页返回带「下一页」的 HTML;文章正文页返回占位(adapters/pipeline 共用同一 fetcher 模块)
+        if url in pages_html:
+            fetched_urls.append(url)
+            return pipeline.fetcher.FetchResult(url, url, 200, pages_html[url])
+        return pipeline.fetcher.FetchResult(url, url, 200, "<p>x</p>")
+
+    monkeypatch.setattr(adapters.fetcher, "fetch", fake_fetch)
+    monkeypatch.setattr("time.sleep", lambda *a: None)
+
+    src = Source(name="自动翻页栏目", kind="page", adapter="generic_list", credibility="S1",
+                 tier="B", lifecycle="active", serves_needs=[need.id],
+                 entry_url="https://gl.test/list",
+                 adapter_config={"list_template": {"item_selector": "div.art a"}})
+    db.add(src); db.flush()
+
+    adapter = GenericListAdapter(src)
+    monkeypatch.setattr(pipeline, "get_adapter", lambda source: adapter)
+    run = pipeline.crawl_source(db, need, src, max_pages=3, do_archive=False)
+
+    # 三页全靠自动探测的「下一页」串起来,共 4 条全新
+    assert "https://gl.test/list?p=2" in fetched_urls, f"应自动翻到第2页: {fetched_urls}"
+    assert "https://gl.test/list?p=3" in fetched_urls, f"应自动翻到第3页: {fetched_urls}"
+    assert run.urls_new == 4
