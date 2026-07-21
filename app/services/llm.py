@@ -37,6 +37,7 @@ class OpenAICompatLLM(BaseLLM):
         self.embed_base_url = (embed_base_url or base_url).rstrip("/")
         self.embed_api_key = embed_api_key or api_key
         self.embed_model = embed_model or model
+        self._embed_dialect = None  # 首次成功后记住该接口的请求方言,避免每次都试
 
     def _chat(self, system: str, user: str, use_json_format: bool = True) -> str:
         body = {
@@ -88,18 +89,31 @@ class OpenAICompatLLM(BaseLLM):
         raise LLMError(f"LLM 调用失败: {last_err}")
 
     def embed(self, text: str) -> list[float]:
-        resp = httpx.post(
-            f"{self.embed_base_url}/embeddings",
-            headers={"Authorization": f"Bearer {self.embed_api_key}"},
-            json={"model": self.embed_model, "input": text[:8000]},
-            timeout=self.timeout,
-        )
-        if resp.status_code >= 400:
-            raise LLMError(f"HTTP {resp.status_code}: {_api_err(resp)}")
-        vec = _extract_embedding(resp.json())
-        if vec is None:
-            raise LLMError(f"无法解析向量返回(接口格式不识别): {str(resp.json())[:200]}")
-        return vec
+        """向量化。不同厂商 embedding 请求格式不同(OpenAI 用 input,MiniMax 用 texts+type),
+        自动尝试多种方言,成功后记住,不针对某一家硬编码。"""
+        text = text[:8000]
+        url = f"{self.embed_base_url}/embeddings"
+        headers = {"Authorization": f"Bearer {self.embed_api_key}"}
+        dialects = [self._embed_dialect] if self._embed_dialect else _EMBED_DIALECTS
+        last_err = None
+        for build in dialects:
+            payload = build(self.embed_model, text)
+            try:
+                resp = httpx.post(url, headers=headers, json=payload, timeout=self.timeout)
+            except Exception as e:  # noqa: BLE001
+                last_err = str(e)
+                continue
+            if resp.status_code >= 400:
+                last_err = f"HTTP {resp.status_code}: {_api_err(resp)}"
+                continue
+            data = resp.json()
+            vec = _extract_embedding(data)
+            if vec is None:
+                last_err = _api_err(resp) or f"格式不识别: {str(data)[:150]}"
+                continue
+            self._embed_dialect = build  # 记住成功方言
+            return vec
+        raise LLMError(f"向量接口调用失败: {last_err}")
 
 
 # ---- 跨厂商兼容工具:响应解析与错误提取(不针对某一家特判) ----
@@ -135,6 +149,15 @@ def _extract_chat_content(data: dict):
     except (KeyError, IndexError, TypeError):
         pass
     return None
+
+
+# Embedding 请求方言(不同厂商参数名不同,按序尝试):
+#  OpenAI/Qwen 用 input;MiniMax 用 texts + type
+_EMBED_DIALECTS = [
+    lambda model, text: {"model": model, "input": text},
+    lambda model, text: {"model": model, "input": [text]},
+    lambda model, text: {"model": model, "texts": [text], "type": "db"},
+]
 
 
 def _extract_embedding(data: dict):

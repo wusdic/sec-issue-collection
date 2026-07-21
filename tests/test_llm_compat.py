@@ -57,6 +57,35 @@ def test_format_unsupported_detection():
     assert not _looks_like_format_unsupported("HTTP 401: auth failed")
 
 
+def test_embed_dialect_fallback(monkeypatch):
+    """embedding 请求方言自动降级:OpenAI input 报错 → 切 MiniMax texts 成功,并记住方言。"""
+    import json as _json
+    calls = []
+
+    class R:
+        def __init__(self, code, body):
+            self.status_code = code
+            self._b = body
+            self.text = _json.dumps(body)
+        def json(self):
+            return self._b
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json)
+        if "input" in json:  # OpenAI 方言 → MiniMax 报缺 texts
+            return R(200, {"vectors": None, "base_resp": {"status_code": 2013, "status_msg": "missing texts"}})
+        if "texts" in json:  # MiniMax 方言 → 成功
+            return R(200, {"vectors": [[0.1, 0.2]], "base_resp": {"status_code": 0}})
+        return R(400, {"error": "bad"})
+
+    monkeypatch.setattr(llm.httpx, "post", fake_post)
+    c = OpenAICompatLLM("http://x/v1", "k", "m", embed_model="embo-01")
+    assert c.embed("文本") == [0.1, 0.2]
+    calls.clear()
+    c.embed("再来")  # 已记住方言,直接用 texts
+    assert "texts" in calls[0] and len(calls) == 1
+
+
 def test_response_format_fallback(monkeypatch):
     """response_format 报错时自动关闭并重试成功(不消耗 retries)。"""
     c = OpenAICompatLLM("http://x/v1", "k", "m")
