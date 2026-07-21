@@ -373,3 +373,36 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+class CrawlJob(Base):
+    """一次采集任务的持久化状态与进度(后台异步执行,任何页面/刷新可查)。"""
+    __tablename__ = "crawl_job"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running/done/failed/canceled
+    phase: Mapped[str] = mapped_column(String(32), default="准备")       # 当前阶段(人读)
+    total_sources: Mapped[int] = mapped_column(Integer, default=0)
+    done_sources: Mapped[int] = mapped_column(Integer, default=0)
+    total_docs: Mapped[int] = mapped_column(Integer, default=0)          # 待处理文档总数
+    done_docs: Mapped[int] = mapped_column(Integer, default=0)           # 已处理文档数
+    new_docs: Mapped[int] = mapped_column(Integer, default=0)            # 新抓取入库文档
+    kept_docs: Mapped[int] = mapped_column(Integer, default=0)           # 粗筛判为相关
+    dropped_docs: Mapped[int] = mapped_column(Integer, default=0)        # 粗筛判为不相干
+    new_events: Mapped[int] = mapped_column(Integer, default=0)          # 生成草稿事件
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    triggered_by: Mapped[int | None] = mapped_column(ForeignKey("app_user.id"), nullable=True)
+    limit_sources: Mapped[int] = mapped_column(Integer, default=3)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CrawlLog(Base):
+    """采集详细日志(故障排查用):每一步、每个源、每次失败都记。"""
+    __tablename__ = "crawl_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("crawl_job.id"), index=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    level: Mapped[str] = mapped_column(String(8), default="info")  # info/warn/error
+    source: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    message: Mapped[str] = mapped_column(Text)

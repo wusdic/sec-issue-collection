@@ -133,10 +133,17 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
 
     cfg = need.config
     verdict = screen_document(cfg, doc.title or "", doc.content_text or "")
-    doc.screen_score = verdict["confidence"]
+    conf = verdict["confidence"]
+    doc.screen_score = conf
     doc.screen_reason = verdict["reason"]
-    if not verdict["is_candidate"]:
-        doc.screen_status = "manual_queue" if verdict["confidence"] >= 0.4 else "screened_out"
+    # 阈值双重把关(可在设置页调严):入选需 is_candidate 且分数≥keep;0.4-0.6 待人工;更低判为不相干淘汰
+    if not (verdict["is_candidate"] and conf >= settings.screen_keep_threshold):
+        if conf >= settings.screen_manual_threshold:
+            doc.screen_status = "manual_queue"
+            doc.screen_reason = f"粗筛存疑({conf:.2f}):{verdict['reason']}"
+        else:
+            doc.screen_status = "screened_out"
+            doc.screen_reason = f"判为不相干({conf:.2f}):{verdict['reason']}"
         result["action"] = doc.screen_status
         db.flush()
         return result

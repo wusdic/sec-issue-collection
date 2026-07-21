@@ -58,6 +58,10 @@ class Settings:
     semantic_recall_threshold: float = float(os.getenv("SEMANTIC_RECALL_THRESHOLD", "0.88"))
     fingerprint_window_days: int = int(os.getenv("FINGERPRINT_WINDOW_DAYS", "14"))
 
+    # 粗筛(过滤不相干内容):入选与人工待定阈值
+    screen_keep_threshold: float = float(os.getenv("SCREEN_KEEP_THRESHOLD", "0.6"))
+    screen_manual_threshold: float = float(os.getenv("SCREEN_MANUAL_THRESHOLD", "0.4"))
+
     # Celery
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 

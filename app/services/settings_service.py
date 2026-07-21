@@ -26,6 +26,10 @@ EDITABLE = [
     ("fetch_timeout", "抓取超时(秒)", "采集", "float", False, "单页抓取超时,默认 20"),
     ("crawl_delay_seconds", "抓取间隔(秒)", "采集", "float", False, "请求之间的礼貌延时,默认 2"),
     ("playwright_enabled", "启用浏览器渲染/截图", "采集", "bool", False, "动态页与整页截图需开启(需装 Playwright)"),
+    ("screen_keep_threshold", "粗筛入选阈值", "采集", "float", False,
+     "文章相关度≥此值才判为相关并抽取,0-1。调高=更严、少收不相干内容;默认 0.6"),
+    ("screen_manual_threshold", "粗筛待定阈值", "采集", "float", False,
+     "相关度在『待定阈值~入选阈值』之间的进人工待定,低于此值直接判为不相干过滤;默认 0.4"),
 
     ("simhash_hamming_max", "同稿去重阈值", "去重", "int", False, "SimHash 海明距离≤此值判为转载;越大越激进,默认 3"),
     ("semantic_recall_threshold", "语义去重阈值", "去重", "float", False, "事件摘要余弦相似度≥此值判疑似同事件,0-1,默认 0.88"),

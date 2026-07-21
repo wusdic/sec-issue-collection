@@ -117,15 +117,36 @@ def blacklist_candidate(identity_key: str, body: BlacklistIn, db: Session = Depe
 # ---------- 文档与存档 M2/M11 ----------
 
 @api.get("/documents")
-def list_documents(need_id: str, status: str | None = None, limit: int = 50,
-                   db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+def list_documents(need_id: str, status: str | None = None, relevant: bool = False,
+                   limit: int = 100, db: Session = Depends(get_session),
+                   _: AppUser = Depends(current_user)):
     q = db.query(RawDocument).filter_by(need_id=need_id)
-    if status:
+    if relevant:  # 只看相关:粗筛入选(不含被过滤的不相干内容)
+        q = q.filter(RawDocument.screen_status.in_(["screened_in", "manual_queue"]))
+    elif status:
         q = q.filter_by(screen_status=status)
-    return [{"id": d.id, "title": d.title, "url": d.url, "publisher": d.publisher,
+    return [{"id": d.id, "title": d.title, "url": d.final_url or d.url, "publisher": d.publisher,
              "screen_status": d.screen_status, "screen_score": d.screen_score,
-             "is_primary": d.is_primary, "snapshot_id": d.snapshot_id}
+             "screen_reason": d.screen_reason, "is_primary": d.is_primary,
+             "snapshot_id": d.snapshot_id,
+             "fetched_at": d.fetched_at.isoformat() if d.fetched_at else None}
             for d in q.order_by(RawDocument.id.desc()).limit(limit).all()]
+
+
+@api.get("/documents/{doc_id}")
+def get_document(doc_id: int, db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """文档详情:抓回的正文全文 + 元数据(点标题查看原文内容)。"""
+    d = db.get(RawDocument, doc_id)
+    if not d:
+        raise HTTPException(404, "文档不存在")
+    return {"id": d.id, "title": d.title, "url": d.url, "final_url": d.final_url,
+            "publisher": d.publisher, "screen_status": d.screen_status,
+            "screen_score": d.screen_score, "screen_reason": d.screen_reason,
+            "is_primary": d.is_primary, "snapshot_id": d.snapshot_id,
+            "http_status": d.http_status,
+            "published_at": d.published_at.isoformat() if d.published_at else None,
+            "fetched_at": d.fetched_at.isoformat() if d.fetched_at else None,
+            "content_text": d.content_text or ""}
 
 
 @api.get("/archives/{snapshot_id}")
@@ -411,19 +432,65 @@ class CrawlIn(BaseModel):
     do_archive: bool = True
 
 
+def _job_dict(job):
+    if not job:
+        return None
+    return {
+        "id": job.id, "status": job.status, "phase": job.phase,
+        "total_sources": job.total_sources, "done_sources": job.done_sources,
+        "total_docs": job.total_docs, "done_docs": job.done_docs,
+        "new_docs": job.new_docs, "kept_docs": job.kept_docs,
+        "dropped_docs": job.dropped_docs, "new_events": job.new_events,
+        "error": job.error, "limit_sources": job.limit_sources,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }
+
+
 @api.post("/crawl/run")
 def crawl_run_now(body: CrawlIn, db: Session = Depends(get_session),
-                  _: AppUser = Depends(require_roles("analyst", "editor"))):
-    """手动触发一轮采集(真实访问网络)。前端按钮调用;limit_sources 控制规模。"""
-    from app.services.scheduler import run_daily as _run
-    stats = _run(db, body.need_id, do_archive=body.do_archive, limit_sources=body.limit_sources)
-    return stats
+                  user: AppUser = Depends(require_roles("analyst", "editor"))):
+    """后台启动一轮采集(不阻塞),返回任务 id;已有运行中任务则返回它。"""
+    from app.services import crawl_runner
+    running = crawl_runner.has_running(db, body.need_id)
+    if running:
+        return {"job_id": running.id, "already_running": True, "job": _job_dict(running)}
+    jid = crawl_runner.start_job(body.need_id, body.limit_sources, user.id)
+    return {"job_id": jid, "already_running": False}
+
+
+@api.get("/crawl/current")
+def crawl_current(need_id: str = "sec_events", db: Session = Depends(get_session),
+                  _: AppUser = Depends(current_user)):
+    """当前/最近一次采集任务的状态与进度(任何页面/刷新都能查到是否在运行)。"""
+    from app.services import crawl_runner
+    return {"job": _job_dict(crawl_runner.current_job(db, need_id))}
+
+
+@api.get("/crawl/jobs/{job_id}/logs")
+def crawl_job_logs(job_id: int, level: str | None = None, limit: int = 300,
+                   db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """采集详细日志(可按 level 过滤:info/warn/error),用于排查故障。"""
+    from app.models import CrawlLog
+    q = db.query(CrawlLog).filter_by(job_id=job_id)
+    if level:
+        q = q.filter_by(level=level)
+    rows = q.order_by(CrawlLog.id.desc()).limit(limit).all()
+    return [{"at": r.at.isoformat(), "level": r.level, "source": r.source, "message": r.message}
+            for r in rows]
+
+
+@api.post("/crawl/jobs/{job_id}/cancel")
+def crawl_job_cancel(job_id: int, _: AppUser = Depends(require_roles("analyst", "editor"))):
+    from app.services import crawl_runner
+    crawl_runner.cancel(job_id)
+    return {"ok": True, "note": "已请求取消,当前步骤完成后停止"}
 
 
 @api.get("/crawl/runs")
 def crawl_runs(limit: int = 30, db: Session = Depends(get_session),
                _: AppUser = Depends(current_user)):
-    """采集执行记录 + 错误报告(失败源、原因)。"""
+    """按源的抓取执行记录 + 错误报告(失败源、原因)。"""
     from app.models import CrawlRun
     rows = db.query(CrawlRun).order_by(CrawlRun.id.desc()).limit(limit).all()
     out = []
