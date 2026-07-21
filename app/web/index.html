@@ -408,13 +408,18 @@ async function vCrawl(){
   const v=document.getElementById("view");
   const canRun=["analyst","editor","admin"].includes(ROLE);
   v.innerHTML=`<h2>采集</h2><p class="sub">手动触发一轮采集(真实访问互联网),并查看执行记录与错误</p>
-    <div class="banner">⚠️ 点击“开始采集”会真实访问网站。部分源需人工辅助或有反爬,失败会记录在下方错误报告中,属正常现象。</div>
+    <div class="banner">⚠️ 点击“开始采集”会真实访问网站,当场同步抓取(每个源都要抓取→存档→抽取,较慢)。
+      部分源需人工辅助或有反爬,失败会记录在下方错误报告中,属正常现象。
+      正式运行时采集由后台定时自动跑全部源,这里是手动试跑。</div>
     <div class="toolbar">
-      <label style="margin:0">源数量上限</label>
-      <select id="cLimit"><option>3</option><option>5</option><option>10</option></select>
+      <label style="margin:0" title="本次点击只抓取前 N 个最该更新的源。库里源较多,一次全跑很慢,先小量试跑。不影响质量,只控制单次采集量。">本轮抓取源数 ⓘ</label>
+      <select id="cLimit"><option value="3">3 个(快速试跑)</option>
+        <option value="5">5 个</option><option value="10">10 个</option>
+        <option value="999">全部(慢,谨慎)</option></select>
       ${canRun?`<button onclick="runCrawl()" id="runBtn">开始采集</button>`:'<span class="pill warn">当前角色无采集权限</span>'}
       <button class="ghost sm" onclick="loadRuns()">刷新记录</button>
     </div>
+    <p class="sub">“本轮抓取源数”= 这次点击只处理前几个数据源;是单次采集的量控开关,与数据质量无关。</p>
     <div id="crawlOut"></div>
     <h3 style="font-size:15px;margin-top:20px">采集到的文档</h3>
     <p class="sub">采集/演示入库的原始文档(粗筛后进入抽取)</p>
