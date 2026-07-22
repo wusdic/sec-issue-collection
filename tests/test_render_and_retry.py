@@ -71,6 +71,73 @@ def test_render_auto_noop_when_playwright_off(monkeypatch):
     assert hits["render"] == 0 and out is thin
 
 
+# ---------------- 浏览器实例复用 ----------------
+
+def _stub_session_browser(monkeypatch, launches, closes):
+    """把浏览器启停替换成计数桩,不碰真实 Playwright。"""
+    monkeypatch.setattr(settings, "playwright_enabled", True)
+    monkeypatch.setattr(fetcher, "_playwright_available", lambda: True)
+
+    class _FakeBrowser:
+        def close(self):
+            closes.append(1)
+
+    def fake_ok(self):
+        if self._browser is None:
+            launches.append(1)
+            self._browser = _FakeBrowser()
+        return self._browser
+
+    monkeypatch.setattr(fetcher._RenderSession, "_browser_ok", fake_ok)
+    monkeypatch.setattr(fetcher, "_render_one",
+                        lambda b, u, r, t: fetcher.FetchResult(u, u, 200, "<p>" + "内容" * 200 + "</p>",
+                                                               headers={"x-rendered": "playwright"}))
+
+
+def test_render_session_reuses_one_browser(monkeypatch):
+    launches, closes = [], []
+    _stub_session_browser(monkeypatch, launches, closes)
+    with fetcher.render_session():
+        for i in range(6):
+            r = fetcher._render_fetch(f"http://x/{i}", None, None)
+            assert r is not None and r.rendered
+    assert len(launches) == 1, f"整批只应启动 1 次浏览器,实际 {len(launches)}"
+    assert len(closes) == 1, "批次结束应关闭浏览器 1 次"
+
+
+def test_render_without_session_is_isolated(monkeypatch):
+    """无会话(单页试抓):不复用,一次性启停(此处 Playwright 不可用→降级 None)。"""
+    monkeypatch.setattr(settings, "playwright_enabled", True)
+    monkeypatch.setattr(fetcher, "_playwright_available", lambda: False)
+    assert fetcher._render_fetch("http://x", None, None) is None
+
+
+def test_render_session_nesting_reuses(monkeypatch):
+    launches, closes = [], []
+    _stub_session_browser(monkeypatch, launches, closes)
+    with fetcher.render_session() as outer:
+        fetcher._render_fetch("http://a", None, None)
+        with fetcher.render_session() as inner:      # 嵌套:复用外层,不新建
+            assert inner is outer
+            fetcher._render_fetch("http://b", None, None)
+        # 内层退出不应关闭浏览器
+        assert len(closes) == 0
+        assert getattr(fetcher._render_local, "session", None) is outer
+    assert len(launches) == 1 and len(closes) == 1
+    assert getattr(fetcher._render_local, "session", None) is None
+
+
+def test_render_session_recycles_after_threshold(monkeypatch):
+    launches, closes = [], []
+    _stub_session_browser(monkeypatch, launches, closes)
+    monkeypatch.setattr(settings, "render_recycle_after", 3)
+    with fetcher.render_session():
+        for i in range(7):                            # 3 页回收一次 → 期间重启
+            fetcher._render_fetch(f"http://x/{i}", None, None)
+    # 7 页、阈值3:第3、6页各回收关闭一次,批次末再关一次 → 关闭≥2、启动≥2
+    assert len(launches) >= 2 and len(closes) >= 2
+
+
 # ---------------- 站内检索(site:) ----------------
 
 def test_site_augments_query(db, need):

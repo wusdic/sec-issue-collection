@@ -73,6 +73,9 @@ class Settings:
     # 源健康:连续失败(采集异常/试抓抓不到)达到此次数即自动标记停用(不再采集)。默认 3
     source_auto_retire_fail_streak: int = int(os.getenv("SOURCE_AUTO_RETIRE_FAIL_STREAK", "3"))
 
+    # 浏览器渲染内存保护:同一浏览器实例连续渲染这么多页后回收重启,防长跑内存膨胀。0=不回收
+    render_recycle_after: int = int(os.getenv("RENDER_RECYCLE_AFTER", "300"))
+
     # Celery
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 

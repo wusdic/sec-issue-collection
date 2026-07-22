@@ -272,35 +272,37 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     found = 0
     early_enabled, stop_th = _early_stop_config(source, adapter)
     try:
-        if source.kind == "query":
-            has_pager = hasattr(adapter, "search_page")
-            for q in queries or []:
-                qh = url_tools.query_hash(q)
-                wm = db.get(SearchWatermark, (source.id, qh))
-                before = stats["new"]
+        # 批次内浏览器实例复用:本源所有需渲染的页面共用一个浏览器(嵌套则复用上层 job 会话)
+        with fetcher.render_session():
+            if source.kind == "query":
+                has_pager = hasattr(adapter, "search_page")
+                for q in queries or []:
+                    qh = url_tools.query_hash(q)
+                    wm = db.get(SearchWatermark, (source.id, qh))
+                    before = stats["new"]
 
-                def fetch_page(page, _q=q):
-                    if has_pager:
-                        return adapter.search_page(_q, page)
-                    return adapter.search(_q, max_pages=1)[0] if page == 0 else None
+                    def fetch_page(page, _q=q):
+                        if has_pager:
+                            return adapter.search_page(_q, page)
+                        return adapter.search(_q, max_pages=1)[0] if page == 0 else None
 
-                q_found, pages_used, truncated, snapshot = _consume_paginated(
-                    db, need, source, run, fetch_page, max_pages, early_enabled, stop_th, do_archive, stats)
-                db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
-                                  query=q, pages_fetched=pages_used, truncated=truncated,
-                                  results=q_found, new_docs=stats["new"] - before,
-                                  result_snapshot=snapshot[:50]))
-                found += q_found
-                if wm:
-                    wm.last_ran_at = datetime.utcnow()
-                else:
-                    db.add(SearchWatermark(source_id=source.id, query_hash=qh,
-                                           last_ran_at=datetime.utcnow()))
-        else:
-            # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
-            found, _pu, _tr, _sn = _consume_paginated(
-                db, need, source, run, lambda page: adapter.discover_page(page),
-                max_pages, early_enabled, stop_th, do_archive, stats)
+                    q_found, pages_used, truncated, snapshot = _consume_paginated(
+                        db, need, source, run, fetch_page, max_pages, early_enabled, stop_th, do_archive, stats)
+                    db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
+                                      query=q, pages_fetched=pages_used, truncated=truncated,
+                                      results=q_found, new_docs=stats["new"] - before,
+                                      result_snapshot=snapshot[:50]))
+                    found += q_found
+                    if wm:
+                        wm.last_ran_at = datetime.utcnow()
+                    else:
+                        db.add(SearchWatermark(source_id=source.id, query_hash=qh,
+                                               last_ran_at=datetime.utcnow()))
+            else:
+                # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
+                found, _pu, _tr, _sn = _consume_paginated(
+                    db, need, source, run, lambda page: adapter.discover_page(page),
+                    max_pages, early_enabled, stop_th, do_archive, stats)
         run.status = "ok"
         source.last_success_at = datetime.utcnow()
         source.fail_streak = 0

@@ -73,36 +73,123 @@ def _httpx_fetch(url: str, referer: str | None, timeout: float | None) -> FetchR
         return FetchResult(url=url, final_url=url, status=None, html=None, error=str(e))
 
 
-def _render_fetch(url: str, referer: str | None, timeout: float | None) -> FetchResult | None:
-    """用 Playwright 渲染取 HTML。未开启/未安装/失败均返回 None(由调用方回退 httpx)。"""
-    if not settings.playwright_enabled:
-        return None
+import threading
+from contextlib import contextmanager
+
+_render_local = threading.local()  # 当前线程的渲染会话(采集批次内复用浏览器)
+
+
+def _playwright_available() -> bool:
     try:
-        from playwright.sync_api import sync_playwright
+        import playwright.sync_api  # noqa: F401
+        return True
     except ImportError:
-        return None
+        return False
+
+
+def _render_one(browser, url: str, referer: str | None, timeout: float | None) -> FetchResult:
+    """用已启动的浏览器渲染一页:每页独立 context/标签(隔离 cookie),抓完只关标签不关浏览器。"""
     to_ms = int((timeout or settings.fetch_timeout) * 1000)
+    ctx = browser.new_context(user_agent=settings.fetch_user_agent)
     try:
+        page = ctx.new_page()
+        if referer:
+            page.set_extra_http_headers({"Referer": referer})
+        resp = page.goto(url, timeout=to_ms, wait_until="domcontentloaded")
+        try:  # 尽量等到网络空闲拿到动态内容,超时不致命
+            page.wait_for_load_state("networkidle", timeout=to_ms)
+        except Exception:  # noqa: BLE001
+            pass
+        return FetchResult(url=url, final_url=page.url,
+                           status=(resp.status if resp else 200),
+                           html=page.content(), headers={"x-rendered": "playwright"})
+    finally:
+        ctx.close()  # 只关标签/上下文,浏览器留给后续页面复用
+
+
+class _RenderSession:
+    """采集批次内复用的浏览器实例:懒启动,一批只启一个浏览器,反复开关标签抓多页,摊薄启动开销。"""
+
+    def __init__(self):
+        self._pw = None
+        self._browser = None
+        self._count = 0
+
+    def _browser_ok(self):
+        from playwright.sync_api import sync_playwright
+        if self._browser is None:
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch()
+            self._count = 0
+        return self._browser
+
+    def render(self, url: str, referer: str | None, timeout: float | None) -> FetchResult | None:
+        try:
+            browser = self._browser_ok()
+            res = _render_one(browser, url, referer, timeout)
+        except Exception:  # noqa: BLE001 单页渲染失败不拖垮批次;浏览器可能已坏 → 回收待重启
+            self.close()
+            return None
+        self._count += 1
+        recycle = int(getattr(settings, "render_recycle_after", 0) or 0)
+        if recycle and self._count >= recycle:
+            self.close()  # 内存保护:渲染够多页后回收,下次 render 自动重启
+        return res
+
+    def close(self):
+        try:
+            if self._browser is not None:
+                self._browser.close()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._pw is not None:
+                self._pw.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        self._browser = None
+        self._pw = None
+
+
+@contextmanager
+def render_session():
+    """在一次采集批次外层包一层:内部所有 render 复用同一浏览器,批次结束/异常统一关闭。
+
+    可安全嵌套(内层复用外层会话,不重复启停)。未开启渲染/无页面需要渲染时零成本
+    (只建一个轻量对象,浏览器懒启动,从不真正拉起进程)。
+    """
+    existing = getattr(_render_local, "session", None)
+    if existing is not None:
+        yield existing  # 复用外层会话,内层不新建不关闭
+        return
+    sess = _RenderSession()
+    _render_local.session = sess
+    try:
+        yield sess
+    finally:
+        _render_local.session = None
+        sess.close()
+
+
+def _render_fetch(url: str, referer: str | None, timeout: float | None) -> FetchResult | None:
+    """用 Playwright 渲染取 HTML。未开启/未安装/失败均返回 None(由调用方回退 httpx)。
+
+    批次内有活跃 render_session 时复用其浏览器实例;否则一次性启停(单页试抓等场景)。
+    """
+    if not settings.playwright_enabled or not _playwright_available():
+        return None
+    sess = getattr(_render_local, "session", None)
+    if sess is not None:
+        return sess.render(url, referer, timeout)  # 复用批次浏览器,快
+    try:  # 无会话:一次性启停(单页场景,不值得常驻)
+        from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             browser = p.chromium.launch()
             try:
-                ctx = browser.new_context(user_agent=settings.fetch_user_agent)
-                page = ctx.new_page()
-                if referer:
-                    page.set_extra_http_headers({"Referer": referer})
-                resp = page.goto(url, timeout=to_ms, wait_until="domcontentloaded")
-                try:  # 尽量等到网络空闲拿到动态内容,超时不致命
-                    page.wait_for_load_state("networkidle", timeout=to_ms)
-                except Exception:  # noqa: BLE001
-                    pass
-                html = page.content()
-                final_url = page.url
-                status = resp.status if resp else 200
+                return _render_one(browser, url, referer, timeout)
             finally:
                 browser.close()
-        return FetchResult(url=url, final_url=final_url, status=status, html=html,
-                           headers={"x-rendered": "playwright"})
-    except Exception:  # noqa: BLE001 渲染失败 → 交回调用方回退 httpx
+    except Exception:  # noqa: BLE001
         return None
 
 

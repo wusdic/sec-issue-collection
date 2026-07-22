@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import SessionLocal
 from app.models import CrawlJob, CrawlLog, KeywordSet, NeedProfile, RawDocument, Source
-from app.services import discovery, leads, pipeline
+from app.services import discovery, fetcher, leads, pipeline
 from app.services.scheduler import expand_queries
 
 _CANCEL: set[int] = set()  # 请求取消的 job_id
@@ -77,30 +77,32 @@ def _run(job_id: int):
              f"开始采集:选中 {len(srcs)} 个源、关键词 {len(queries)} 条(每查询最多 {max_pages} 页)")
         db.commit()
 
-        for src in srcs:
-            if job_id in _CANCEL:
-                job.status = "canceled"
-                job.finished_at = datetime.utcnow()
-                _log(db, job_id, "warn", None, "用户取消采集")
+        # 整个 job 的抓取共用一个渲染会话:所有源的所有渲染页面复用同一浏览器实例,只启停一次
+        with fetcher.render_session():
+            for src in srcs:
+                if job_id in _CANCEL:
+                    job.status = "canceled"
+                    job.finished_at = datetime.utcnow()
+                    _log(db, job_id, "warn", None, "用户取消采集")
+                    db.commit()
+                    return
+                _log(db, job_id, "info", src.name,
+                     f"开始抓取({'检索型' if src.kind == 'query' else '页面型'},适配器 {src.adapter})")
                 db.commit()
-                return
-            _log(db, job_id, "info", src.name,
-                 f"开始抓取({'检索型' if src.kind == 'query' else '页面型'},适配器 {src.adapter})")
-            db.commit()
-            try:
-                run = pipeline.crawl_source(db, need, src, queries=queries,
-                                            max_pages=max_pages, do_archive=True)
-                lvl = "info" if run.status == "ok" else "error"
-                msg = (f"完成:发现 {run.urls_found} 条、新增 {run.urls_new} 条、"
-                       f"已采过跳过 {run.urls_skipped} 条、抓取失败 {run.urls_failed} 条、状态 {run.status}")
-                if run.error:
-                    msg += f" | 错误:{run.error}"
-                _log(db, job_id, lvl, src.name, msg)
-                job.new_docs += run.urls_new
-            except Exception as e:  # noqa: BLE001 单源失败不终止整批
-                _log(db, job_id, "error", src.name, f"源抓取异常:{e}")
-            job.done_sources += 1
-            db.commit()
+                try:
+                    run = pipeline.crawl_source(db, need, src, queries=queries,
+                                                max_pages=max_pages, do_archive=True)
+                    lvl = "info" if run.status == "ok" else "error"
+                    msg = (f"完成:发现 {run.urls_found} 条、新增 {run.urls_new} 条、"
+                           f"已采过跳过 {run.urls_skipped} 条、抓取失败 {run.urls_failed} 条、状态 {run.status}")
+                    if run.error:
+                        msg += f" | 错误:{run.error}"
+                    _log(db, job_id, lvl, src.name, msg)
+                    job.new_docs += run.urls_new
+                except Exception as e:  # noqa: BLE001 单源失败不终止整批
+                    _log(db, job_id, "error", src.name, f"源抓取异常:{e}")
+                job.done_sources += 1
+                db.commit()
 
         # 处理待粗筛文档
         job.phase = "过滤与抽取"
