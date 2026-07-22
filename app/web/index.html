@@ -408,7 +408,12 @@ async function vSources(){
       </div>
       <p class="sub" style="margin:8px 0 0">适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。</p>
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
-    </div>`:''}
+    </div>
+    <div class="toolbar" style="margin:4px 0 10px">
+      <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
+      <span class="sub">逐个实时试抓,连续失败达阈值的自动停用(阈值在设置页「源连续失败自动停用次数」)。</span>
+    </div>
+    <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
   loadSources();
 }
@@ -463,6 +468,28 @@ async function delSource(id,name){
     const r=await api(`/sources/${id}`,{method:"DELETE"});
     loadSources();
   }catch(e){ alert("删除失败:"+e.message); }
+}
+async function testAllSources(){
+  const btn=document.getElementById("testAllBtn"), prog=document.getElementById("testAllProgress");
+  if(!confirm("逐个实时试抓所有生效源(不入库)。连续失败达到阈值的源会被自动停用。\n源较多时耗时可能较长,期间请勿离开本页。继续?")) return;
+  btn.disabled=true;
+  let rows;
+  try{ rows=await api(`/sources`); }catch(e){ prog.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; btn.disabled=false; return; }
+  const targets=rows.filter(s=>s.lifecycle!=="retired");
+  let ok=0,fail=0,retired=0,done=0;
+  for(const s of targets){
+    prog.innerHTML=`体检中… ${done}/${targets.length}｜正常 ${ok}｜异常 ${fail}｜自动停用 ${retired}｜当前:${esc(s.name)}`;
+    try{
+      const r=await api(`/sources/${s.id}/test-fetch?mark=true`,{method:"POST"});
+      if(r.ok&&r.count>0){ ok++; } else { fail++; }
+      if(r.retired) retired++;
+    }catch(e){ fail++; }
+    done++;
+  }
+  prog.innerHTML=`<span class="pill ok">体检完成</span> 共 ${targets.length} 个｜能出数据 ${ok}｜抓不到 ${fail}｜本轮自动停用 ${retired} 个。`
+    +(fail>retired?` <span class="muted">抓不到但未达停用阈值的会保留,多测几次连续失败才停用。</span>`:``);
+  btn.disabled=false;
+  loadSources();
 }
 async function testSource(id,name){
   const row=document.getElementById("srcTest"+id);

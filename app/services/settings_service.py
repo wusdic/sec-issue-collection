@@ -35,6 +35,8 @@ EDITABLE = [
     ("discovery_auto_trial_threshold", "新源自动入库阈值", "采集", "float", False,
      "采集中出现的新域名累积证据评分≥此值就自动建为 trial 试运行源(仍 S4 待人工定级)。"
      "调低→自动入库更激进、新源更多但更杂;调高→更保守。默认 4.0"),
+    ("source_auto_retire_fail_streak", "源连续失败自动停用次数", "采集", "int", False,
+     "某个源连续失败(采集异常或批量体检抓不到)达到此次数即自动停用,不再采集。默认 3;调大更宽容"),
 
     ("simhash_hamming_max", "同稿去重阈值", "去重", "int", False, "SimHash 海明距离≤此值判为转载;越大越激进,默认 3"),
     ("semantic_recall_threshold", "语义去重阈值", "去重", "float", False, "事件摘要余弦相似度≥此值判疑似同事件,0-1,默认 0.88"),

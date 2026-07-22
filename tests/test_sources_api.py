@@ -93,6 +93,51 @@ def test_test_fetch_reports_adapter_error(db, admin, monkeypatch):
     assert out["ok"] is False and "连接被拒绝" in out["error"]
 
 
+def test_batch_test_marks_and_auto_retires(db, admin, monkeypatch):
+    """批量体检 mark=True:抓不到累加 fail_streak,达阈值自动停用;成功则清零。"""
+    from app.config import settings
+    from app.services import adapters
+    from app.services.adapters import DiscoveredItem
+    monkeypatch.setattr(settings, "source_auto_retire_fail_streak", 3)
+
+    # 各源用不同注册域(identity_key 按 eTLD+1 归并,同域会合并)
+    r = create_source(SourceIn(name="时好时坏源", entry_url="https://flakysrc.net/",
+                               kind="page"), db, admin)
+    sid = r["id"]
+
+    class _Empty:
+        kind = "page"
+        def discover_page(self, page):
+            return []                       # 抓不到任何条目 = 失败
+
+    monkeypatch.setattr(adapters, "get_adapter", lambda s: _Empty())
+    o1 = run_test_fetch(sid, mark=True, db=db, _=admin)
+    assert o1["fail_streak"] == 1 and o1["retired"] is False
+    o2 = run_test_fetch(sid, mark=True, db=db, _=admin)
+    assert o2["fail_streak"] == 2 and o2["retired"] is False
+    o3 = run_test_fetch(sid, mark=True, db=db, _=admin)
+    assert o3["fail_streak"] == 3 and o3["retired"] is True
+    assert db.get(Source, sid).lifecycle == "retired"
+
+    # 手动单测 mark=False 不改状态
+    r2 = create_source(SourceIn(name="纯探测源", entry_url="https://probesrc.net/",
+                                kind="page"), db, admin)
+    run_test_fetch(r2["id"], mark=False, db=db, _=admin)
+    assert db.get(Source, r2["id"]).fail_streak == 0
+
+    # 成功清零:先攒一次失败,再成功
+    r3 = create_source(SourceIn(name="恢复源", entry_url="https://recoversrc.net/",
+                                kind="page"), db, admin)
+    run_test_fetch(r3["id"], mark=True, db=db, _=admin)
+    assert db.get(Source, r3["id"]).fail_streak == 1
+    monkeypatch.setattr(adapters, "get_adapter",
+                        lambda s: type("_Ok", (), {"kind": "page",
+                        "discover_page": lambda self, p: [DiscoveredItem(url="https://recoversrc.net/a", title="有货")]})())
+    ok = run_test_fetch(r3["id"], mark=True, db=db, _=admin)
+    assert ok["ok"] is True and ok["count"] == 1
+    assert db.get(Source, r3["id"]).fail_streak == 0
+
+
 def test_auto_trial_threshold_from_settings(db, need, monkeypatch):
     """新源自动入库阈值取运行时设置:调低后单渠道候选也能自动建 trial 源。"""
     from app.config import settings
