@@ -411,7 +411,8 @@ async function vSources(){
     </div>
     <div class="toolbar" style="margin:4px 0 10px">
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
-      <span class="sub">逐个实时试抓,连续失败达阈值的自动停用(阈值在设置页「源连续失败自动停用次数」)。</span>
+      <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
+      <span class="sub">体检:逐个试抓,连续失败达阈值自动停用。转站内检索:把直连抓不到的页面型源改用搜索引擎按 site: 抓(政务站兜底)。</span>
     </div>
     <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
@@ -438,9 +439,11 @@ async function loadSources(){
         <td>${s.tier}</td><td>${retired?'<span class="pill">已停用</span>':esc(s.lifecycle)}</td>
         <td>${s.docs_total}</td>
         <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
-        ${canEditSrc()?`<td style="white-space:nowrap">${retired?"":
-          `<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>
-           <button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
+        ${canEditSrc()?`<td style="white-space:nowrap">
+          ${retired?"":`<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>`}
+          ${(s.kind==="page"&&s.entry_url&&s.entry_url.startsWith("http"))?
+            `<button class="ghost sm" title="直连抓不到时,改用搜索引擎按 site:域名 抓该站" onclick="toSearchRetry(${s.id},'${esc(s.name).replace(/'/g,"")}')">站内检索</button>`:""}
+          ${retired?"":`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
       </tr>
       <tr id="srcTest${s.id}" style="display:none"><td colspan="${canEditSrc()?9:8}" style="background:#0d1526"></td></tr>`}).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("srcTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
@@ -488,6 +491,33 @@ async function testAllSources(){
   }
   prog.innerHTML=`<span class="pill ok">体检完成</span> 共 ${targets.length} 个｜能出数据 ${ok}｜抓不到 ${fail}｜本轮自动停用 ${retired} 个。`
     +(fail>retired?` <span class="muted">抓不到但未达停用阈值的会保留,多测几次连续失败才停用。</span>`:``);
+  btn.disabled=false;
+  loadSources();
+}
+async function toSearchRetry(id,name){
+  if(!confirm(`把页面型源「${name}」改造成『站内检索』兜底?\n\n将新建一个用搜索引擎按 site:域名 抓该站的检索型源,并把原页面源停用。适合直连抓不到(政务站/反爬)的情况。`)) return;
+  try{
+    const r=await api(`/sources/${id}/to-search-retry`,{method:"POST"});
+    toast(r.created?`已新建站内检索源(site:${r.site})`:`站内检索源已存在(site:${r.site}),已启用`);
+    loadSources();
+  }catch(e){ alert("转换失败:"+e.message); }
+}
+async function batchToSearch(){
+  const btn=document.getElementById("toSearchBtn"), prog=document.getElementById("testAllProgress");
+  let rows; try{ rows=await api(`/sources`); }catch(e){ alert(e.message); return; }
+  // 目标:页面型、有 http 入口、且已停用或采集失败过(疑似直连抓不到)
+  const targets=rows.filter(s=>s.kind==="page"&&s.entry_url&&s.entry_url.startsWith("http")
+    &&(s.lifecycle==="retired"||s.fail_streak>0));
+  if(!targets.length){ alert("没有需要转换的源(仅转换『已停用或采集失败过』的页面型源)。\n可先点『一键体检』把抓不到的源标出来。"); return; }
+  if(!confirm(`将把 ${targets.length} 个直连抓不到的页面型源转成站内检索(原源停用)。继续?`)) return;
+  btn.disabled=true;
+  let done=0,created=0;
+  for(const s of targets){
+    prog.innerHTML=`转换中… ${done}/${targets.length}｜当前:${esc(s.name)}`;
+    try{ const r=await api(`/sources/${s.id}/to-search-retry`,{method:"POST"}); if(r.created)created++; }catch(e){}
+    done++;
+  }
+  prog.innerHTML=`<span class="pill ok">转换完成</span> 处理 ${targets.length} 个页面源,新建站内检索源 ${created} 个。可再点『一键体检』验证。`;
   btn.disabled=false;
   loadSources();
 }

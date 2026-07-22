@@ -15,3 +15,6 @@ pytest>=8.0
 celery>=5.3
 redis>=5.0
 psycopg2-binary>=2.9; platform_system != "Windows"
+# 可选:浏览器渲染(政务站等 JS 动态页 / 整页截图)。装后需 `playwright install chromium`,
+# 并在设置页开启「启用浏览器渲染/截图」。不装则自动降级为 httpx,不影响其他功能。
+playwright>=1.40

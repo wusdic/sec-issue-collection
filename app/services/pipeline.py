@@ -55,6 +55,8 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
     if reg is not None and reputation.is_blacklisted(reg, item.wechat_account or item.publisher):
         _bump("blacklist")
         return None
+    # 正文抓取渲染偏好:随源配置,默认 auto(httpx 抓到的正文过薄→自动浏览器渲染,需开启渲染开关)
+    render_pref = (source.adapter_config or {}).get("render", "auto")
     url = item.url
     if url_tools.is_search_redirect(url):
         fr0 = prefetched or fetcher.fetch(url)  # C3 跳转还原
@@ -64,7 +66,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
         _bump("skipped")   # 已采过 → 增量跳过(只累加热度,不重复处理)
         return None
 
-    fr = prefetched or fetcher.fetch(url)
+    fr = prefetched or fetcher.fetch(url, render=render_pref)
     final_url = fr.final_url or url
     text = archive.extract_text(fr.html) if fr.ok else None
     if not fr.ok:

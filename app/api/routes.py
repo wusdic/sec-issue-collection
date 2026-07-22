@@ -133,6 +133,47 @@ def delete_source(source_id: int, db: Session = Depends(get_session),
     return {"id": source_id, "action": "deleted"}
 
 
+@api.post("/sources/{source_id}/to-search-retry")
+def source_to_search_retry(source_id: int, retire_original: bool = True,
+                           db: Session = Depends(get_session),
+                           _: AppUser = Depends(require_roles("analyst"))):
+    """低成本兜底:把直连抓不到的页面型源,改造成『站内检索』——借搜索引擎按 site:域名 抓它。
+
+    生成一个检索型兄弟源(adapter_config.site=注册域,相关性排序不早停),可选把原页面源停用。
+    搜索引擎的爬虫能渲染 JS、绕过部分反爬,故常能救回政务站等直连抓不到的源。
+    """
+    src = db.get(Source, source_id)
+    if not src:
+        raise HTTPException(404, "源不存在")
+    if src.kind != "page" or not (src.entry_url and src.entry_url.startswith("http")):
+        raise HTTPException(422, "仅支持有有效入口链接的页面型源转站内检索")
+    domain = url_tools.identity_key_for(src.entry_url)
+    if not domain or domain.startswith("mp:"):
+        raise HTTPException(422, "无法从入口链接解析出站点域名")
+    ident = f"site:{domain}"
+    existing = db.query(Source).filter_by(identity_key=ident).one_or_none()
+    if existing:
+        if existing.lifecycle == "retired":
+            existing.lifecycle = "active"
+        created_id, created = existing.id, False
+    else:
+        retry = Source(
+            name=f"{src.name}·站内检索", entry_url=None, kind="query",
+            adapter="baidu_search", adapter_config={"site": domain, "list_order": "relevance"},
+            credibility=src.credibility, tier=src.tier, lifecycle="active",
+            serves_needs=list(src.serves_needs or []), identity_key=ident,
+            discovered_from="search_retry", note=f"由页面型源「{src.name}」直连抓不到,改站内检索兜底",
+        )
+        db.add(retry)
+        db.flush()
+        created_id, created = retry.id, True
+    if retire_original:
+        src.lifecycle = "retired"
+    db.commit()
+    return {"id": created_id, "created": created, "site": domain,
+            "retired_original": retire_original}
+
+
 class PromoteIn(BaseModel):
     credibility: str
 

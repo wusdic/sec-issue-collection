@@ -188,7 +188,8 @@ class GenericListAdapter(BaseAdapter):
         url = self._page_url(page)
         if not url:
             return None  # 无更多页(自动探测不到下一页且无模板)
-        fr = fetcher.fetch(url)
+        # 列表页默认 render="auto":httpx 抓到的正文过薄(政务站 JS 壳)时自动浏览器渲染
+        fr = fetcher.fetch(url, render=self.config.get("render", "auto"))
         if not fr.ok:
             return None
         items, next_url = self._extract(fr)
@@ -203,8 +204,13 @@ class SearchEngineAdapter(BaseAdapter):
     base_tpl = ""            # 子类给出查询 URL 模板 {q}=词 {page}=页码(0起)
     result_selector = "a"
 
+    def _augment(self, query: str) -> str:
+        """adapter_config.site 存在时 → 站内检索:借搜索引擎抓某站(直连抓不到的兜底)。"""
+        site = self.config.get("site")
+        return f"{query} site:{site}" if site else query
+
     def build_url(self, query: str, page: int, time_filter: str | None) -> str:
-        return self.base_tpl.format(q=quote(query), page=page)
+        return self.base_tpl.format(q=quote(self._augment(query)), page=page)
 
     def parse(self, html: str) -> list[DiscoveredItem]:
         soup = BeautifulSoup(html, "lxml")
