@@ -58,12 +58,17 @@ class Settings:
     semantic_recall_threshold: float = float(os.getenv("SEMANTIC_RECALL_THRESHOLD", "0.88"))
     fingerprint_window_days: int = int(os.getenv("FINGERPRINT_WINDOW_DAYS", "14"))
 
-    # 粗筛(过滤不相干内容):入选与人工待定阈值
-    screen_keep_threshold: float = float(os.getenv("SCREEN_KEEP_THRESHOLD", "0.6"))
-    screen_manual_threshold: float = float(os.getenv("SCREEN_MANUAL_THRESHOLD", "0.4"))
+    # 粗筛(过滤不相干内容):入选与人工待定阈值。默认偏宽以免广泛搜集时漏掉相关内容,
+    # 宁可多进人工待定也不直接丢弃;要更严可在设置页调高。
+    screen_keep_threshold: float = float(os.getenv("SCREEN_KEEP_THRESHOLD", "0.5"))
+    screen_manual_threshold: float = float(os.getenv("SCREEN_MANUAL_THRESHOLD", "0.3"))
 
     # 增量翻页早停:列表/公众号按时间倒序,连续遇到 N 条已采过即判定"新内容抓全",停止翻页
     crawl_stop_consecutive_seen: int = int(os.getenv("CRAWL_STOP_CONSECUTIVE_SEEN", "15"))
+
+    # 源自动发现:搜索/采集中出现的新域名累积证据评分≥此值即自动建 trial 源(自动入库,
+    # 仍 S4 待人工定级)。越低越激进(新源多但杂),越高越保守。留空则用 discovery.yaml 的值。
+    discovery_auto_trial_threshold: float = float(os.getenv("DISCOVERY_AUTO_TRIAL_THRESHOLD", "4.0"))
 
     # Celery
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")

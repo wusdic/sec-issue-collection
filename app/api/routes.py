@@ -153,6 +153,50 @@ def source_trial_report(source_id: int, db: Session = Depends(get_session),
     return discovery_svc.trial_report(db, source_id)
 
 
+@api.post("/sources/{source_id}/test-fetch")
+def test_fetch_source(source_id: int, q: str | None = None, db: Session = Depends(get_session),
+                      _: AppUser = Depends(require_roles("analyst"))):
+    """一键试抓:实时抓该源第一页,返回发现的条目(不入库、不存档),用来判断源是否能出数据。
+
+    页面型→discover_page(0);检索型→用一个代表关键词 search_page(0)。仅取前 20 条。
+    """
+    import time as _time
+
+    from app.services.adapters import get_adapter
+    src = db.get(Source, source_id)
+    if not src:
+        raise HTTPException(404, "源不存在")
+    adapter = get_adapter(src)
+    t0 = _time.time()
+    used_q = None
+    try:
+        if src.kind == "query":
+            used_q = (q or "").strip()
+            if not used_q:  # 没给词就从该源服务的需求的关键词矩阵取一个事件词做样本
+                from app.models import KeywordSet
+                nid = (src.serves_needs or ["sec_events"])[0]
+                ks = db.query(KeywordSet).filter_by(need_id=nid, is_active=True).first()
+                terms = (ks.content.get("event_terms") if ks else None) or ["数据泄露"]
+                used_q = terms[0]
+            if hasattr(adapter, "search_page"):
+                items = adapter.search_page(used_q, 0) or []
+            else:
+                items, _ = adapter.search(used_q, max_pages=1)
+        else:
+            items = adapter.discover_page(0) or []
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300],
+                "adapter": src.adapter, "kind": src.kind}
+    elapsed = round(_time.time() - t0, 1)
+    sample = [{"url": i.url, "title": i.title,
+               "publisher": i.publisher or i.wechat_account} for i in items[:20]]
+    return {"ok": True, "count": len(items), "adapter": src.adapter, "kind": src.kind,
+            "query": used_q, "elapsed": elapsed, "items": sample,
+            "hint": ("能抓到内容,可放心保留" if items else
+                     "没抓到条目:该站可能需浏览器渲染/登录、反爬、或入口链接/适配器不匹配,"
+                     "建议改用 RSS 地址或换源")}
+
+
 # ---------- 候选源池 M10 ----------
 
 @api.get("/source-candidates")

@@ -74,9 +74,14 @@ def candidate_score(db: Session, identity_key: str, llm_relevance: float = 0.0) 
 
 
 def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] | None = None) -> list[dict]:
-    """日任务:候选池评分,≥阈值自动建 trial 源(转正仍需人工定级)。"""
+    """日任务/每轮采集收尾:候选池评分,≥阈值自动建 trial 源(自动入库,转正仍需人工定级)。
+
+    阈值优先取运行时设置 settings.discovery_auto_trial_threshold(设置页可调),
+    留空/0 才回退 discovery.yaml 的 auto_trial_threshold。调低→自动入库更激进。
+    """
     llm_scores = llm_scores or {}
-    threshold = float(_load_scoring().get("auto_trial_threshold", 8.0))
+    threshold = float(getattr(settings, "discovery_auto_trial_threshold", 0)
+                      or _load_scoring().get("auto_trial_threshold", 8.0))
     keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
     results = []
     for key in keys:
@@ -100,6 +105,7 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
                 discovered_from="discovery", trial_started_at=datetime.utcnow(),
             ))
             item["auto_trial"] = True
+            item["name"] = display
         results.append(item)
     db.flush()
     return sorted(results, key=lambda x: -x["score"])

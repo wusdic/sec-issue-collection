@@ -433,8 +433,11 @@ async function loadSources(){
         <td>${s.tier}</td><td>${retired?'<span class="pill">已停用</span>':esc(s.lifecycle)}</td>
         <td>${s.docs_total}</td>
         <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
-        ${canEditSrc()?`<td>${retired?"":`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
-      </tr>`}).join("")+`</tbody></table>`;
+        ${canEditSrc()?`<td style="white-space:nowrap">${retired?"":
+          `<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>
+           <button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
+      </tr>
+      <tr id="srcTest${s.id}" style="display:none"><td colspan="${canEditSrc()?9:8}" style="background:#0d1526"></td></tr>`}).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("srcTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
 }
 async function addSource(){
@@ -460,6 +463,22 @@ async function delSource(id,name){
     const r=await api(`/sources/${id}`,{method:"DELETE"});
     loadSources();
   }catch(e){ alert("删除失败:"+e.message); }
+}
+async function testSource(id,name){
+  const row=document.getElementById("srcTest"+id);
+  const cell=row.firstElementChild;
+  row.style.display=""; cell.innerHTML=`<span class="muted">正在实时试抓「${esc(name)}」第一页…(不入库)</span>`;
+  try{
+    const r=await api(`/sources/${id}/test-fetch`,{method:"POST"});
+    if(!r.ok){ cell.innerHTML=`<span class="pill warn">失败</span> <span class="muted">${esc(r.error)}</span>`; return; }
+    const head=`<div style="margin:2px 0 6px"><span class="pill ${r.count?'ok':'warn'}">${r.count} 条</span>
+      <span class="muted">适配器 ${esc(r.adapter)}｜${r.kind==='query'?'检索词「'+esc(r.query||'')+'」':'页面型'}｜${r.elapsed}s｜${esc(r.hint)}</span></div>`;
+    const list=r.items.length? '<ol style="margin:0;padding-left:20px">'+r.items.map(it=>
+      `<li style="margin:2px 0"><a href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title||it.url)}</a>
+       ${it.publisher?'<span class="muted mono"> · '+esc(it.publisher)+'</span>':''}</li>`).join('')+'</ol>'
+      : '<span class="muted">未抓到条目。</span>';
+    cell.innerHTML=head+list;
+  }catch(e){ cell.innerHTML=`<span class="pill warn">出错</span> <span class="muted">${esc(e.message)}</span>`; }
 }
 
 /* ---------- 采集 ---------- */

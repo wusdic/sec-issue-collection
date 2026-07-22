@@ -9,6 +9,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import SessionLocal
 from app.models import CrawlJob, CrawlLog, KeywordSet, NeedProfile, RawDocument, Source
 from app.services import discovery, leads, pipeline
@@ -135,10 +136,22 @@ def _run(job_id: int):
             job.done_docs += 1
             db.commit()
 
-        job.phase = "收尾(候选源评分/线索刷新)"
+        job.phase = "收尾(候选源自动入库/线索刷新)"
         db.commit()
         try:
-            discovery.evaluate_candidates(db, need.id)
+            cands = discovery.evaluate_candidates(db, need.id)
+            auto = [c for c in cands if c.get("auto_trial")]
+            if auto:
+                names = "、".join(c.get("name") or c["identity_key"] for c in auto[:10])
+                _log(db, job_id, "info", None,
+                     f"源自动发现:本轮从采集内容中新识别 {len(cands)} 个候选域名,"
+                     f"其中 {len(auto)} 个达标自动入库(trial 试运行,S4 待人工定级):{names}")
+            elif cands:
+                top = max(cands, key=lambda c: c["score"])
+                _log(db, job_id, "info", None,
+                     f"源自动发现:识别 {len(cands)} 个候选域名,暂无达标自动入库"
+                     f"(最高分 {top['score']},阈值 {settings.discovery_auto_trial_threshold};"
+                     f"可在设置页调低『新源自动入库阈值』)")
             leads.refresh_window_stages(db, need.id)
         except Exception as e:  # noqa: BLE001
             _log(db, job_id, "warn", None, f"收尾步骤异常(不影响主结果):{e}")

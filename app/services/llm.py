@@ -247,12 +247,15 @@ class MockLLM(BaseLLM):
     真实部署设 LLM_PROVIDER=openai_compat。
     """
 
-    SEC_KEYWORDS = ["勒索", "数据泄露", "攻击", "泄露", "网络安全", "黑客", "瘫痪", "处罚", "内鬼"]
+    SEC_KEYWORDS = ["勒索", "数据泄露", "信息泄露", "泄露", "攻击", "网络攻击", "网络安全",
+                    "数据安全", "黑客", "入侵", "瘫痪", "宕机", "故障", "处罚", "罚款", "约谈",
+                    "通报", "内鬼", "倒卖", "个人信息", "篡改", "DDoS", "木马", "漏洞", "暗网",
+                    "拖库", "撞库", "钓鱼", "诈骗", "判决", "侵犯公民个人信息"]
 
     def complete_json(self, system: str, user: str, retries: int = 2) -> dict:
         if "TASK=screen" in system:
             hit = sum(1 for k in self.SEC_KEYWORDS if k in user)
-            score = min(0.95, 0.2 + hit * 0.18)
+            score = min(0.95, 0.25 + hit * 0.2)
             return {"is_candidate": score >= 0.55, "confidence": round(score, 2),
                     "reason": f"关键词命中 {hit} 个(mock)"}
         if "TASK=extract" in system:

@@ -2,6 +2,7 @@
 import pytest
 
 from app.api.routes import SourceIn, create_source, delete_source, list_sources
+from app.api.routes import test_fetch_source as run_test_fetch  # 别名:避免 pytest 误当测试收集
 from app.models import AppUser, RawDocument, Source
 from app.services import url_tools
 
@@ -55,6 +56,59 @@ def test_delete_source_without_docs_is_hard_deleted(db, admin):
     out = delete_source(r["id"], db, admin)
     assert out["action"] == "deleted"
     assert db.get(Source, r["id"]) is None
+
+
+def test_test_fetch_query_source(db, admin, monkeypatch):
+    """一键试抓:检索型源用样本词抓一页,返回条目(不入库)。"""
+    from app.services import adapters
+    from app.services.adapters import BaiduSearchAdapter, DiscoveredItem
+
+    r = create_source(SourceIn(name="试抓检索源", kind="query", credibility="S4"), db, admin)
+
+    class _Fake(BaiduSearchAdapter):
+        def search_page(self, query, page, time_filter=None):
+            return [DiscoveredItem(url="https://a.example.com/1", title="某公司数据泄露"),
+                    DiscoveredItem(url="https://b.example.com/2", title="勒索攻击")] if page == 0 else None
+
+    monkeypatch.setattr(adapters, "get_adapter", lambda s: _Fake(s))
+    out = run_test_fetch(r["id"], q="数据泄露", db=db, _=admin)
+    assert out["ok"] is True
+    assert out["count"] == 2
+    assert out["query"] == "数据泄露"
+    assert len(out["items"]) == 2 and out["items"][0]["url"] == "https://a.example.com/1"
+
+
+def test_test_fetch_reports_adapter_error(db, admin, monkeypatch):
+    from app.services import adapters
+    r = create_source(SourceIn(name="报错源", entry_url="https://err.example.com/",
+                               kind="page"), db, admin)
+
+    class _Boom:
+        kind = "page"
+        def discover_page(self, page):
+            raise RuntimeError("连接被拒绝")
+
+    monkeypatch.setattr(adapters, "get_adapter", lambda s: _Boom())
+    out = run_test_fetch(r["id"], db=db, _=admin)
+    assert out["ok"] is False and "连接被拒绝" in out["error"]
+
+
+def test_auto_trial_threshold_from_settings(db, need, monkeypatch):
+    """新源自动入库阈值取运行时设置:调低后单渠道候选也能自动建 trial 源。"""
+    from app.config import settings
+    from app.models import SourceDiscoveryEvidence
+    from app.services import discovery
+    # 造一个只有单渠道证据的候选(评分约 2×1 通道 +新鲜度1 = 3)
+    db.add(SourceDiscoveryEvidence(identity_key="newsrc.auto.com", display_name="自动源",
+                                   kind_guess="website", channel="event_search",
+                                   evidence_url="https://newsrc.auto.com/x"))
+    db.flush()
+    monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 2.0)
+    res = discovery.evaluate_candidates(db, need.id)
+    auto = [c for c in res if c.get("auto_trial") and c["identity_key"] == "newsrc.auto.com"]
+    assert auto, f"阈值调低后应自动入库: {res}"
+    src = db.query(Source).filter_by(identity_key="newsrc.auto.com").first()
+    assert src and src.lifecycle == "trial" and src.credibility == "S4"
 
 
 def test_delete_source_with_docs_is_retired(db, admin, need):
