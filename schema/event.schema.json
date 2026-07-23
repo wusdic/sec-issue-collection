@@ -5,125 +5,312 @@
   "description": "事件库单条事件的字段规范 v1.0。金额一律使用 MoneyTriState 对象,严禁把'要求/索赔/估算'金额写入 confirmed 通道。",
   "type": "object",
   "required": [
-    "event_id", "title", "occurred_date", "disclosed_date", "industry", "region",
-    "org_type", "org_size", "severity", "affected_systems", "attack_type", "consequences", "entry_vector",
-    "root_cause", "security_controls", "downtime_hours", "loss_L1", "loss_L2", "loss_L3", "loss_L4",
-    "loss_L5", "loss_L6", "ransom", "affected_users", "affected_records",
-    "secondary_impact", "disclosure_channel", "remediation_actions",
-    "accountability", "sellable_mapping", "sources", "confidence_overall",
-    "status", "review"
+    "event_id",
+    "title",
+    "occurred_date",
+    "disclosed_date",
+    "industry",
+    "region",
+    "org_type",
+    "org_size",
+    "severity",
+    "affected_systems",
+    "attack_type",
+    "consequences",
+    "entry_vector",
+    "root_cause",
+    "security_controls",
+    "downtime_hours",
+    "loss_L1",
+    "loss_L2",
+    "loss_L3",
+    "loss_L4",
+    "loss_L5",
+    "loss_L6",
+    "ransom",
+    "affected_users",
+    "affected_records",
+    "secondary_impact",
+    "disclosure_channel",
+    "remediation_actions",
+    "accountability",
+    "sellable_mapping",
+    "sources",
+    "confidence_overall",
+    "status",
+    "review"
   ],
   "properties": {
-    "event_id": { "type": "string", "pattern": "^SEC-\\d{8}-\\d{4}$" },
-    "title": { "type": "string", "maxLength": 120 },
-
-    "occurred_date": { "$ref": "#/$defs/DateWithPrecision" },
-    "disclosed_date": { "type": "string", "format": "date" },
-
+    "event_id": {
+      "type": "string",
+      "pattern": "^SEC-\\d{8}-\\d{4}$"
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 120
+    },
+    "occurred_date": {
+      "$ref": "#/$defs/DateWithPrecision"
+    },
+    "disclosed_date": {
+      "type": "string",
+      "format": "date"
+    },
     "industry": {
       "type": "object",
-      "required": ["level1"],
+      "required": [
+        "level1"
+      ],
       "properties": {
-        "level1": { "type": "string", "description": "一级行业,见 dictionaries.yaml#industries" },
-        "level2": { "type": "string", "description": "二级细分,可空" }
+        "level1": {
+          "type": "string",
+          "description": "一级行业,见 dictionaries.yaml#industries"
+        },
+        "level2": {
+          "type": "string",
+          "description": "二级细分,可空"
+        }
       }
     },
     "region": {
       "type": "object",
-      "required": ["province"],
+      "required": [
+        "province"
+      ],
       "properties": {
-        "province": { "type": "string", "description": "省级行政区或'全国'" },
-        "city": { "type": "string" }
-      }
-    },
-    "org_type": { "type": "string", "description": "见 dictionaries.yaml#org_types" },
-    "org_name": { "type": "string", "description": "未公开时填'未披露'" },
-    "org_uscc": { "type": "string", "description": "统一社会信用代码,实体归一主键" },
-    "org_size": { "enum": ["特大", "大", "中", "小微", "未知"] },
-    "org_tags": {
-      "type": "array",
-      "items": { "type": "string", "description": "见 dictionaries.yaml#org_tags,多选,与 org_type 组合使用" }
-    },
-    "severity": {
-      "type": "object",
-      "required": ["level"],
-      "description": "事件整体严重度,定级阈值见 dictionaries.yaml#severity_levels。系统按已确认口径自动建议,人工可覆盖",
-      "properties": {
-        "level": { "enum": ["特别重大", "重大", "较大", "一般", "未定级"] },
-        "auto_suggested": { "type": "boolean" },
-        "basis": { "type": "string", "description": "定级依据说明,人工覆盖时必填" }
-      }
-    },
-    "related_event_ids": { "type": "array", "items": { "type": "string" } },
-
-    "affected_systems": {
-      "type": "array", "minItems": 1,
-      "items": { "type": "string", "description": "见 dictionaries.yaml#affected_systems,允许'未披露'" }
-    },
-    "attack_type": {
-      "type": "array", "minItems": 1,
-      "items": { "type": "string", "description": "手段维度,见 dictionaries.yaml#attack_types" }
-    },
-    "consequences": {
-      "type": "array", "minItems": 1,
-      "items": { "type": "string", "description": "后果维度,与手段正交,见 dictionaries.yaml#consequences,允许'未披露'" }
-    },
-    "entry_vector": {
-      "type": "array", "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["vector", "confidence"],
-        "properties": {
-          "vector": { "type": "string", "description": "见 dictionaries.yaml#entry_vectors,允许'未知'" },
-          "confidence": { "enum": ["确认", "高度可能", "推测"] }
+        "province": {
+          "type": "string",
+          "description": "省级行政区或'全国'"
+        },
+        "city": {
+          "type": "string"
         }
       }
     },
-    "vulnerability_ids": { "type": "array", "items": { "type": "string" }, "description": "CVE/CNVD/CNNVD 编号" },
+    "org_type": {
+      "type": "string",
+      "description": "见 dictionaries.yaml#org_types"
+    },
+    "org_name": {
+      "type": "string",
+      "description": "未公开时填'未披露'"
+    },
+    "org_uscc": {
+      "type": "string",
+      "description": "统一社会信用代码,实体归一主键"
+    },
+    "org_size": {
+      "enum": [
+        "特大",
+        "大",
+        "中",
+        "小微",
+        "未知"
+      ]
+    },
+    "org_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "见 dictionaries.yaml#org_tags,多选,与 org_type 组合使用"
+      }
+    },
+    "severity": {
+      "type": "object",
+      "required": [
+        "level"
+      ],
+      "description": "事件整体严重度,定级阈值见 dictionaries.yaml#severity_levels。系统按已确认口径自动建议,人工可覆盖",
+      "properties": {
+        "level": {
+          "enum": [
+            "特别重大",
+            "重大",
+            "较大",
+            "一般",
+            "未定级"
+          ]
+        },
+        "auto_suggested": {
+          "type": "boolean"
+        },
+        "basis": {
+          "type": "string",
+          "description": "定级依据说明,人工覆盖时必填"
+        }
+      }
+    },
+    "record_type": {
+      "enum": [
+        "单一事件",
+        "通报情报"
+      ],
+      "description": "记录类型:单一事件 或 通报情报(监管通报/威胁情报/风险提示/态势统计)"
+    },
+    "related_event_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "affected_systems": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "description": "见 dictionaries.yaml#affected_systems,允许'未披露'"
+      }
+    },
+    "attack_type": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "description": "手段维度,见 dictionaries.yaml#attack_types"
+      }
+    },
+    "consequences": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "description": "后果维度,与手段正交,见 dictionaries.yaml#consequences,允许'未披露'"
+      }
+    },
+    "entry_vector": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "vector",
+          "confidence"
+        ],
+        "properties": {
+          "vector": {
+            "type": "string",
+            "description": "见 dictionaries.yaml#entry_vectors,允许'未知'"
+          },
+          "confidence": {
+            "enum": [
+              "确认",
+              "高度可能",
+              "推测"
+            ]
+          }
+        }
+      }
+    },
+    "vulnerability_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "CVE/CNVD/CNNVD 编号"
+    },
     "attacker_attribution": {
       "type": "object",
       "properties": {
-        "name": { "type": "string", "description": "组织/家族名,仅记录来源声称" },
-        "confidence": { "enum": ["来源确认", "来源推测"] },
-        "source_ref": { "type": "string" }
+        "name": {
+          "type": "string",
+          "description": "组织/家族名,仅记录来源声称"
+        },
+        "confidence": {
+          "enum": [
+            "来源确认",
+            "来源推测"
+          ]
+        },
+        "source_ref": {
+          "type": "string"
+        }
       }
     },
-    "ttp_tags": { "type": "array", "items": { "type": "string" }, "description": "ATT&CK 技术编号" },
+    "ttp_tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "ATT&CK 技术编号"
+    },
     "root_cause": {
       "type": "object",
-      "required": ["category"],
+      "required": [
+        "category"
+      ],
       "properties": {
-        "category": { "type": "string", "description": "见 dictionaries.yaml#root_causes,允许'未披露'" },
-        "detail": { "type": "string" }
+        "category": {
+          "type": "string",
+          "description": "见 dictionaries.yaml#root_causes,允许'未披露'"
+        },
+        "detail": {
+          "type": "string"
+        }
       }
     },
-
     "affected_products": {
       "type": "array",
       "description": "涉事 IT 产品(被利用漏洞/被攻陷系统的具体产品),支撑'同款预警'线索与技术栈风险画像",
       "items": {
         "type": "object",
-        "required": ["vendor", "product"],
+        "required": [
+          "vendor",
+          "product"
+        ],
         "properties": {
-          "vendor": { "type": "string" },
-          "product": { "type": "string" },
-          "version": { "type": "string" },
-          "role": { "enum": ["漏洞所在产品", "被攻陷系统", "涉事第三方服务", "其他"] },
-          "source_ref": { "type": "string" }
+          "vendor": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "漏洞所在产品",
+              "被攻陷系统",
+              "涉事第三方服务",
+              "其他"
+            ]
+          },
+          "source_ref": {
+            "type": "string"
+          }
         }
       }
     },
     "security_controls": {
-      "type": "array", "minItems": 1,
+      "type": "array",
+      "minItems": 1,
       "description": "事发时安全控制状态,产品方向分析核心输入;信息不足时填一条 {control:'整体不明', status:'不明'}",
       "items": {
         "type": "object",
-        "required": ["control", "status"],
+        "required": [
+          "control",
+          "status"
+        ],
         "properties": {
-          "control": { "type": "string", "description": "见 dictionaries.yaml#security_controls" },
-          "status": { "enum": ["缺位", "在位但失效", "在位被绕过", "不明"] },
-          "note": { "type": "string", "description": "如'有备份但备份被同时加密'" },
-          "source_ref": { "type": "string" }
+          "control": {
+            "type": "string",
+            "description": "见 dictionaries.yaml#security_controls"
+          },
+          "status": {
+            "enum": [
+              "缺位",
+              "在位但失效",
+              "在位被绕过",
+              "不明"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "description": "如'有备份但备份被同时加密'"
+          },
+          "source_ref": {
+            "type": "string"
+          }
         }
       }
     },
@@ -132,98 +319,260 @@
       "description": "事发前在用安全产品/服务商,仅公开来源(历史招标/厂商案例);仅限内部竞争分析,严禁对外诋毁性使用",
       "items": {
         "type": "object",
-        "required": ["vendor", "evidence_level"],
+        "required": [
+          "vendor",
+          "evidence_level"
+        ],
         "properties": {
-          "vendor": { "type": "string" },
-          "product_category": { "type": "string", "description": "见 dictionaries.yaml#procurement_categories" },
-          "evidence_level": { "enum": ["招标/合同证实", "厂商案例宣传", "媒体报道", "传闻"] },
-          "source_ref": { "type": "string" }
+          "vendor": {
+            "type": "string"
+          },
+          "product_category": {
+            "type": "string",
+            "description": "见 dictionaries.yaml#procurement_categories"
+          },
+          "evidence_level": {
+            "enum": [
+              "招标/合同证实",
+              "厂商案例宣传",
+              "媒体报道",
+              "传闻"
+            ]
+          },
+          "source_ref": {
+            "type": "string"
+          }
         }
       }
     },
-    "downtime_hours": { "$ref": "#/$defs/NumberWithStatus" },
-    "loss_L1": { "$ref": "#/$defs/MoneyTriState" },
+    "downtime_hours": {
+      "$ref": "#/$defs/NumberWithStatus"
+    },
+    "loss_L1": {
+      "$ref": "#/$defs/MoneyTriState"
+    },
     "loss_L2": {
-      "allOf": [{ "$ref": "#/$defs/MoneyTriState" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/MoneyTriState"
+        }
+      ],
       "properties": {
-        "physical_quantity": { "type": "string", "description": "产量损失实物量,如'停产原油 4.2 万吨'" },
-        "conversion_method": { "type": "string", "description": "实物量折算金额的方法与单价来源" }
+        "physical_quantity": {
+          "type": "string",
+          "description": "产量损失实物量,如'停产原油 4.2 万吨'"
+        },
+        "conversion_method": {
+          "type": "string",
+          "description": "实物量折算金额的方法与单价来源"
+        }
       }
     },
-    "loss_L3": { "$ref": "#/$defs/MoneyTriState" },
+    "loss_L3": {
+      "$ref": "#/$defs/MoneyTriState"
+    },
     "loss_L4": {
-      "allOf": [{ "$ref": "#/$defs/MoneyTriState" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/MoneyTriState"
+        }
+      ],
       "properties": {
-        "case_numbers": { "type": "array", "items": { "type": "string" }, "description": "处罚文号/法院案号" }
+        "case_numbers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "处罚文号/法院案号"
+        }
       }
     },
     "loss_L5": {
-      "allOf": [{ "$ref": "#/$defs/MoneyTriState" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/MoneyTriState"
+        }
+      ],
       "properties": {
-        "facts": { "type": "string", "description": "无法金额化时的事实描述(解约/除名/延期)" }
+        "facts": {
+          "type": "string",
+          "description": "无法金额化时的事实描述(解约/除名/延期)"
+        }
       }
     },
     "loss_L6": {
       "type": "object",
-      "required": ["severity"],
+      "required": [
+        "severity"
+      ],
       "properties": {
-        "severity": { "enum": ["无", "轻", "中", "重"] },
-        "facts": { "type": "string" },
-        "money": { "$ref": "#/$defs/MoneyTriState" }
+        "severity": {
+          "enum": [
+            "无",
+            "轻",
+            "中",
+            "重"
+          ]
+        },
+        "facts": {
+          "type": "string"
+        },
+        "money": {
+          "$ref": "#/$defs/MoneyTriState"
+        }
       }
     },
-
     "ransom": {
       "type": "object",
-      "required": ["applicable"],
+      "required": [
+        "applicable"
+      ],
       "properties": {
-        "applicable": { "type": "boolean", "description": "非勒索类事件填 false" },
-        "demanded_amount": { "type": ["number", "null"] },
-        "demanded_currency": { "type": ["string", "null"] },
-        "negotiated": { "type": ["boolean", "null"] },
-        "paid": { "enum": ["已支付", "未支付", "未披露", null] },
-        "paid_amount": { "type": ["number", "null"], "description": "仅可信来源确认支付时填写;同时计入 loss_L1 confirmed 并备注'赎金支付'" },
-        "source_ref": { "type": "string" }
+        "applicable": {
+          "type": "boolean",
+          "description": "非勒索类事件填 false"
+        },
+        "demanded_amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "demanded_currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "negotiated": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "paid": {
+          "enum": [
+            "已支付",
+            "未支付",
+            "未披露",
+            null
+          ]
+        },
+        "paid_amount": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "仅可信来源确认支付时填写;同时计入 loss_L1 confirmed 并备注'赎金支付'"
+        },
+        "source_ref": {
+          "type": "string"
+        }
       }
     },
-
-    "affected_users": { "$ref": "#/$defs/NumberTriState" },
+    "affected_users": {
+      "$ref": "#/$defs/NumberTriState"
+    },
     "affected_records": {
-      "allOf": [{ "$ref": "#/$defs/NumberTriState" }],
+      "allOf": [
+        {
+          "$ref": "#/$defs/NumberTriState"
+        }
+      ],
       "properties": {
-        "data_types": { "type": "array", "items": { "type": "string" }, "description": "见 dictionaries.yaml#data_types" }
+        "data_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "见 dictionaries.yaml#data_types"
+        }
       }
     },
     "secondary_impact": {
       "type": "array",
-      "items": { "enum": ["客户合同", "供应链资格", "牌照或资质", "上市进程", "信用评级", "保险费率", "无", "未披露"] }
+      "items": {
+        "enum": [
+          "客户合同",
+          "供应链资格",
+          "牌照或资质",
+          "上市进程",
+          "信用评级",
+          "保险费率",
+          "无",
+          "未披露"
+        ]
+      }
     },
     "insurance": {
       "type": "object",
       "properties": {
-        "has_cyber_insurance": { "type": ["boolean", "null"] },
-        "payout": { "$ref": "#/$defs/MoneyTriState" }
+        "has_cyber_insurance": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "payout": {
+          "$ref": "#/$defs/MoneyTriState"
+        }
       }
     },
-
     "disclosure_channel": {
-      "type": "array", "minItems": 1,
-      "items": { "enum": ["监管通报", "上市公告", "企业自披露", "媒体曝光", "攻击者泄露站", "判决文书", "招标信息反推", "其他"] }
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "监管通报",
+          "上市公告",
+          "企业自披露",
+          "媒体曝光",
+          "攻击者泄露站",
+          "判决文书",
+          "招标信息反推",
+          "其他"
+        ]
+      }
     },
     "regulatory_actions": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["authority", "action"],
+        "required": [
+          "authority",
+          "action"
+        ],
         "properties": {
-          "authority": { "type": "string" },
-          "legal_basis": { "type": "string", "description": "依据法条原文,如《网络安全法》第五十九条" },
-          "legal_basis_code": { "type": "string", "description": "规范化法规编码,见 dictionaries.yaml#legal_bases,用于聚合统计" },
-          "doc_number": { "type": "string" },
-          "action": { "type": "string" },
-          "fine_amount": { "type": ["number", "null"] },
-          "date": { "type": "string", "format": "date" },
-          "source_ref": { "type": "string" }
+          "authority": {
+            "type": "string"
+          },
+          "legal_basis": {
+            "type": "string",
+            "description": "依据法条原文,如《网络安全法》第五十九条"
+          },
+          "legal_basis_code": {
+            "type": "string",
+            "description": "规范化法规编码,见 dictionaries.yaml#legal_bases,用于聚合统计"
+          },
+          "doc_number": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "fine_amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "source_ref": {
+            "type": "string"
+          }
         }
       }
     },
@@ -231,14 +580,39 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["category", "evidence_level"],
+        "required": [
+          "category",
+          "evidence_level"
+        ],
         "properties": {
-          "category": { "type": "string", "description": "采购/整改品类,见 dictionaries.yaml#procurement_categories" },
-          "vendor": { "type": "string" },
-          "amount": { "type": ["number", "null"] },
-          "evidence_level": { "enum": ["招标/合同证实", "企业披露", "媒体报道", "传闻"] },
-          "date": { "type": "string", "format": "date" },
-          "source_ref": { "type": "string" }
+          "category": {
+            "type": "string",
+            "description": "采购/整改品类,见 dictionaries.yaml#procurement_categories"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "amount": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "evidence_level": {
+            "enum": [
+              "招标/合同证实",
+              "企业披露",
+              "媒体报道",
+              "传闻"
+            ]
+          },
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "source_ref": {
+            "type": "string"
+          }
         }
       },
       "description": "无信息时为空数组并由回访任务持续补采"
@@ -251,77 +625,200 @@
           "items": {
             "type": "object",
             "properties": {
-              "role": { "type": "string", "description": "如 CIO/运维负责人/外包商,仅记录公开披露的职务" },
-              "consequence": { "type": "string", "description": "免职/处分/追刑/未披露" }
+              "role": {
+                "type": "string",
+                "description": "如 CIO/运维负责人/外包商,仅记录公开披露的职务"
+              },
+              "consequence": {
+                "type": "string",
+                "description": "免职/处分/追刑/未披露"
+              }
             }
           }
         },
-        "budget_approver": { "type": "string", "description": "整改预算审批方:董事会/集团/IT部/未披露" }
+        "budget_approver": {
+          "type": "string",
+          "description": "整改预算审批方:董事会/集团/IT部/未披露"
+        }
       }
     },
     "sellable_mapping": {
       "type": "array",
-      "items": { "type": "string", "description": "见 dictionaries.yaml#sellable_products" }
+      "items": {
+        "type": "string",
+        "description": "见 dictionaries.yaml#sellable_products"
+      }
     },
     "timeline": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["date", "milestone"],
+        "required": [
+          "date",
+          "milestone"
+        ],
         "properties": {
-          "date": { "type": "string", "format": "date" },
-          "milestone": { "enum": ["入侵", "发现", "披露", "恢复", "立案", "处罚", "判决", "整改采购", "其他"] },
-          "note": { "type": "string" }
+          "date": {
+            "type": "string",
+            "format": "date"
+          },
+          "milestone": {
+            "enum": [
+              "入侵",
+              "发现",
+              "披露",
+              "恢复",
+              "立案",
+              "处罚",
+              "判决",
+              "整改采购",
+              "其他"
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
         }
       }
     },
-
     "sources": {
-      "type": "array", "minItems": 1,
+      "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["ref_id", "url_or_doc_number", "publisher", "published_date", "credibility"],
+        "required": [
+          "ref_id",
+          "url_or_doc_number",
+          "publisher",
+          "published_date",
+          "credibility"
+        ],
         "properties": {
-          "ref_id": { "type": "string", "description": "被其他字段的 source_ref 引用" },
-          "url_or_doc_number": { "type": "string" },
-          "title": { "type": "string" },
-          "publisher": { "type": "string" },
-          "published_date": { "type": "string", "format": "date" },
-          "credibility": { "enum": ["S1", "S2", "S3", "S4"] },
-          "snapshot_id": { "type": "string", "description": "存档目录 ID,对应 archive/{YYYY}/{MM}/{snapshot_id}/,采集软件强制生成" },
+          "ref_id": {
+            "type": "string",
+            "description": "被其他字段的 source_ref 引用"
+          },
+          "url_or_doc_number": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "published_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "credibility": {
+            "enum": [
+              "S1",
+              "S2",
+              "S3",
+              "S4"
+            ]
+          },
+          "snapshot_id": {
+            "type": "string",
+            "description": "存档目录 ID,对应 archive/{YYYY}/{MM}/{snapshot_id}/,采集软件强制生成"
+          },
           "archive": {
             "type": "object",
-            "required": ["status", "captured_at"],
+            "required": [
+              "status",
+              "captured_at"
+            ],
             "description": "原文完整存档结果,规范见方案 7.3;存档为只读(WORM),内容以 manifest.json 为准",
             "properties": {
               "status": {
-                "enum": ["L-A完整原文", "L-B单文件归档", "L-C快照图片", "L-D失败待补"],
+                "enum": [
+                  "L-A完整原文",
+                  "L-B单文件归档",
+                  "L-C快照图片",
+                  "L-D失败待补"
+                ],
                 "description": "实际达到的存档层级(降级链:完整原文→单文件/PDF→分段截图→失败登记)"
               },
-              "captured_at": { "type": "string", "format": "date-time" },
-              "final_url": { "type": "string", "description": "跳转后的真实抓取地址" },
-              "has_full_text": { "type": "boolean" },
-              "image_count": { "type": "integer", "description": "已下载正文图片数" },
-              "attachment_count": { "type": "integer", "description": "已下载附件数(处罚决定书/判决文书 PDF 等)" },
-              "screenshot_pages": { "type": "integer", "description": "分段截图张数,单页为 1" },
-              "manifest_sha256": { "type": "string" }
+              "captured_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "final_url": {
+                "type": "string",
+                "description": "跳转后的真实抓取地址"
+              },
+              "has_full_text": {
+                "type": "boolean"
+              },
+              "image_count": {
+                "type": "integer",
+                "description": "已下载正文图片数"
+              },
+              "attachment_count": {
+                "type": "integer",
+                "description": "已下载附件数(处罚决定书/判决文书 PDF 等)"
+              },
+              "screenshot_pages": {
+                "type": "integer",
+                "description": "分段截图张数,单页为 1"
+              },
+              "manifest_sha256": {
+                "type": "string"
+              }
             }
           },
-          "supports_fields": { "type": "array", "items": { "type": "string" } }
+          "supports_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     },
-    "confidence_overall": { "enum": ["已证实", "多源印证", "单源待证", "存疑"] },
-    "completeness_score": { "type": "number", "minimum": 0, "maximum": 100 },
-    "status": { "enum": ["draft", "published", "monitoring", "closed"] },
+    "confidence_overall": {
+      "enum": [
+        "已证实",
+        "多源印证",
+        "单源待证",
+        "存疑"
+      ]
+    },
+    "completeness_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "published",
+        "monitoring",
+        "closed"
+      ]
+    },
     "review": {
       "type": "object",
-      "required": ["created_by", "created_at"],
+      "required": [
+        "created_by",
+        "created_at"
+      ],
       "properties": {
-        "created_by": { "type": "string" },
-        "created_at": { "type": "string", "format": "date-time" },
-        "reviewed_by": { "type": "string" },
-        "reviewed_at": { "type": "string", "format": "date-time" }
+        "created_by": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reviewed_by": {
+          "type": "string"
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
       }
     },
     "change_log": {
@@ -329,69 +826,201 @@
       "items": {
         "type": "object",
         "properties": {
-          "at": { "type": "string", "format": "date-time" },
-          "by": { "type": "string" },
-          "field": { "type": "string" },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "by": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
           "old_value": {},
           "new_value": {},
-          "source_ref": { "type": "string" }
+          "source_ref": {
+            "type": "string"
+          }
         }
       }
     }
   },
-
   "$defs": {
     "DateWithPrecision": {
       "type": "object",
-      "required": ["date", "precision"],
+      "required": [
+        "date",
+        "precision"
+      ],
       "properties": {
-        "date": { "type": "string", "format": "date" },
-        "precision": { "enum": ["日", "月", "季", "年", "未知"] }
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "precision": {
+          "enum": [
+            "日",
+            "月",
+            "季",
+            "年",
+            "未知"
+          ]
+        }
       }
     },
     "NumberWithStatus": {
       "type": "object",
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "properties": {
-        "value": { "type": ["number", "null"] },
-        "precision": { "enum": ["精确", "约数", "区间下限", null] },
-        "status": { "enum": ["已披露", "未披露", "待回访"] },
-        "source_ref": { "type": "string" }
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "precision": {
+          "enum": [
+            "精确",
+            "约数",
+            "区间下限",
+            null
+          ]
+        },
+        "status": {
+          "enum": [
+            "已披露",
+            "未披露",
+            "待回访"
+          ]
+        },
+        "source_ref": {
+          "type": "string"
+        }
       }
     },
     "NumberTriState": {
       "type": "object",
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "properties": {
-        "claimed": { "type": ["number", "null"], "description": "声称值(攻击者/爆料)" },
-        "estimated": { "type": ["number", "null"], "description": "第三方估算" },
-        "confirmed": { "type": ["number", "null"], "description": "企业/监管/法院确认" },
-        "status": { "enum": ["已确认", "仅估算", "仅声称", "未披露", "待回访"] },
-        "source_refs": { "type": "array", "items": { "type": "string" } }
+        "claimed": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "声称值(攻击者/爆料)"
+        },
+        "estimated": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "第三方估算"
+        },
+        "confirmed": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "企业/监管/法院确认"
+        },
+        "status": {
+          "enum": [
+            "已确认",
+            "仅估算",
+            "仅声称",
+            "未披露",
+            "待回访"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "MoneyTriState": {
       "type": "object",
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "description": "金额三态对象。confirmed 通道只允许挂 S1(或支出类 S2)来源;claimed=要求/索赔/媒体转述;estimated=有方法论的第三方测算。区间金额记 low/high。",
       "properties": {
-        "claimed_cny": { "$ref": "#/$defs/AmountRange" },
-        "estimated_cny": { "$ref": "#/$defs/AmountRange" },
-        "confirmed_cny": { "$ref": "#/$defs/AmountRange" },
-        "original_currency": { "type": "string", "description": "非人民币时的原币种" },
-        "original_amount": { "type": ["number", "null"] },
-        "fx_rate": { "type": ["number", "null"], "description": "披露日人行中间价" },
-        "status": { "enum": ["已确认", "仅估算", "仅声称", "无此类损失", "未披露", "待回访"] },
-        "source_refs": { "type": "array", "items": { "type": "string" } },
-        "note": { "type": "string", "description": "计提头寸、市值波动等只能写在这里,不得进任何金额通道" }
+        "claimed_cny": {
+          "$ref": "#/$defs/AmountRange"
+        },
+        "estimated_cny": {
+          "$ref": "#/$defs/AmountRange"
+        },
+        "confirmed_cny": {
+          "$ref": "#/$defs/AmountRange"
+        },
+        "original_currency": {
+          "type": "string",
+          "description": "非人民币时的原币种"
+        },
+        "original_amount": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "fx_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "披露日人行中间价"
+        },
+        "status": {
+          "enum": [
+            "已确认",
+            "仅估算",
+            "仅声称",
+            "无此类损失",
+            "未披露",
+            "待回访"
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "note": {
+          "type": "string",
+          "description": "计提头寸、市值波动等只能写在这里,不得进任何金额通道"
+        }
       }
     },
     "AmountRange": {
       "type": "object",
       "properties": {
-        "low": { "type": ["number", "null"] },
-        "high": { "type": ["number", "null"] },
-        "point": { "type": ["number", "null"], "description": "单点金额;与 low/high 二选一" }
+        "low": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "high": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "point": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "单点金额;与 low/high 二选一"
+        }
       }
     }
   }

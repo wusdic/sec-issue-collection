@@ -11,8 +11,10 @@ def screen_prompts(profile_cfg: dict, title: str, text: str) -> tuple[str, str]:
         "TASK=screen\n"
         "你是信息采集流水线的粗筛分类器。仅输出 JSON:"
         '{"is_candidate": bool, "confidence": 0-1, "reason": "一句话"}\n'
-        f"判定标准:{goal}。"
-        "漏洞预警(无受害方)、营销软文、行业趋势文章一律 false。"
+        f"判定标准:{goal}。\n"
+        "以下也算相关(is_candidate=true):监管执法通报、网络安全态势/威胁情报、风险提示预警、"
+        "安全事件盘点/统计通报——这些虽非单一事件,但属近期重点情报,需保留(后续单独归类)。\n"
+        "仅营销软文、招聘、纯产品宣传、与网络/信息安全无关的时政/会议报道 才判 false。"
     )
     user = f"标题:{title}\n正文:\n{text[:6000]}"
     return system, user
@@ -32,6 +34,10 @@ def extract_prompts(profile_cfg: dict, dictionaries: dict, record_schema: dict,
         "只有明确『已支付』才填 paid_amount。\n"
         "3) 未披露的字段用 status='未披露' 或枚举『未披露/未知/不明』,不留空、不猜测。\n"
         "4) 每个关键抽取值在 _source_spans 里附原文片段(字段名→原文引句)。\n"
+        "5) 另输出 record_type:有明确单一受害方/单起事件→『单一事件』;监管通报汇总、威胁情报、"
+        "风险提示、态势统计(无单一受害方)→『通报情报』。\n"
+        "6) occurred_date/disclosed_date 用 {\"date\":\"YYYY-MM-DD\",\"precision\":\"日|月|季|年|未知\"};"
+        "只知年月填月末不知的用 precision 标注,不要另造 value 等字段。\n"
         f"词表(枚举值必须取自词表):\n{json.dumps(dict_brief, ensure_ascii=False)[:4000]}\n"
         f"JSON Schema:\n{json.dumps(record_schema, ensure_ascii=False)[:6000]}"
     )

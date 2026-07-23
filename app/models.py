@@ -218,6 +218,8 @@ class Event(Base):
     org_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     org_size: Mapped[str | None] = mapped_column(String(8), nullable=True)
     severity: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # 记录类型:单一事件 / 通报情报(监管通报汇总·威胁情报·风险提示·态势统计,无单一受害方但有参考价值)
+    record_type: Mapped[str] = mapped_column(String(16), default="单一事件", index=True)
     attack_types: Mapped[list] = mapped_column(JSON, default=list)
     consequences: Mapped[list] = mapped_column(JSON, default=list)
     confidence_overall: Mapped[str | None] = mapped_column(String(16), nullable=True)

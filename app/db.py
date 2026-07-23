@@ -41,6 +41,7 @@ def init_db():
 # 轻量列迁移(无 Alembic):对已存在的表补加新增列。仅做 ADD COLUMN(幂等),不改类型/不删列。
 _ADDED_COLUMNS = [
     ("source", "site_key", "VARCHAR(256)"),
+    ("event", "record_type", "VARCHAR(16)"),
 ]
 
 

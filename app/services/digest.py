@@ -21,7 +21,10 @@ def build_content(db: Session, need_id: str, day: date) -> dict:
 
     ev_q = db.query(Event).filter(Event.need_id == need_id,
                                   Event.created_at >= start, Event.created_at < end)
-    events = ev_q.all()
+    all_records = ev_q.all()
+    # 单一事件 与 通报情报 分开统计(后者是近期重点情报方向,单独归类)
+    events = [e for e in all_records if (e.record_type or "单一事件") != "通报情报"]
+    advisories = [e for e in all_records if (e.record_type or "单一事件") == "通报情报"]
     by_industry: dict[str, int] = {}
     by_severity: dict[str, int] = {}
     top_events = []
@@ -61,10 +64,16 @@ def build_content(db: Session, need_id: str, day: date) -> dict:
                                      CrawlJob.started_at >= start, CrawlJob.started_at < end).all()
     new_docs = sum(j.new_docs for j in jobs)
 
+    top_advisories = [{"event_id": a.event_id, "title": (a.payload or {}).get("title") or a.org_name,
+                       "org": a.org_name, "consequences": a.consequences or [],
+                       "occurred": a.occurred_date.isoformat() if a.occurred_date else None}
+                      for a in sorted(advisories, key=lambda x: x.created_at, reverse=True)[:10]]
+
     return {
         "need_id": need_id, "day": day.isoformat(),
         "events_total": len(events), "events_by_industry": by_industry,
         "events_by_severity": by_severity, "top_events": top_events,
+        "advisories_total": len(advisories), "top_advisories": top_advisories,
         "leads_total": len(leads), "leads_by_stage": by_stage, "top_leads": top_leads,
         "hot_industries": sorted(by_industry.items(), key=lambda x: -x[1])[:5],
         "sources": {"healthy": healthy, "failing": failing, "retired": retired,
@@ -76,8 +85,8 @@ def build_content(db: Session, need_id: str, day: date) -> dict:
 
 def render_markdown(c: dict) -> str:
     L = [f"# 安全事件日报 · {c['day']}", ""]
-    L.append(f"**今日新增事件 {c['events_total']} 条 ｜ 新增/更新线索 {c['leads_total']} 条 ｜ "
-             f"新入库文档 {c['crawl']['new_docs']} 篇**")
+    L.append(f"**今日新增事件 {c['events_total']} 条 ｜ 通报情报 {c.get('advisories_total', 0)} 条 ｜ "
+             f"新增/更新线索 {c['leads_total']} 条 ｜ 新入库文档 {c['crawl']['new_docs']} 篇**")
     L.append("")
     if c["hot_industries"]:
         L.append("## 行业热点(按新增事件数)")
@@ -94,6 +103,12 @@ def render_markdown(c: dict) -> str:
             atk = "、".join(e["attack_types"]) or "—"
             L.append(f"- **{e['org'] or '(未知单位)'}**（{e['industry'] or '未分类'}／"
                      f"{e['severity'] or '未定级'}）{atk} ｜ {e['event_id']} [{e['status']}]")
+        L.append("")
+    if c.get("top_advisories"):
+        L.append("## 通报情报(近期重点方向)")
+        for a in c["top_advisories"]:
+            conseq = "、".join(a["consequences"][:4]) or "—"
+            L.append(f"- **{a['title'] or '(无题)'}**（{a['occurred'] or '时间未披露'}）{conseq} ｜ {a['event_id']}")
         L.append("")
     if c["top_leads"]:
         L.append("## 销售线索(评分 Top)")

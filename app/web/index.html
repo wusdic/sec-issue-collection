@@ -259,9 +259,11 @@ async function loadEvents(){
     const rows=await api(q);
     if(!rows.length){ document.getElementById("evTable").innerHTML=`<p class="muted">暂无事件。去「仪表盘」点“一键载入演示数据”,或到「采集」页跑一轮真实采集。</p>`; return; }
     document.getElementById("evTable").innerHTML=`<table><thead><tr>
-      <th>标题</th><th>行业</th><th>严重度</th><th>手段</th><th>状态</th><th>完备度</th><th>披露日</th></tr></thead><tbody>`+
+      <th>标题</th><th>类型</th><th>行业</th><th>严重度</th><th>手段</th><th>状态</th><th>完备度</th><th>披露日</th></tr></thead><tbody>`+
       rows.map(e=>`<tr style="cursor:pointer" onclick="openEvent('${e.event_id}')">
-        <td>${esc(e.title||e.event_id)}</td><td>${esc(e.industry||"-")}</td>
+        <td>${esc(e.title||e.event_id)}</td>
+        <td>${e.record_type==="通报情报"?'<span class="pill info">通报情报</span>':'<span class="pill">事件</span>'}</td>
+        <td>${esc(e.industry||"-")}</td>
         <td>${sevPill(e.severity)}</td><td>${(e.attack_types||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")}</td>
         <td>${statusPill(e.status)}</td><td>${e.completeness??"-"}</td><td class="muted">${esc(e.disclosed_date||"-")}</td>
       </tr>`).join("")+`</tbody></table>`;
@@ -596,7 +598,10 @@ async function loadDigest(day){
     const chip=(t)=>`<span class="pill info" style="margin:2px">${esc(t)}</span>`;
     body.innerHTML=`<div style="font-size:15px;margin-bottom:8px"><b>${r.day}</b>
         ${r.delivered?'<span class="pill ok">已推送</span>':''}</div>
-      <div style="margin-bottom:10px">今日新增事件 <b>${c.events_total}</b> 条 ｜ 线索 <b>${c.leads_total}</b> 条 ｜ 新入库文档 <b>${(c.crawl||{}).new_docs||0}</b> 篇</div>
+      <div style="margin-bottom:10px">今日新增事件 <b>${c.events_total}</b> 条 ｜ 通报情报 <b>${c.advisories_total||0}</b> 条 ｜ 线索 <b>${c.leads_total}</b> 条 ｜ 新入库文档 <b>${(c.crawl||{}).new_docs||0}</b> 篇</div>
+      ${(c.top_advisories||[]).length?`<h3 style="font-size:14px;margin-top:10px">通报情报(近期重点方向)</h3>
+        <ul style="margin:0;padding-left:18px">${c.top_advisories.map(a=>
+          `<li style="margin:2px 0">${esc(a.title||'(无题)')} <span class="muted">${esc(a.occurred||'时间未披露')} · ${esc((a.consequences||[]).slice(0,3).join('、')||'—')}</span></li>`).join("")}</ul>`:''}
       ${(c.hot_industries||[]).length?`<h3 style="font-size:14px">行业热点</h3><div>${c.hot_industries.map(([n,k])=>chip(n+" "+k)).join("")}</div>`:''}
       ${(c.top_events||[]).length?`<h3 style="font-size:14px;margin-top:10px">重点事件</h3>
         <table><thead><tr><th>单位</th><th>行业</th><th>严重度</th><th>攻击</th><th>状态</th></tr></thead><tbody>

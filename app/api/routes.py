@@ -398,6 +398,7 @@ def get_archive(snapshot_id: str, db: Session = Depends(get_session),
 @api.get("/events")
 def list_events(need_id: str, status: str | None = None, industry: str | None = None,
                 province: str | None = None, severity: str | None = None,
+                record_type: str | None = None,
                 limit: int = Query(50, le=500), db: Session = Depends(get_session),
                 _: AppUser = Depends(current_user)):
     q = db.query(Event).filter_by(need_id=need_id)
@@ -411,9 +412,11 @@ def list_events(need_id: str, status: str | None = None, industry: str | None = 
         q = q.filter_by(province=province)
     if severity:
         q = q.filter_by(severity=severity)
+    if record_type:
+        q = q.filter_by(record_type=record_type)
     return [{"event_id": e.event_id, "title": (e.payload or {}).get("title"),
              "status": e.status, "industry": e.industry_l1, "province": e.province,
-             "severity": e.severity, "attack_types": e.attack_types,
+             "severity": e.severity, "record_type": e.record_type, "attack_types": e.attack_types,
              "completeness": e.completeness_score, "disclosed_date": str(e.disclosed_date or "")}
             for e in q.order_by(Event.event_id.desc()).limit(limit).all()]
 
