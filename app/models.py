@@ -408,3 +408,32 @@ class CrawlLog(Base):
     level: Mapped[str] = mapped_column(String(8), default="info")  # info/warn/error
     source: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message: Mapped[str] = mapped_column(Text)
+
+
+class RunTrace(Base):
+    """端到端诊断留痕:LLM 调用(提示词+原始返回)、粗筛/抽取/去重/建草稿每步的输入输出。
+
+    用于把一次采集"到底发生了什么"完整记录下来供离线分析(可整包下载)。detail 存结构化
+    明细(JSON),ref 关联到具体文档 URL / 事件号,便于跨步骤对齐同一篇的处理链路。
+    """
+    __tablename__ = "run_trace"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("crawl_job.id"), index=True, nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # llm/screen/extract/dedup/draft/error/note
+    ref: Mapped[str | None] = mapped_column(String(400), nullable=True)   # 关联文档URL/事件号
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)      # 人读一行摘要
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)      # 结构化明细
+
+
+class DailyDigest(Base):
+    """每日简报:某需求某天的产出汇总(新增事件/线索/行业热点/源健康),可页面查看与下载。"""
+    __tablename__ = "daily_digest"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    content: Mapped[dict] = mapped_column(JSON, default=dict)   # 结构化简报
+    markdown: Mapped[str | None] = mapped_column(Text, nullable=True)  # 渲染好的 md 文本
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False)    # 是否已推送
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    __table_args__ = (UniqueConstraint("need_id", "day", name="uq_digest_need_day"),)

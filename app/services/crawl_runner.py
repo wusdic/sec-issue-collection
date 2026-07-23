@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import SessionLocal
 from app.models import CrawlJob, CrawlLog, KeywordSet, NeedProfile, RawDocument, Source
-from app.services import discovery, fetcher, leads, pipeline
+from app.services import diagnostics, discovery, fetcher, leads, pipeline
 from app.services.scheduler import expand_queries
 
 _CANCEL: set[int] = set()  # 请求取消的 job_id
@@ -62,6 +62,8 @@ def _pick_sources(db: Session, need: NeedProfile, limit: int) -> list[Source]:
 
 def _run(job_id: int):
     db = SessionLocal()
+    _diag = diagnostics.session(job_id)   # 全程诊断留痕:LLM 调用+每步决策记入 run_trace,可下载分析
+    _diag.__enter__()
     try:
         job = db.get(CrawlJob, job_id)
         need = db.get(NeedProfile, job.need_id)
@@ -158,6 +160,16 @@ def _run(job_id: int):
         except Exception as e:  # noqa: BLE001
             _log(db, job_id, "warn", None, f"收尾步骤异常(不影响主结果):{e}")
 
+        # 生成当天简报(新增事件/线索/行业热点/源健康),供页面查看与下载
+        try:
+            from app.services import digest as digest_svc
+            d = digest_svc.generate_today(db, need.id)
+            _log(db, job_id, "info", None,
+                 f"已生成 {d.day} 日报:新增事件 {d.content.get('events_total', 0)} 条、"
+                 f"线索 {d.content.get('leads_total', 0)} 条")
+        except Exception as e:  # noqa: BLE001 简报失败不影响采集结果
+            _log(db, job_id, "warn", None, f"日报生成异常(不影响采集):{e}")
+
         job.status = "done"
         job.phase = "完成"
         job.finished_at = datetime.utcnow()
@@ -177,5 +189,9 @@ def _run(job_id: int):
         except Exception:  # noqa: BLE001
             pass
     finally:
+        try:
+            _diag.__exit__(None, None, None)   # 关闭诊断会话(flush 留痕)
+        except Exception:  # noqa: BLE001
+            pass
         _CANCEL.discard(job_id)
         db.close()

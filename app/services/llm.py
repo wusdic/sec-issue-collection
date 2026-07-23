@@ -74,7 +74,9 @@ class OpenAICompatLLM(BaseLLM):
             try:
                 u = user if last_err is None else f"{user}\n\n注意:只输出合法 JSON,不要多余文字。"
                 raw = self._chat(system, u, use_json_format=use_json)
-                return _parse_json(raw)
+                out = _parse_json(raw)
+                _trace_llm(system, user, model=self.model, raw=raw, parsed=out)
+                return out
             except LLMError as e:
                 last_err = str(e)
                 # response_format 不被支持 → 关掉该参数再试(不消耗重试次数)
@@ -86,6 +88,7 @@ class OpenAICompatLLM(BaseLLM):
             except json.JSONDecodeError as e:
                 last_err = f"输出非 JSON: {e}"
                 left -= 1
+        _trace_llm(system, user, model=self.model, error=last_err)
         raise LLMError(f"LLM 调用失败: {last_err}")
 
     def embed(self, text: str) -> list[float]:
@@ -114,6 +117,33 @@ class OpenAICompatLLM(BaseLLM):
             self._embed_dialect = build  # 记住成功方言
             return vec
         raise LLMError(f"向量接口调用失败: {last_err}")
+
+
+# ---- 诊断留痕(端到端分析用):记录每次 LLM 调用的提示词与原始返回 ----
+
+def _task_of(system: str) -> str:
+    for tag in ("screen", "extract", "relevance", "list_template"):
+        if f"TASK={tag}" in (system or ""):
+            return tag
+    return "other"
+
+
+def _trace_llm(system: str, user: str, model: str = "", raw: str | None = None,
+               parsed=None, error: str | None = None):
+    """把一次 LLM 调用记入诊断(有活跃诊断会话时才写);绝不影响主流程。"""
+    try:
+        from app.services import diagnostics
+        if not diagnostics.active():
+            return
+        task = _task_of(system)
+        summary = (f"LLM[{task}] {model or ''} " +
+                   ("失败: " + str(error)[:120] if error else "ok"))
+        diagnostics.record("llm", summary=summary, detail={
+            "task": task, "model": model, "system": system, "user": user,
+            "raw_response": raw, "parsed": parsed, "error": error,
+        })
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---- 跨厂商兼容工具:响应解析与错误提取(不针对某一家特判) ----
@@ -253,6 +283,11 @@ class MockLLM(BaseLLM):
                     "拖库", "撞库", "钓鱼", "诈骗", "判决", "侵犯公民个人信息"]
 
     def complete_json(self, system: str, user: str, retries: int = 2) -> dict:
+        out = self._mock_json(system, user)
+        _trace_llm(system, user, model="mock", raw=None, parsed=out)
+        return out
+
+    def _mock_json(self, system: str, user: str) -> dict:
         if "TASK=screen" in system:
             hit = sum(1 for k in self.SEC_KEYWORDS if k in user)
             score = min(0.95, 0.25 + hit * 0.2)

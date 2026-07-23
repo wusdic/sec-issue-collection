@@ -76,6 +76,20 @@ class Settings:
     # 浏览器渲染内存保护:同一浏览器实例连续渲染这么多页后回收重启,防长跑内存膨胀。0=不回收
     render_recycle_after: int = int(os.getenv("RENDER_RECYCLE_AFTER", "300"))
 
+    # 每日自动采集:进程内轻量调度(无需 Celery/Redis),到点自动跑一轮采集并出日报
+    daily_auto_enabled: bool = os.getenv("DAILY_AUTO_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+    daily_auto_hour: int = int(os.getenv("DAILY_AUTO_HOUR", "1"))          # 每天几点(UTC)跑,默认 01:00 UTC≈北京9点
+    daily_auto_limit_sources: int = int(os.getenv("DAILY_AUTO_LIMIT_SOURCES", "999"))  # 每日全量跑
+    daily_need_id: str = os.getenv("DAILY_NEED_ID", "sec_events")
+
+    # 日报邮件推送(可选):未配置 smtp_host 则不发,仅页面查看/下载
+    smtp_host: str = os.getenv("SMTP_HOST", "")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "465"))
+    smtp_user: str = os.getenv("SMTP_USER", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_from: str = os.getenv("SMTP_FROM", "")
+    digest_email_to: str = os.getenv("DIGEST_EMAIL_TO", "")               # 逗号分隔收件人
+
     # Celery
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 

@@ -712,6 +712,108 @@ def crawl_job_cancel(job_id: int, _: AppUser = Depends(require_roles("analyst", 
     return {"ok": True, "note": "已请求取消,当前步骤完成后停止"}
 
 
+@api.get("/crawl/jobs/{job_id}/diagnostics")
+def crawl_job_diagnostics(job_id: int, db: Session = Depends(get_session),
+                          _: AppUser = Depends(require_roles("analyst"))):
+    """整包导出一次采集的端到端诊断:任务元信息 + 全部日志 + 每步留痕(LLM 提示词/返回、
+    粗筛/抽取/去重/建草稿的输入输出)。前端『下载诊断日志』用,下载回来即可离线分析。"""
+    from fastapi.responses import JSONResponse
+
+    from app.models import CrawlJob, CrawlLog, RunTrace
+    job = db.get(CrawlJob, job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    logs = db.query(CrawlLog).filter_by(job_id=job_id).order_by(CrawlLog.id).all()
+    traces = db.query(RunTrace).filter_by(job_id=job_id).order_by(RunTrace.id).all()
+    bundle = {
+        "job": {"id": job.id, "need_id": job.need_id, "status": job.status,
+                "phase": job.phase, "limit_sources": job.limit_sources,
+                "total_sources": job.total_sources, "new_docs": job.new_docs,
+                "kept_docs": job.kept_docs, "dropped_docs": job.dropped_docs,
+                "new_events": job.new_events, "error": job.error,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "finished_at": job.finished_at.isoformat() if job.finished_at else None},
+        "logs": [{"at": r.at.isoformat(), "level": r.level, "source": r.source,
+                  "message": r.message} for r in logs],
+        "traces": [{"at": r.at.isoformat(), "kind": r.kind, "ref": r.ref,
+                    "summary": r.summary, "detail": r.detail} for r in traces],
+        "counts": {"logs": len(logs), "traces": len(traces)},
+    }
+    return JSONResponse(bundle, headers={
+        "Content-Disposition": f'attachment; filename="diagnostics-job{job_id}.json"'})
+
+
+# ---------- 每日简报 M-digest ----------
+
+@api.get("/digest")
+def get_digest(need_id: str = "sec_events", day: str | None = None,
+               db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """取某天日报(默认最新)。返回结构化内容 + Markdown。"""
+    from datetime import date as _date
+
+    from app.models import DailyDigest
+    from app.services import digest as digest_svc
+    if day:
+        try:
+            d = _date.fromisoformat(day)
+        except ValueError:
+            raise HTTPException(422, "day 格式应为 YYYY-MM-DD")
+        row = db.query(DailyDigest).filter_by(need_id=need_id, day=d).one_or_none()
+    else:
+        row = digest_svc.latest(db, need_id)
+    if not row:
+        return {"exists": False, "note": "暂无日报,采集一轮后自动生成,或点『生成今日日报』"}
+    return {"exists": True, "day": row.day.isoformat(), "content": row.content,
+            "markdown": row.markdown, "delivered": row.delivered}
+
+
+@api.get("/digests")
+def list_digests(need_id: str = "sec_events", limit: int = 30,
+                 db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    from app.models import DailyDigest
+    rows = (db.query(DailyDigest).filter_by(need_id=need_id)
+            .order_by(DailyDigest.day.desc()).limit(limit).all())
+    return [{"day": r.day.isoformat(), "events": r.content.get("events_total", 0),
+             "leads": r.content.get("leads_total", 0), "delivered": r.delivered} for r in rows]
+
+
+@api.post("/digest/run")
+def run_digest(need_id: str = "sec_events", push: bool = False,
+               db: Session = Depends(get_session), _: AppUser = Depends(require_roles("analyst"))):
+    """按需生成今日日报(不必等采集)。push=True 时尝试邮件推送。"""
+    from app.services import digest as digest_svc
+    if push:
+        d = digest_svc.generate_today(db, need_id)
+        from app.services.daily import deliver_email
+        ok, msg = deliver_email(f"安全事件日报 {d.day}", d.markdown or "")
+        return {"day": d.day.isoformat(), "pushed": ok, "push_detail": msg,
+                "events": d.content.get("events_total", 0)}
+    d = digest_svc.upsert(db, need_id, __import__("datetime").datetime.utcnow().date())
+    db.commit()
+    return {"day": d.day.isoformat(), "pushed": False,
+            "events": d.content.get("events_total", 0)}
+
+
+@api.get("/digest/download")
+def download_digest(need_id: str = "sec_events", day: str | None = None,
+                    db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """下载日报 Markdown。"""
+    from datetime import date as _date
+
+    from fastapi.responses import PlainTextResponse
+
+    from app.models import DailyDigest
+    from app.services import digest as digest_svc
+    if day:
+        row = db.query(DailyDigest).filter_by(need_id=need_id, day=_date.fromisoformat(day)).one_or_none()
+    else:
+        row = digest_svc.latest(db, need_id)
+    if not row:
+        raise HTTPException(404, "暂无日报")
+    return PlainTextResponse(row.markdown or "", headers={
+        "Content-Disposition": f'attachment; filename="digest-{row.day.isoformat()}.md"'})
+
+
 @api.get("/crawl/runs")
 def crawl_runs(limit: int = 30, db: Session = Depends(get_session),
                _: AppUser = Depends(current_user)):

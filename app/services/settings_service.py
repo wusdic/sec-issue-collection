@@ -43,6 +43,20 @@ EDITABLE = [
     ("fingerprint_window_days", "事件去重时间窗(天)", "去重", "int", False, "同单位同类型事件在此天数内视为同一事件,默认 14"),
 
     ("archive_max_assets", "单页最多存图/附件数", "存档", "int", False, "完整存档单页下载图片与附件上限,默认 50"),
+
+    ("daily_auto_enabled", "启用每日自动采集", "每日自动化", "bool", False,
+     "开启后进程内到点自动跑一轮采集并出日报,无需人工点。仅应用运行时生效(单机部署适用)"),
+    ("daily_auto_hour", "每日自动采集时点(UTC)", "每日自动化", "int", False,
+     "每天几点(UTC 24 小时制)自动跑。默认 1 = 北京时间约 9:00。改这里即改触发时间"),
+    ("daily_auto_limit_sources", "每日自动采集源数上限", "每日自动化", "int", False,
+     "自动跑时抓多少个源。默认 999 = 全量。源多时可调小控制时长"),
+    ("digest_email_to", "日报收件邮箱", "每日自动化", "str", False,
+     "逗号分隔多个收件人。配了 SMTP 且填了收件人才会推送邮件;否则日报仅页面查看/下载"),
+    ("smtp_host", "SMTP 服务器", "每日自动化", "str", False, "如 smtp.exmail.qq.com;留空则不发邮件"),
+    ("smtp_port", "SMTP 端口", "每日自动化", "int", False, "465=SSL(默认)、587=STARTTLS"),
+    ("smtp_user", "SMTP 账号", "每日自动化", "str", False, "登录邮箱账号"),
+    ("smtp_password", "SMTP 密码/授权码", "每日自动化", "str", True, "邮箱授权码;留空表示不修改已存值"),
+    ("smtp_from", "发件人地址", "每日自动化", "str", False, "留空则用 SMTP 账号"),
 ]
 _META = {k: (label, group, typ, secret, desc) for k, label, group, typ, secret, desc in EDITABLE}
 _KEYS = set(_META)

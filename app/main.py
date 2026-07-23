@@ -24,6 +24,9 @@ def _startup():
         load_from_db(db)
     finally:
         db.close()
+    # 每日自动采集调度(进程内轻量,daily_auto_enabled 关闭时线程空转不做事)
+    from app.services import daily
+    daily.start()
 
 
 @app.get("/", include_in_schema=False)

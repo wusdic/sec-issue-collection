@@ -106,7 +106,8 @@ let TOKEN = localStorage.getItem("tok") || "";
 let ROLE = localStorage.getItem("role") || "";
 const TABS = [
   ["dashboard","仪表盘"],["events","事件"],["review","复核台"],
-  ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],["settings","设置"],
+  ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],
+  ["digest","日报"],["settings","设置"],
 ];
 let PENDING = {};   // 下钻时携带的预设筛选,由目标页读取后清空
 function drill(tab, filter){ PENDING = filter || {}; go(tab); }
@@ -124,6 +125,19 @@ async function api(path, opts={}){
 }
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.style.opacity=1;
   setTimeout(()=>t.style.opacity=0,2600); }
+async function downloadFile(path, filename){
+  // 带鉴权头下载:fetch → blob → 触发浏览器保存
+  const headers={}; if(TOKEN) headers["Authorization"]="Bearer "+TOKEN;
+  const r=await fetch("/api/v1"+path,{headers});
+  if(!r.ok){ toast("下载失败:HTTP "+r.status); return; }
+  const blob=await r.blob(); const u=URL.createObjectURL(blob);
+  const a=document.createElement("a"); a.href=u; a.download=filename; a.click();
+  setTimeout(()=>URL.revokeObjectURL(u),4000);
+}
+function downloadDiag(){
+  if(!window.__jobId){ toast("请先运行或选中一个采集任务"); return; }
+  downloadFile(`/crawl/jobs/${window.__jobId}/diagnostics`, `diagnostics-job${window.__jobId}.json`);
+}
 function esc(s){ return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 /* ---------- 登录 ---------- */
@@ -155,7 +169,7 @@ function go(k){
   if(k!=="crawl" && typeof crawlStopPoll==="function") crawlStopPoll();  // 离开采集页停轮询(重进自动恢复)
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
   ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
-    leads:vLeads,sources:vSources,crawl:vCrawl,settings:vSettings}[k])();
+    leads:vLeads,sources:vSources,crawl:vCrawl,digest:vDigest,settings:vSettings}[k])();
 }
 
 /* ---------- 仪表盘 ---------- */
@@ -502,6 +516,65 @@ async function toSearchRetry(id,name){
     loadSources();
   }catch(e){ alert("转换失败:"+e.message); }
 }
+
+/* ---------- 日报 ---------- */
+async function vDigest(){
+  const v=document.getElementById("view");
+  const canRun=["analyst","editor","admin"].includes(ROLE);
+  v.innerHTML=`<h2>每日日报</h2>
+    <p class="sub">每天采集收尾自动生成;也可手动生成。内容:今日新增事件(按行业/严重度)、销售线索、行业热点、源健康。</p>
+    <div class="toolbar">
+      ${canRun?`<button onclick="genDigest(false)" id="dgBtn">生成今日日报</button>
+      <button class="ghost" onclick="genDigest(true)" title="需在设置页配好 SMTP 和收件邮箱">生成并邮件推送</button>`:''}
+      <button class="ghost" onclick="downloadFile('/digest/download','digest.md')">⬇ 下载 Markdown</button>
+      <select id="dgDay" onchange="loadDigest(this.value)"><option value="">最新</option></select>
+    </div>
+    <div id="dgMsg" class="sub" style="margin:6px 0"></div>
+    <div id="dgBody" class="card" style="padding:16px">加载中…</div>`;
+  // 历史日期下拉
+  try{
+    const days=await api(`/digests?need_id=${NEED}`);
+    const sel=document.getElementById("dgDay");
+    days.forEach(d=>{ const o=document.createElement("option"); o.value=d.day;
+      o.textContent=`${d.day}(事件${d.events}/线索${d.leads})`; sel.appendChild(o); });
+  }catch(e){}
+  loadDigest("");
+}
+async function loadDigest(day){
+  const body=document.getElementById("dgBody");
+  try{
+    const r=await api(`/digest?need_id=${NEED}`+(day?`&day=${day}`:""));
+    if(!r.exists){ body.innerHTML=`<span class="muted">${esc(r.note||"暂无日报")}</span>`; return; }
+    const c=r.content;
+    const chip=(t)=>`<span class="pill info" style="margin:2px">${esc(t)}</span>`;
+    body.innerHTML=`<div style="font-size:15px;margin-bottom:8px"><b>${r.day}</b>
+        ${r.delivered?'<span class="pill ok">已推送</span>':''}</div>
+      <div style="margin-bottom:10px">今日新增事件 <b>${c.events_total}</b> 条 ｜ 线索 <b>${c.leads_total}</b> 条 ｜ 新入库文档 <b>${(c.crawl||{}).new_docs||0}</b> 篇</div>
+      ${(c.hot_industries||[]).length?`<h3 style="font-size:14px">行业热点</h3><div>${c.hot_industries.map(([n,k])=>chip(n+" "+k)).join("")}</div>`:''}
+      ${(c.top_events||[]).length?`<h3 style="font-size:14px;margin-top:10px">重点事件</h3>
+        <table><thead><tr><th>单位</th><th>行业</th><th>严重度</th><th>攻击</th><th>状态</th></tr></thead><tbody>
+        ${c.top_events.map(e=>`<tr><td>${esc(e.org||"—")}</td><td>${esc(e.industry||"—")}</td>
+          <td>${esc(e.severity||"—")}</td><td>${esc((e.attack_types||[]).join("、")||"—")}</td>
+          <td>${esc(e.status||"")}</td></tr>`).join("")}</tbody></table>`:''}
+      ${(c.top_leads||[]).length?`<h3 style="font-size:14px;margin-top:10px">销售线索(评分Top)</h3>
+        <table><thead><tr><th>目标</th><th>窗口期</th><th>评分</th><th>建议产品</th></tr></thead><tbody>
+        ${c.top_leads.map(l=>`<tr><td>${esc(l.org)}</td><td>${esc(l.stage||"")}</td>
+          <td>${l.score}</td><td>${esc((l.products||[]).join("、")||"—")}</td></tr>`).join("")}</tbody></table>`:''}
+      <h3 style="font-size:14px;margin-top:10px">源健康</h3>
+      <div class="muted">服务本需求 ${(c.sources||{}).serving||0} 个:健康 ${(c.sources||{}).healthy||0}、异常 ${(c.sources||{}).failing||0}、停用 ${(c.sources||{}).retired||0}</div>`;
+  }catch(e){ body.innerHTML=`<span class="muted">${esc(e.message)}</span>`; }
+}
+async function genDigest(push){
+  const msg=document.getElementById("dgMsg"); const btn=document.getElementById("dgBtn");
+  if(btn) btn.disabled=true; msg.textContent="生成中…";
+  try{
+    const r=await api(`/digest/run?need_id=${NEED}&push=${push?"true":"false"}`,{method:"POST"});
+    msg.innerHTML=`<span class="pill ok">已生成 ${r.day}</span> 事件 ${r.events} 条`
+      +(push?(r.pushed?` <span class="pill ok">邮件已推送</span>`:` <span class="pill warn">${esc(r.push_detail||"未推送")}</span>`):"");
+    loadDigest("");
+  }catch(e){ msg.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+  finally{ if(btn) btn.disabled=false; }
+}
 async function batchToSearch(){
   const btn=document.getElementById("toSearchBtn"), prog=document.getElementById("testAllProgress");
   let rows; try{ rows=await api(`/sources`); }catch(e){ alert(e.message); return; }
@@ -564,7 +637,8 @@ async function vCrawl(){
     <p class="sub">点标题看抓回的正文,点“原文↗”打开来源链接。不相干内容默认已隐藏。</p>
     <div id="docsTable">加载中…</div>
     <h3 style="font-size:15px;margin-top:20px">采集日志 <span class="muted" style="font-size:12px">(排查用,最新在上)</span>
-      <button class="ghost sm" style="margin-left:10px" onclick="loadJobLogs()">刷新日志</button></h3>
+      <button class="ghost sm" style="margin-left:10px" onclick="loadJobLogs()">刷新日志</button>
+      <button class="ghost sm" onclick="downloadDiag()" title="整包导出本次采集的端到端留痕:日志+每步LLM提示词/返回+粗筛/抽取/去重明细,下载回来可离线分析">⬇ 下载诊断日志</button></h3>
     <div id="logBox"><span class="muted">运行/选中一个采集任务后显示日志</span></div>`;
   refreshJob();
   loadDocs();

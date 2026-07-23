@@ -13,7 +13,7 @@ from app.config import settings
 from app.models import (
     CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
-from app.services import archive, dedup, discovery, fetcher, reputation, url_tools
+from app.services import archive, dedup, diagnostics, discovery, fetcher, reputation, url_tools
 from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
@@ -138,6 +138,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
 def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     """粗筛 + 抽取 + 记录级去重;产出草稿事件或标记淘汰/合并。"""
     result = {"doc_id": doc.id, "action": None, "event_id": None}
+    diagnostics.set_ref(doc.url)  # 后续 LLM/决策留痕自动关联到本文档
     if doc.screen_status == "screened_out":
         result["action"] = "skipped"
         return result
@@ -145,6 +146,7 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         doc.screen_status = "screened_out"
         doc.screen_reason = "同稿簇非首发(转载)"
         result["action"] = "duplicate_doc"
+        diagnostics.record("dedup", "同稿簇非首发(转载),跳过", detail={"cluster_id": doc.cluster_id})
         db.flush()
         return result
 
@@ -153,6 +155,11 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     conf = verdict["confidence"]
     doc.screen_score = conf
     doc.screen_reason = verdict["reason"]
+    diagnostics.record("screen", f"粗筛 {conf:.2f} {'相关' if verdict['is_candidate'] else '不相关'}",
+                       detail={"title": doc.title, "confidence": conf,
+                               "is_candidate": verdict["is_candidate"], "reason": verdict["reason"],
+                               "keep_th": settings.screen_keep_threshold,
+                               "manual_th": settings.screen_manual_threshold})
     # 阈值双重把关(可在设置页调严):入选需 is_candidate 且分数≥keep;0.4-0.6 待人工;更低判为不相干淘汰
     if not (verdict["is_candidate"] and conf >= settings.screen_keep_threshold):
         if conf >= settings.screen_manual_threshold:
@@ -171,6 +178,9 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     dictionaries = get_active_dictionaries(db, need.id)
     extraction = extract_record(cfg, dictionaries, record_schema, doc.title or "", doc.content_text or "")
     payload = extraction["payload"]
+    diagnostics.record("extract", "结构化抽取完成",
+                       detail={"payload": payload, "violations": extraction["violations"],
+                               "schema_errors": extraction["schema_errors"]})
 
     # 记录级去重:指纹 → 语义召回
     existing = dedup.fingerprint_match(db, need.id, payload)
@@ -181,6 +191,8 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         result["action"] = "merge_suggested"
         result["event_id"] = existing.event_id
         result["extraction"] = extraction
+        diagnostics.record("dedup", f"指纹命中疑似同事件 {existing.event_id},转人工合并",
+                           detail={"matched_event": existing.event_id})
         db.flush()
         return result
 
@@ -201,6 +213,10 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     result["event_id"] = ev.event_id
     result["violations"] = extraction["violations"]
     result["schema_errors"] = extraction["schema_errors"]
+    diagnostics.record("draft", f"生成草稿事件 {ev.event_id}(信誉 {src_cred})", ref=ev.event_id,
+                       detail={"event_id": ev.event_id, "source_credibility": src_cred,
+                               "semantic_suspects": result.get("semantic_suspects"),
+                               "violations": extraction["violations"]})
     db.flush()
     return result
 
