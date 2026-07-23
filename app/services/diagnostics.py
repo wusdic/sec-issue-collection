@@ -29,34 +29,36 @@ def _truncate(v):
 class _Recorder:
     def __init__(self, job_id: int | None):
         self.job_id = job_id
-        self.ref: str | None = None       # 当前处理的文档 URL/事件号,自动附到后续记录
         self.count = 0
         self._db = SessionLocal()
+        self._lock = threading.Lock()     # 并行处理时多线程共用同一记录器,写入串行化
 
     def add(self, kind: str, summary: str = "", ref: str | None = None, detail: dict | None = None):
-        try:
-            self._db.add(RunTrace(
-                job_id=self.job_id, kind=kind,
-                ref=(ref or self.ref or "")[:400] or None,
-                summary=(summary or "")[:2000] or None,
-                detail=_truncate(detail) if detail else None,
-            ))
-            self.count += 1
-            if self.count % 20 == 0:
-                self._db.commit()
-        except Exception:  # noqa: BLE001 诊断留痕绝不能影响主流程
+        with self._lock:
             try:
-                self._db.rollback()
-            except Exception:  # noqa: BLE001
-                pass
+                self._db.add(RunTrace(
+                    job_id=self.job_id, kind=kind,
+                    ref=(ref or "")[:400] or None,
+                    summary=(summary or "")[:2000] or None,
+                    detail=_truncate(detail) if detail else None,
+                ))
+                self.count += 1
+                if self.count % 20 == 0:
+                    self._db.commit()
+            except Exception:  # noqa: BLE001 诊断留痕绝不能影响主流程
+                try:
+                    self._db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def close(self):
-        try:
-            self._db.commit()
-        except Exception:  # noqa: BLE001
-            pass
-        finally:
-            self._db.close()
+        with self._lock:
+            try:
+                self._db.commit()
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                self._db.close()
 
 
 @contextmanager
@@ -79,15 +81,26 @@ def active() -> bool:
     return getattr(_local, "rec", None) is not None
 
 
+def current():
+    """返回本线程当前的记录器(供并行 worker 绑定复用);无则 None。"""
+    return getattr(_local, "rec", None)
+
+
+def bind(rec):
+    """在 worker 线程里绑定主线程的记录器,使并行处理也能留痕。返回原绑定以便还原。"""
+    prev = getattr(_local, "rec", None)
+    _local.rec = rec
+    _local.ref = None
+    return prev
+
+
 def set_ref(ref: str | None):
-    """设置当前处理对象(文档 URL/事件号),后续 record 未显式给 ref 时自动附上。"""
-    rec = getattr(_local, "rec", None)
-    if rec is not None:
-        rec.ref = ref
+    """设置当前处理对象(文档 URL/事件号),后续 record 未显式给 ref 时自动附上(线程本地)。"""
+    _local.ref = ref
 
 
 def record(kind: str, summary: str = "", ref: str | None = None, detail: dict | None = None):
-    """记一条诊断留痕。无活跃会话时为空操作。"""
+    """记一条诊断留痕。无活跃会话时为空操作。ref 缺省用本线程 set_ref 的值。"""
     rec = getattr(_local, "rec", None)
     if rec is not None:
-        rec.add(kind, summary, ref, detail)
+        rec.add(kind, summary, ref or getattr(_local, "ref", None), detail)

@@ -75,6 +75,9 @@ class Settings:
     search_source_query_cap: int = int(os.getenv("SEARCH_SOURCE_QUERY_CAP", "30"))
     # 单个源一次采集的时长上限(秒),超时停止该源剩余查询/翻页,避免拖垮整批
     source_time_budget_seconds: int = int(os.getenv("SOURCE_TIME_BUDGET_SECONDS", "180"))
+    # 并发度:多源同时抓取、多文档同时抽取(LLM 调用是网络等待,并发可大幅提速)。1=串行
+    crawl_concurrency: int = int(os.getenv("CRAWL_CONCURRENCY", "5"))
+    process_concurrency: int = int(os.getenv("PROCESS_CONCURRENCY", "6"))
     # 根域页面型源自动发现相关栏目:每站最多注册/抓取的栏目数
     auto_column_max: int = int(os.getenv("AUTO_COLUMN_MAX", "8"))
     # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库
