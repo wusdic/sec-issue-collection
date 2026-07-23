@@ -4,7 +4,7 @@
 """
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dateutil import parser as dtparser
 from sqlalchemy.orm import Session
@@ -13,8 +13,8 @@ from app.config import settings
 from app.models import (
     CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
-from app.services import archive, dedup, diagnostics, discovery, fetcher, reputation, url_tools
-from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
+from app.services import archive, columns, dedup, diagnostics, discovery, fetcher, reputation, url_tools
+from app.services.adapters import DiscoveredItem, GenericListAdapter, SearchEngineAdapter, get_adapter
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
 from app.services.profiles import get_active_dictionaries
@@ -29,6 +29,28 @@ def _parse_dt(s: str | None):
         return dtparser.parse(s, fuzzy=True, ignoretz=True)
     except (ValueError, OverflowError):
         return None
+
+
+def _pub_date_from(url: str):
+    """从 URL 猜发布日期(政务/新闻站路径含日期),返回 date 或 None。"""
+    return url_tools.date_from_url(url)
+
+
+def _as_dt(d):
+    """date/datetime → datetime(便于存 published_at)。"""
+    if isinstance(d, datetime):
+        return d
+    return datetime(d.year, d.month, d.day) if d else None
+
+
+def _too_old(d) -> bool:
+    """发布日期早于时效窗口(近 collect_recency_days 天)→ True。"""
+    days = int(getattr(settings, "collect_recency_days", 0) or 0)
+    if days <= 0 or d is None:
+        return False
+    cutoff = (datetime.utcnow() - timedelta(days=days)).date()
+    dd = d.date() if isinstance(d, datetime) else d
+    return dd < cutoff
 
 
 def _reputation(need: NeedProfile):
@@ -64,6 +86,20 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
         prefetched = fr0 if fr0.ok else None
     if dedup.find_existing_url(db, url):
         _bump("skipped")   # 已采过 → 增量跳过(只累加热度,不重复处理)
+        return None
+
+    # 时效窗口:发布时间早于近 N 天(默认5年)判为历史,不抓不存,只留一条薄记录供 URL 去重记住
+    pub_guess = _parse_dt(item.published) or _pub_date_from(url)
+    if pub_guess and _too_old(pub_guess):
+        _bump("too_old")
+        db.add(RawDocument(
+            need_id=need.id, source_id=source.id, crawl_run_id=crawl_run_id,
+            url=url, url_normalized=url_tools.normalize_url(url), final_url=url,
+            title=item.title, publisher=item.publisher or item.wechat_account or source.name,
+            published_at=_as_dt(pub_guess), content_text=None,
+            screen_status="screened_out",
+            screen_reason=f"早于时效窗口({settings.collect_recency_days}天),历史内容不采集"))
+        db.flush()
         return None
 
     fr = prefetched or fetcher.fetch(url, render=render_pref)
@@ -142,13 +178,11 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     if doc.screen_status == "screened_out":
         result["action"] = "skipped"
         return result
+    # 转载(非首发)不再"未读先丢":仍走粗筛+抽取,真同事件由记录级指纹/语义去重合并。
+    # 这样即便 SimHash 误判同稿,有价值内容也不会被静默丢弃;只在诊断里标注供分析。
     if not doc.is_primary:
-        doc.screen_status = "screened_out"
-        doc.screen_reason = "同稿簇非首发(转载)"
-        result["action"] = "duplicate_doc"
-        diagnostics.record("dedup", "同稿簇非首发(转载),跳过", detail={"cluster_id": doc.cluster_id})
-        db.flush()
-        return result
+        diagnostics.record("dedup", "同稿簇非首发(转载),仍走粗筛后由记录级去重把关",
+                           detail={"cluster_id": doc.cluster_id})
 
     cfg = need.config
     verdict = screen_document(cfg, doc.title or "", doc.content_text or "")
@@ -238,14 +272,30 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
     return early_enabled, stop_th
 
 
+def _item_pub(item: DiscoveredItem):
+    """列表项的发布日期(用于时效早停):优先 item.published,回退 URL 日期。"""
+    return _parse_dt(item.published) or url_tools.date_from_url(item.url)
+
+
+def _list_adapter_for(entry_url: str) -> GenericListAdapter:
+    """构造一个绑定到指定栏目 URL 的通用列表适配器(自动发现栏目时用,不落库)。"""
+    from types import SimpleNamespace
+    proxy = SimpleNamespace(entry_url=entry_url, adapter_config={})
+    return GenericListAdapter(proxy)
+
+
 def _consume_paginated(db, need, source, run, fetch_page, max_pages,
-                       early_enabled, stop_th, do_archive, stats):
-    """逐页消费 + 连续重复早停(query/page 共用)。fetch_page(page)->list|None。
+                       early_enabled, stop_th, do_archive, stats, deadline=None):
+    """逐页消费 + 早停(query/page 共用)。fetch_page(page)->list|None。
+    早停信号:连续遇到『已采过』或『早于时效窗口』的条目(时间倒序源);另有单源时长上限。
     返回 (found, pages_used, truncated, snapshot)。"""
     found, pages_used, truncated, snapshot = 0, 0, False, []
-    consecutive_seen = 0
+    consecutive_stop = 0   # 连续"已采过 或 太旧"计数
     early = False
     for page in range(max_pages):
+        if deadline and time.time() > deadline:
+            truncated = True  # 超时:该源不再翻页
+            break
         page_items = fetch_page(page)
         if not page_items:
             break
@@ -254,15 +304,23 @@ def _consume_paginated(db, need, source, run, fetch_page, max_pages,
         snapshot += [{"url": i.url, "title": i.title} for i in page_items[:20]]
         page_new = 0
         for item in page_items:
+            # 时效早停:列表按时间倒序,遇到早于窗口的历史条目 → 不抓,计入连续停止信号
+            if _too_old(_item_pub(item)):
+                stats["too_old"] = stats.get("too_old", 0) + 1
+                consecutive_stop += 1
+                if early_enabled and consecutive_stop >= stop_th:
+                    early = True
+                    break
+                continue
             prev_skip = stats["skipped"]
             ingest_item(db, need, source, item, run.id, do_archive=do_archive, stats=stats)
             if stats["skipped"] > prev_skip:          # 已采过
-                consecutive_seen += 1
-                if early_enabled and consecutive_seen >= stop_th:
+                consecutive_stop += 1
+                if early_enabled and consecutive_stop >= stop_th:
                     early = True
                     break
             else:                                      # 新增(或失败)→ 重置连续计数
-                consecutive_seen = 0
+                consecutive_stop = 0
                 page_new += 1
         if early:
             break
@@ -284,15 +342,22 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     db.add(run)
     db.flush()
     adapter = get_adapter(source)
-    stats = {"new": 0, "skipped": 0, "failed": 0, "blacklist": 0}
+    stats = {"new": 0, "skipped": 0, "failed": 0, "blacklist": 0, "too_old": 0}
     found = 0
     early_enabled, stop_th = _early_stop_config(source, adapter)
+    budget = int(getattr(settings, "source_time_budget_seconds", 0) or 0)
+    deadline = (time.time() + budget) if budget > 0 else None
     try:
         # 批次内浏览器实例复用:本源所有需渲染的页面共用一个浏览器(嵌套则复用上层 job 会话)
         with fetcher.render_session():
             if source.kind == "query":
                 has_pager = hasattr(adapter, "search_page")
-                for q in queries or []:
+                # 搜索型源限流:关键词截到上限,避免 400 词硬打慢站空跑几十分钟
+                cap = int(getattr(settings, "search_source_query_cap", 0) or 0)
+                qlist = (queries or [])[:cap] if cap > 0 else (queries or [])
+                for q in qlist:
+                    if deadline and time.time() > deadline:
+                        break  # 单源超时:放弃剩余关键词
                     qh = url_tools.query_hash(q)
                     wm = db.get(SearchWatermark, (source.id, qh))
                     before = stats["new"]
@@ -303,7 +368,8 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                         return adapter.search(_q, max_pages=1)[0] if page == 0 else None
 
                     q_found, pages_used, truncated, snapshot = _consume_paginated(
-                        db, need, source, run, fetch_page, max_pages, early_enabled, stop_th, do_archive, stats)
+                        db, need, source, run, fetch_page, max_pages, early_enabled, stop_th,
+                        do_archive, stats, deadline)
                     db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
                                       query=q, pages_fetched=pages_used, truncated=truncated,
                                       results=q_found, new_docs=stats["new"] - before,
@@ -314,11 +380,25 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                     else:
                         db.add(SearchWatermark(source_id=source.id, query_hash=qh,
                                                last_ran_at=datetime.utcnow()))
+            elif columns.is_root_only(source.entry_url):
+                # 根域页面型源:不抓首页要闻,自动发现相关栏目并分别抓(动态站每次重识别)
+                cols = columns.discover_columns(source)
+                diagnostics.record("note", f"根域源自动发现 {len(cols)} 个相关栏目",
+                                   detail={"columns": cols[:settings.auto_column_max]})
+                targets = [c["url"] for c in cols] or [source.entry_url]  # 没找到栏目→退回抓根页
+                for col_url in targets:
+                    if deadline and time.time() > deadline:
+                        break
+                    col_adapter = _list_adapter_for(col_url)
+                    f, _pu, _tr, _sn = _consume_paginated(
+                        db, need, source, run, lambda page, a=col_adapter: a.discover_page(page),
+                        max_pages, early_enabled, stop_th, do_archive, stats, deadline)
+                    found += f
             else:
                 # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
                 found, _pu, _tr, _sn = _consume_paginated(
                     db, need, source, run, lambda page: adapter.discover_page(page),
-                    max_pages, early_enabled, stop_th, do_archive, stats)
+                    max_pages, early_enabled, stop_th, do_archive, stats, deadline)
         run.status = "ok"
         source.last_success_at = datetime.utcnow()
         source.fail_streak = 0

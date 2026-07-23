@@ -19,9 +19,21 @@ def find_existing_url(db: Session, url: str) -> RawDocument | None:
     return doc
 
 
+def _title_key(t: str | None) -> str:
+    """标题归一(去空白/标点)用于同稿二次确认,防模板化页面 SimHash 误命中。"""
+    import re
+    return re.sub(r"[\s\W_]+", "", (t or "").lower())
+
+
 def assign_cluster(db: Session, doc: RawDocument, lookback_days: int = 30) -> DocCluster:
-    """10.2 文档层:与近 N 天文档 SimHash 比对,近重复并入同稿簇,只有首发 is_primary。"""
-    doc.simhash = simhash64(doc.content_text or doc.title or "")
+    """10.2 文档层:与近 N 天文档 SimHash 比对,近重复并入同稿簇,只有首发 is_primary。
+
+    政务站页面模板化严重(导航/页脚雷同)会致 SimHash 误判同稿。故 SimHash 命中后再做一道
+    确认:两篇都有标题时必须标题一致才认定同稿(不同标题的新闻即便版式相近也不并簇);缺标题
+    时退回正文长度相近判断。避免把不同文章误并、误标"转载非首发"。
+    """
+    body = doc.content_text or ""
+    doc.simhash = simhash64(body or doc.title or "")
     since = datetime.utcnow() - timedelta(days=lookback_days)
     candidates = (
         db.query(RawDocument)
@@ -31,8 +43,18 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int = 30) -> Do
                 RawDocument.simhash.isnot(None))
         .all()
     )
+    my_title = _title_key(doc.title)
     for other in candidates:
         if hamming(doc.simhash, other.simhash) <= settings.simhash_hamming_max:
+            # 二次确认防模板化误命中:双方都有标题 → 必须标题一致;否则退回正文长度相近(比值>0.6)
+            ot = _title_key(other.title)
+            if my_title and ot:
+                if my_title != ot:
+                    continue
+            else:
+                ol = len(other.content_text or "")
+                if not (ol > 0 and min(len(body), ol) / max(len(body), ol) > 0.6):
+                    continue
             cluster = db.get(DocCluster, other.cluster_id) if other.cluster_id else None
             if cluster is None:
                 cluster = DocCluster(primary_doc_id=other.id,

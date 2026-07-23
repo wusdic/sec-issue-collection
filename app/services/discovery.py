@@ -17,11 +17,35 @@ def _load_scoring() -> dict:
         return {}
 
 
+import re as _re
+
+# 明显不是"发布主体名"的候选(纯日期/纯数字/过短/全符号)——防把日期当成源入库
+_DATE_LIKE = _re.compile(r"^\s*(?:\d{4}[-/年.]?\d{0,2}[-/月.]?\d{0,2}日?|\d{1,4})\s*$")
+
+
+def _valid_subject(name: str | None) -> bool:
+    if not name:
+        return False
+    s = name.strip()
+    if len(s) < 3:
+        return False
+    if _DATE_LIKE.match(s):
+        return False
+    if not _re.search(r"[一-鿿A-Za-z]", s):  # 至少含一个中英文字
+        return False
+    return True
+
+
 def record_evidence(db: Session, url: str | None, channel: str,
                     display_name: str | None = None, wechat_account: str | None = None,
                     doc_id: int | None = None, was_cluster_primary: bool = False) -> str | None:
     """登记一次候选源证据(D1-D6 通道统一入口)。返回 identity_key,已注册/黑名单返回 None。"""
     if not url and not wechat_account:
+        return None
+    # 公众号/引文主体名做校验:纯日期/数字/过短的不当候选源(F5)
+    if wechat_account and not _valid_subject(wechat_account):
+        return None
+    if not url and display_name and not _valid_subject(display_name):
         return None
     key = url_tools.identity_key_for(url or "", wechat_account)
     if not key or key in ("baidu.com", "bing.com", "sogou.com", "weibo.com"):

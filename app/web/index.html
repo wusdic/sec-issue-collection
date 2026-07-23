@@ -457,6 +457,8 @@ async function loadSources(){
         <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
         ${canEditSrc()?`<td style="white-space:nowrap">
           ${retired?"":`<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>`}
+          ${(s.kind==="page"&&isRootUrl(s.entry_url))?
+            `<button class="ghost sm" title="根域源:预览自动识别到的相关栏目(采集时会自动按栏目抓)" onclick="previewCols(${s.id},'${esc(s.name).replace(/'/g,"")}')">栏目?</button>`:""}
           ${(s.kind==="page"&&s.entry_url&&s.entry_url.startsWith("http"))?
             `<button class="ghost sm" title="直连抓不到时,改用搜索引擎按 site:域名 抓该站" onclick="toSearchRetry(${s.id},'${esc(s.name).replace(/'/g,"")}')">站内检索</button>`:""}
           ${retired?"":`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
@@ -509,6 +511,24 @@ async function testAllSources(){
     +(fail>retired?` <span class="muted">抓不到但未达停用阈值的会保留,多测几次连续失败才停用。</span>`:``);
   btn.disabled=false;
   loadSources();
+}
+function isRootUrl(u){
+  if(!u||!u.startsWith("http")) return false;
+  try{ const p=new URL(u).pathname.replace(/\/+$/,""); return p===""; }catch(e){ return false; }
+}
+async function previewCols(id,name){
+  const box=document.getElementById("dupBox");
+  box.innerHTML=`<span class="muted">识别「${esc(name)}」的相关栏目中…(实时抓根页,稍候)</span>`;
+  try{
+    const r=await api(`/sources/${id}/discover-columns`,{method:"POST"});
+    if(!r.root_only){ box.innerHTML=`<span class="pill info">${esc(r.note||"非根域源")}</span>`; return; }
+    if(!r.columns.length){ box.innerHTML=`<span class="pill warn">未识别到相关栏目</span> <span class="muted">(可能需开渲染,或该站结构特殊;采集时会退回抓根页)</span>`; return; }
+    box.innerHTML=`<div class="card" style="padding:12px"><b>「${esc(name)}」自动识别到 ${r.count} 个相关栏目</b>
+      <span class="muted">(采集时会自动分别抓这些栏目,而不是首页要闻)</span>
+      <ol style="margin:6px 0 0;padding-left:20px">${r.columns.map(c=>
+        `<li style="margin:2px 0"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.anchor)}</a>
+         <span class="muted mono"> ${esc(c.url)}</span> <span class="pill info">相关度${c.score}</span></li>`).join("")}</ol></div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }
 async function scanDup(){
   const box=document.getElementById("dupBox"); box.innerHTML=`<span class="muted">扫描中…</span>`;

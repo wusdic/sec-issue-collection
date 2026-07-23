@@ -66,6 +66,16 @@ class Settings:
     # 增量翻页早停:列表/公众号按时间倒序,连续遇到 N 条已采过即判定"新内容抓全",停止翻页
     crawl_stop_consecutive_seen: int = int(os.getenv("CRAWL_STOP_CONSECUTIVE_SEEN", "15"))
 
+    # 时效窗口:只采集发布时间在近 N 天内的内容(超出的视为历史,不入库);默认 1825=近5年
+    collect_recency_days: int = int(os.getenv("COLLECT_RECENCY_DAYS", "1825"))
+
+    # 搜索型源单源关键词上限(防 400 词硬打慢站空跑几十分钟);页面型不受此限
+    search_source_query_cap: int = int(os.getenv("SEARCH_SOURCE_QUERY_CAP", "30"))
+    # 单个源一次采集的时长上限(秒),超时停止该源剩余查询/翻页,避免拖垮整批
+    source_time_budget_seconds: int = int(os.getenv("SOURCE_TIME_BUDGET_SECONDS", "180"))
+    # 根域页面型源自动发现相关栏目:每站最多注册/抓取的栏目数
+    auto_column_max: int = int(os.getenv("AUTO_COLUMN_MAX", "8"))
+
     # 源自动发现:搜索/采集中出现的新域名累积证据评分≥此值即自动建 trial 源(自动入库,
     # 仍 S4 待人工定级)。越低越激进(新源多但杂),越高越保守。留空则用 discovery.yaml 的值。
     discovery_auto_trial_threshold: float = float(os.getenv("DISCOVERY_AUTO_TRIAL_THRESHOLD", "4.0"))

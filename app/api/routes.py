@@ -123,9 +123,22 @@ def delete_source(source_id: int, db: Session = Depends(get_session),
         db.commit()
         return {"id": source_id, "action": "retired",
                 "note": "该源已有采集文档,转为停用(不再采集,历史保留)"}
-    db.delete(src)
-    db.commit()
-    return {"id": source_id, "action": "deleted"}
+    # 无文档才物理删:先清掉仅与该源绑定的记账行(采集记录/关键词记录/水位/日指标),
+    # 否则外键约束会导致删除 500。
+    from app.models import CrawlRun, KeywordRun, SearchWatermark, SourceMetricDaily
+    try:
+        for M in (CrawlRun, KeywordRun, SearchWatermark, SourceMetricDaily):
+            db.query(M).filter_by(source_id=source_id).delete(synchronize_session=False)
+        db.delete(src)
+        db.commit()
+        return {"id": source_id, "action": "deleted"}
+    except Exception:  # noqa: BLE001 兜底:仍删不掉就停用,避免 500
+        db.rollback()
+        src = db.get(Source, source_id)
+        src.lifecycle = "retired"
+        db.commit()
+        return {"id": source_id, "action": "retired",
+                "note": "存在关联记录无法物理删除,已改为停用"}
 
 
 @api.get("/sources/duplicates")
@@ -143,6 +156,21 @@ def sources_recompute_keys(db: Session = Depends(get_session),
     n = discovery_svc.recompute_keys(db)
     db.commit()
     return {"updated": n}
+
+
+@api.post("/sources/{source_id}/discover-columns")
+def source_discover_columns(source_id: int, db: Session = Depends(get_session),
+                            _: AppUser = Depends(require_roles("analyst"))):
+    """预览某根域页面型源自动识别到的相关栏目(不落库,仅展示;采集时会自动按这些栏目抓)。"""
+    from app.services import columns
+    src = db.get(Source, source_id)
+    if not src:
+        raise HTTPException(404, "源不存在")
+    if not columns.is_root_only(src.entry_url):
+        return {"root_only": False, "note": "该源已是具体栏目/或非根域,采集时直接抓其自身",
+                "columns": []}
+    cols = columns.discover_columns(src)
+    return {"root_only": True, "count": len(cols), "columns": cols}
 
 
 @api.post("/sources/{source_id}/to-search-retry")

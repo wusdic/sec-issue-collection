@@ -78,8 +78,34 @@ def source_keys(kind: str, entry_url: str | None, adapter_config: dict | None = 
         return dom, f"site:{dom}"
     if entry_url and entry_url.startswith("http"):
         dom = registered_domain(urlparse(entry_url).netloc)
+        path = urlparse(entry_url).path or "/"
+        # 根目录(无栏目路径):www/非www 都算"整站",目标键=站点键,避免把根当成不同栏目
+        if path in ("", "/"):
+            return dom, dom
         return dom, normalize_url(entry_url)
     return None, None
+
+
+_URL_DATE_RES = [
+    re.compile(r"/((?:19|20)\d{2})[-_/](\d{1,2})[-_/](\d{1,2})"),   # /2026-07/17 、/2026/07/17
+    re.compile(r"/((?:19|20)\d{2})(\d{2})(\d{2})\d*/"),             # /20260722.../ 连写
+    re.compile(r"[_-]((?:19|20)\d{2})(\d{2})(\d{2})"),              # art_20260722
+]
+
+
+def date_from_url(url: str):
+    """从 URL 里提取发布日期(政务/新闻站常见 /YYYY-MM/DD/ 或 YYYYMMDD 连写)。取不到返回 None。"""
+    from datetime import date as _date
+    for rgx in _URL_DATE_RES:
+        m = rgx.search(url or "")
+        if m:
+            try:
+                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if 1990 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31:
+                    return _date(y, mo, d)
+            except (ValueError, IndexError):
+                continue
+    return None
 
 
 def is_search_redirect(url: str) -> bool:
