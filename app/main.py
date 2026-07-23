@@ -22,6 +22,13 @@ def _startup():
     db = SessionLocal()
     try:
         load_from_db(db)
+        # 启动即自动校正源键并查重合并(同采集目标的重复源自动并一),无需人工扫描
+        from app.services import discovery
+        try:
+            discovery.recompute_keys(db)
+            db.commit()
+        except Exception:  # noqa: BLE001 一致性维护失败不阻断启动
+            db.rollback()
     finally:
         db.close()
     # 每日自动采集调度(进程内轻量,daily_auto_enabled 关闭时线程空转不做事)

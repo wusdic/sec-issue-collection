@@ -139,24 +139,41 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
     return sorted(results, key=lambda x: -x["score"])
 
 
-def recompute_keys(db: Session) -> int:
-    """回填/校正所有源的 site_key 与 identity_key(目标键)。identity_key 冲突时不覆盖,避免破坏唯一性。"""
-    updated = 0
-    for s in db.query(Source).all():
-        sk, ik = url_tools.source_keys(s.kind, s.entry_url, s.adapter_config)
-        changed = False
-        if s.site_key != sk:
-            s.site_key = sk
-            changed = True
-        if ik and s.identity_key != ik:
-            clash = db.query(Source).filter(Source.identity_key == ik, Source.id != s.id).first()
-            if not clash:
-                s.identity_key = ik
-                changed = True
-        if changed:
-            updated += 1
+def recompute_keys(db: Session) -> dict:
+    """回填/校正所有源的 site_key 与 identity_key,并自动查重:目标键(identity_key)相同的多个源
+    即同一采集目标(真重复),自动合并——保留文档最多者,其余转停用并并入其服务需求。
+
+    先分组再分配,天然保证 identity_key 唯一,不会再触发唯一约束 500。
+    """
+    from collections import defaultdict
+    srcs = db.query(Source).all()
+    plan = {s.id: url_tools.source_keys(s.kind, s.entry_url, s.adapter_config) for s in srcs}
+    by_ik: dict[str, list] = defaultdict(list)
+    for s in srcs:
+        sk, ik = plan[s.id]
+        s.site_key = sk               # 站点键不唯一,直接更新
+        if ik:
+            by_ik[ik].append(s)
+    # 先全部清空目标键,避免旧值与新分配相互冲突
+    for s in srcs:
+        s.identity_key = None
     db.flush()
-    return updated
+    merged = 0
+    for ik, group in by_ik.items():
+        # 保留者:文档最多 → 未停用 → id 最小
+        keeper = sorted(group, key=lambda s: (-(s.stat_docs_total or 0),
+                                              s.lifecycle == "retired", s.id))[0]
+        keeper.identity_key = ik
+        for s in group:
+            if s is keeper:
+                continue
+            keeper.serves_needs = sorted(set(keeper.serves_needs or []) | set(s.serves_needs or []))
+            if s.lifecycle != "retired":
+                s.lifecycle = "retired"
+                s.note = ((s.note or "") + " [自动查重:并入同采集目标的源]")[:250]
+            merged += 1
+    db.flush()
+    return {"updated": len(srcs), "merged": merged}
 
 
 def duplicate_groups(db: Session, need_id: str | None = None) -> list[dict]:

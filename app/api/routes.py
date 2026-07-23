@@ -152,10 +152,14 @@ def source_duplicates(need_id: str | None = None, db: Session = Depends(get_sess
 @api.post("/sources/recompute-keys")
 def sources_recompute_keys(db: Session = Depends(get_session),
                            _: AppUser = Depends(require_roles("analyst"))):
-    """回填/校正所有源的站点身份键与采集目标键(老库升级或导入后跑一次,便于同站归组与去重)。"""
-    n = discovery_svc.recompute_keys(db)
-    db.commit()
-    return {"updated": n}
+    """校正所有源的站点身份键与采集目标键并自动查重合并(同采集目标的重复源并一)。"""
+    try:
+        res = discovery_svc.recompute_keys(db)
+        db.commit()
+        return res
+    except Exception as e:  # noqa: BLE001 兜底成 400,避免 500 白屏
+        db.rollback()
+        raise HTTPException(400, f"整理源键失败:{type(e).__name__}: {e}"[:200])
 
 
 @api.post("/sources/{source_id}/discover-columns")
@@ -786,8 +790,12 @@ def crawl_job_diagnostics(job_id: int, db: Session = Depends(get_session),
                     "summary": r.summary, "detail": r.detail} for r in traces],
         "counts": {"logs": len(logs), "traces": len(traces)},
     }
+    # 文件名带日期时间做版本区分(取任务结束时间,无则开始时间)
+    stamp = (job.finished_at or job.started_at)
+    ver = stamp.strftime("%Y%m%d-%H%M%S") if stamp else "unknown"
+    fname = f"diagnostics-job{job_id}-{ver}.json"
     return JSONResponse(bundle, headers={
-        "Content-Disposition": f'attachment; filename="diagnostics-job{job_id}.json"'})
+        "Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # ---------- 每日简报 M-digest ----------

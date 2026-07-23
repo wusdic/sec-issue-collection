@@ -177,6 +177,24 @@ def test_duplicate_scan_groups_by_site_not_column(db, admin, need):
     assert g[0]["has_exact_duplicate"] is False   # 不同栏目 → 非真重复
 
 
+def test_recompute_keys_merges_duplicate_targets(db, need):
+    """同一采集目标(root www 与非www)自动查重合并,不再触发唯一约束500。"""
+    from app.services import discovery
+    a = Source(name="站A(有文档)", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+               lifecycle="active", serves_needs=[need.id], entry_url="https://www.dupmerge.cn/",
+               stat_docs_total=7, identity_key=None, site_key=None)
+    b = Source(name="站B(无文档)", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+               lifecycle="active", serves_needs=["other_need"], entry_url="https://dupmerge.cn/",
+               stat_docs_total=0, identity_key=None, site_key=None)
+    db.add_all([a, b]); db.flush()
+    res = discovery.recompute_keys(db)
+    assert res["merged"] >= 1
+    # 文档多者保留并拿到目标键;另一个转停用、目标键清空
+    assert a.lifecycle == "active" and a.identity_key == "dupmerge.cn"
+    assert b.lifecycle == "retired" and b.identity_key is None
+    assert "other_need" in a.serves_needs   # 服务需求已并入保留者
+
+
 def test_recompute_keys_backfills_legacy(db, admin, need):
     from app.services import discovery
     # 造一条"旧数据":无 site_key

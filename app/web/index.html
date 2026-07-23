@@ -126,10 +126,13 @@ async function api(path, opts={}){
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.style.opacity=1;
   setTimeout(()=>t.style.opacity=0,2600); }
 async function downloadFile(path, filename){
-  // 带鉴权头下载:fetch → blob → 触发浏览器保存
+  // 带鉴权头下载:fetch → blob → 触发浏览器保存。优先用服务端 Content-Disposition 的文件名(含日期时间版本)
   const headers={}; if(TOKEN) headers["Authorization"]="Bearer "+TOKEN;
   const r=await fetch("/api/v1"+path,{headers});
   if(!r.ok){ toast("下载失败:HTTP "+r.status); return; }
+  const cd=r.headers.get("Content-Disposition")||"";
+  const m=cd.match(/filename="?([^"]+)"?/);
+  if(m&&m[1]) filename=m[1];
   const blob=await r.blob(); const u=URL.createObjectURL(blob);
   const a=document.createElement("a"); a.href=u; a.download=filename; a.click();
   setTimeout(()=>URL.revokeObjectURL(u),4000);
