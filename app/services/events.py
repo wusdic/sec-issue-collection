@@ -69,7 +69,7 @@ def _scalar_severity(v) -> str | None:
 def _infer_record_type(p: dict) -> str:
     """无显式 record_type 时按内容推断:无单一受害方 + 通报/情报/态势特征 → 通报情报。"""
     rt = p.get("record_type")
-    if rt in ("单一事件", "通报情报"):
+    if rt in ("单一事件", "通报情报", "不该入库"):
         return rt
     if isinstance(rt, str) and rt:
         return "通报情报" if any(h in rt for h in ("通报", "情报", "提示", "态势", "汇总")) else "单一事件"
@@ -123,6 +123,14 @@ def create_draft(db: Session, need_id: str, payload: dict, doc=None,
     ev = Event(event_id=next_event_id(db), need_id=need_id, payload=payload,
                status="draft", dict_version=dict_version,
                confidence_overall=payload.get("confidence_overall"))
+    # 来源 url 反幻觉:抽取给的占位/非法链接用采集文档真实链接回填(禁止 c_XXXXX 之类进库)
+    if payload.get("sources") and doc is not None:
+        real = doc.final_url or doc.url
+        for s in payload["sources"]:
+            if isinstance(s, dict):
+                u = str(s.get("url_or_doc_number") or s.get("url") or "")
+                if (not u.startswith("http")) or "XXXX" in u.upper() or "占位" in u:
+                    s["url_or_doc_number"] = real
     # 来源数组兜底:抽取结果无 sources 时由采集文档生成
     if not payload.get("sources") and doc is not None:
         payload["sources"] = [{

@@ -215,6 +215,15 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     diagnostics.record("extract", "结构化抽取完成",
                        detail={"payload": payload, "violations": extraction["violations"],
                                "schema_errors": extraction["schema_errors"]})
+    # 非网络安全范畴(内容治理/名单/政策)→ 不入库,直接过滤(粗筛漏网时的兜底闸门)
+    if _is_out_of_scope(payload, doc.title or "", doc.content_text or ""):
+        doc.screen_status = "screened_out"
+        doc.screen_reason = "非网络安全范畴(内容治理/名单/政策解读),不入库"
+        result["action"] = "screened_out"
+        diagnostics.record("extract", "判为非安全范畴,过滤不入库",
+                           detail={"record_type": payload.get("record_type"), "title": doc.title})
+        db.flush()
+        return result
     # 抽取空壳(标题/单位/要素全无)→ 不建空事件,转人工待定,避免仪表盘一堆空记录
     if not _payload_has_content(payload):
         doc.screen_status = "manual_queue"
@@ -284,6 +293,26 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
 def _item_pub(item: DiscoveredItem):
     """列表项的发布日期(用于时效早停):优先 item.published,回退 URL 日期。"""
     return _parse_dt(item.published) or url_tools.date_from_url(item.url)
+
+
+# 非网络安全范畴的强排除特征(内容治理/名单/政策),粗筛漏网时抽取后再兜一道
+_OUT_OF_SCOPE_RE = re.compile(
+    "清朗|专项行动|集中整治|不良信息|未成年人网络保护|团播|直播乱象|账号名称|短视频|"
+    "算法备案|备案信息|评估.{0,4}名单|通过.{0,4}名单|遴选结果|支撑单位|认证机构名单|"
+    "专家解读|政策解读|报告发布|白皮书")
+
+
+def _is_out_of_scope(payload: dict, title: str, text: str) -> bool:
+    """判定是否非网络安全范畴(不该入库):优先信 LLM 的 record_type,再用关键词兜底。"""
+    if payload.get("record_type") == "不该入库":
+        return True
+    blob = f"{title or ''} {payload.get('title') or ''}"
+    # 标题命中内容治理/名单/政策特征,且无明确安全事件要素(攻击/漏洞/泄露等)
+    if _OUT_OF_SCOPE_RE.search(blob):
+        sec = re.search("漏洞|攻击|入侵|勒索|木马|僵尸网络|钓鱼|泄露|篡改|黑客|后门|挖矿|C2|窃取", blob)
+        if not sec:
+            return True
+    return False
 
 
 def _payload_has_content(p: dict) -> bool:

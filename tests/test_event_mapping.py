@@ -53,3 +53,49 @@ def test_create_draft_sets_record_type(db, need):
     e = create_draft(db, need.id, p, doc=None, source_credibility="S1")
     assert e.record_type == "单一事件" and e.severity == "较大"
     assert str(e.occurred_date) == "2026-07-01"
+
+
+def test_out_of_scope_detection():
+    from app.services.pipeline import _is_out_of_scope
+    # 内容治理/名单/政策 → 非安全范畴
+    assert _is_out_of_scope({}, "中央网信办部署开展'清朗·未成年人网络保护'专项行动", "...")
+    assert _is_out_of_scope({}, "关于发布第十八批深度合成服务算法备案信息的公告", "...")
+    assert _is_out_of_scope({"record_type": "不该入库"}, "任意", "...")
+    # 带明确安全要素的不算(如"清朗行动查处一起数据泄露")
+    assert not _is_out_of_scope({}, "某公司数据泄露被黑客勒索", "...")
+    assert not _is_out_of_scope({}, "关于BlackMoon僵尸网络的风险提示", "...")
+
+
+def test_out_of_scope_doc_not_evented(db, need, monkeypatch):
+    """粗筛漏网的内容治理稿(强制通过粗筛),抽取后被范畴闸门过滤,不建事件。"""
+    from app.models import Event, RawDocument, Source
+    from app.services import pipeline
+    # 模拟粗筛漏判为相关,考验抽取后的兜底闸门
+    monkeypatch.setattr(pipeline, "screen_document",
+                        lambda *a, **k: {"is_candidate": True, "confidence": 0.9, "reason": "mock放行"})
+    src = db.query(Source).first()
+    doc = RawDocument(need_id=need.id, source_id=src.id, url="https://cac.gov.cn/x/ql.htm",
+                      url_normalized="https://cac.gov.cn/x/ql.htm", is_primary=True,
+                      title="中央网信办部署'清朗·整治AI应用乱象'专项行动",
+                      content_text="为营造清朗网络空间,中央网信办部署专项行动整治AI应用乱象……",
+                      screen_status="pending")
+    db.add(doc); db.flush()
+    before = db.query(Event).count()
+    r = pipeline.process_document(db, need, doc)
+    assert r["action"] == "screened_out"
+    assert db.query(Event).count() == before          # 未建事件
+    assert "非网络安全" in doc.screen_reason
+
+
+def test_placeholder_source_url_sanitized(db, need):
+    from app.models import RawDocument, Source
+    from app.services.events import create_draft
+    src = db.query(Source).first()
+    doc = RawDocument(need_id=need.id, source_id=src.id, url="https://real.example.com/a.htm",
+                      url_normalized="https://real.example.com/a.htm", title="某银行数据泄露",
+                      content_text="...", is_primary=True)
+    db.add(doc); db.flush()
+    p = {"title": "某银行数据泄露", "org_name": "某银行",
+         "sources": [{"url_or_doc_number": "http://www.cac.gov.cn/c_XXXXX.htm"}]}
+    ev = create_draft(db, need.id, p, doc=doc, source_credibility="S1")
+    assert ev.payload["sources"][0]["url_or_doc_number"] == "https://real.example.com/a.htm"
