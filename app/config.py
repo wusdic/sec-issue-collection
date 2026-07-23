@@ -75,6 +75,18 @@ class Settings:
     source_time_budget_seconds: int = int(os.getenv("SOURCE_TIME_BUDGET_SECONDS", "180"))
     # 根域页面型源自动发现相关栏目:每站最多注册/抓取的栏目数
     auto_column_max: int = int(os.getenv("AUTO_COLUMN_MAX", "8"))
+    # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库
+    column_min_articles: int = int(os.getenv("COLUMN_MIN_ARTICLES", "5"))
+    column_consistency_min: float = float(os.getenv("COLUMN_CONSISTENCY_MIN", "0.5"))
+    # 栏目发现结果记录后多久重算一次(天),期间直接复用不重复识别;应对栏目动态变化
+    auto_column_refresh_days: int = int(os.getenv("AUTO_COLUMN_REFRESH_DAYS", "7"))
+
+    # 同稿去重:回溯比对天数;缺标题时判"正文长度相近"的比值下限
+    dedup_lookback_days: int = int(os.getenv("DEDUP_LOOKBACK_DAYS", "30"))
+    dedup_len_ratio_min: float = float(os.getenv("DEDUP_LEN_RATIO_MIN", "0.6"))
+    # 列表/RSS 单页最多取多少条
+    list_max_items: int = int(os.getenv("LIST_MAX_ITEMS", "80"))
+    rss_max_items: int = int(os.getenv("RSS_MAX_ITEMS", "50"))
 
     # 源自动发现:搜索/采集中出现的新域名累积证据评分≥此值即自动建 trial 源(自动入库,
     # 仍 S4 待人工定级)。越低越激进(新源多但杂),越高越保守。留空则用 discovery.yaml 的值。

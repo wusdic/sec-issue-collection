@@ -14,7 +14,7 @@ from app.models import (
     CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
 from app.services import archive, columns, dedup, diagnostics, discovery, fetcher, reputation, url_tools
-from app.services.adapters import DiscoveredItem, GenericListAdapter, SearchEngineAdapter, get_adapter
+from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
 from app.services.profiles import get_active_dictionaries
@@ -277,13 +277,6 @@ def _item_pub(item: DiscoveredItem):
     return _parse_dt(item.published) or url_tools.date_from_url(item.url)
 
 
-def _list_adapter_for(entry_url: str) -> GenericListAdapter:
-    """构造一个绑定到指定栏目 URL 的通用列表适配器(自动发现栏目时用,不落库)。"""
-    from types import SimpleNamespace
-    proxy = SimpleNamespace(entry_url=entry_url, adapter_config={})
-    return GenericListAdapter(proxy)
-
-
 def _consume_paginated(db, need, source, run, fetch_page, max_pages,
                        early_enabled, stop_th, do_archive, stats, deadline=None):
     """逐页消费 + 早停(query/page 共用)。fetch_page(page)->list|None。
@@ -381,19 +374,28 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                         db.add(SearchWatermark(source_id=source.id, query_hash=qh,
                                                last_ran_at=datetime.utcnow()))
             elif columns.is_root_only(source.entry_url):
-                # 根域页面型源:不抓首页要闻,自动发现相关栏目并分别抓(动态站每次重识别)
-                cols = columns.discover_columns(source)
-                diagnostics.record("note", f"根域源自动发现 {len(cols)} 个相关栏目",
-                                   detail={"columns": cols[:settings.auto_column_max]})
-                targets = [c["url"] for c in cols] or [source.entry_url]  # 没找到栏目→退回抓根页
-                for col_url in targets:
-                    if deadline and time.time() > deadline:
-                        break
-                    col_adapter = _list_adapter_for(col_url)
-                    f, _pu, _tr, _sn = _consume_paginated(
-                        db, need, source, run, lambda page, a=col_adapter: a.discover_page(page),
+                # 根域页面型源:不抓首页要闻,自动发现并持久化相关栏目为子源,分别抓;
+                # 栏目记录 TTL 内复用不重算(应对动态站,过期才重识别验证)。
+                children, recomputed = columns.discover_and_persist(db, source)
+                diagnostics.record("note",
+                                   f"根域源栏目:{len(children)} 个子栏目"
+                                   f"({'本次重新识别' if recomputed else '复用已记录'})",
+                                   detail={"columns": [c.entry_url for c in children]})
+                if children:
+                    for child in children:
+                        if deadline and time.time() > deadline:
+                            break
+                        ca = get_adapter(child)
+                        f, _pu, _tr, _sn = _consume_paginated(
+                            db, need, child, run, lambda page, a=ca: a.discover_page(page),
+                            max_pages, early_enabled, stop_th, do_archive, stats, deadline)
+                        found += f
+                        child.last_success_at = datetime.utcnow()
+                else:
+                    # 没识别到有效栏目 → 退回抓根页本身
+                    found, _pu, _tr, _sn = _consume_paginated(
+                        db, need, source, run, lambda page: adapter.discover_page(page),
                         max_pages, early_enabled, stop_th, do_archive, stats, deadline)
-                    found += f
             else:
                 # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
                 found, _pu, _tr, _sn = _consume_paginated(

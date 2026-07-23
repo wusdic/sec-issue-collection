@@ -25,7 +25,7 @@ def _title_key(t: str | None) -> str:
     return re.sub(r"[\s\W_]+", "", (t or "").lower())
 
 
-def assign_cluster(db: Session, doc: RawDocument, lookback_days: int = 30) -> DocCluster:
+def assign_cluster(db: Session, doc: RawDocument, lookback_days: int | None = None) -> DocCluster:
     """10.2 文档层:与近 N 天文档 SimHash 比对,近重复并入同稿簇,只有首发 is_primary。
 
     政务站页面模板化严重(导航/页脚雷同)会致 SimHash 误判同稿。故 SimHash 命中后再做一道
@@ -34,6 +34,7 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int = 30) -> Do
     """
     body = doc.content_text or ""
     doc.simhash = simhash64(body or doc.title or "")
+    lookback_days = lookback_days if lookback_days is not None else settings.dedup_lookback_days
     since = datetime.utcnow() - timedelta(days=lookback_days)
     candidates = (
         db.query(RawDocument)
@@ -53,7 +54,7 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int = 30) -> Do
                     continue
             else:
                 ol = len(other.content_text or "")
-                if not (ol > 0 and min(len(body), ol) / max(len(body), ol) > 0.6):
+                if not (ol > 0 and min(len(body), ol) / max(len(body), ol) > settings.dedup_len_ratio_min):
                     continue
             cluster = db.get(DocCluster, other.cluster_id) if other.cluster_id else None
             if cluster is None:

@@ -28,6 +28,8 @@ def due_sources(db: Session, need: NeedProfile) -> list[Source]:
             continue
         if src.manual_assist:
             continue  # 半自动源不进自动调度
+        if (src.adapter_config or {}).get("parent_site_id"):
+            continue  # 自动发现的子栏目由父源统一采集,不独立调度
         interval = timedelta(hours=_interval_for(src, need))
         if src.last_success_at is None or now - src.last_success_at >= interval:
             out.append(src)

@@ -133,3 +133,76 @@ def admin_user(db):
                     password_hash=hash_password("x"), role="admin")
         db.add(u); db.flush()
     return u
+
+
+# ---------------- 栏目验证 + 持久化 ----------------
+
+_COL_HTML = """<html><body>
+  <a href="/zhifa/2026-07/01/a.htm">处罚公告一</a>
+  <a href="/zhifa/2026-07/02/b.htm">处罚公告二</a>
+  <a href="/zhifa/2026-06/15/c.htm">处罚公告三</a>
+  <a href="/zhifa/2026-06/10/d.htm">处罚公告四</a>
+  <a href="/zhifa/2026-05/09/e.htm">处罚公告五</a>
+  <a href="/about">关于</a>
+</body></html>"""
+
+
+def test_validate_column_consistency(monkeypatch):
+    from app.services import columns
+    monkeypatch.setattr(settings, "column_min_articles", 5)
+    monkeypatch.setattr(settings, "column_consistency_min", 0.5)
+    monkeypatch.setattr(columns.fetcher, "fetch",
+                        lambda *a, **k: columns.fetcher.FetchResult(
+                            "https://g.cn/zhifa/", "https://g.cn/zhifa/", 200, _COL_HTML))
+    v = columns.validate_column("https://g.cn/zhifa/")
+    assert v["valid"] and v["article_count"] >= 5 and v["consistency"] >= 0.5
+
+
+def test_validate_column_rejects_sparse(monkeypatch):
+    from app.services import columns
+    monkeypatch.setattr(settings, "column_min_articles", 5)
+    html = '<a href="/x/1.htm">一</a><a href="/y/2.htm">二</a>'
+    monkeypatch.setattr(columns.fetcher, "fetch",
+                        lambda *a, **k: columns.fetcher.FetchResult("https://g.cn/nav/", "https://g.cn/nav/", 200, html))
+    assert columns.validate_column("https://g.cn/nav/")["valid"] is False
+
+
+def test_discover_and_persist_records_and_reuses(db, need, monkeypatch):
+    from app.models import Source
+    from app.services import columns
+    monkeypatch.setattr(settings, "column_min_articles", 5)
+    monkeypatch.setattr(settings, "column_consistency_min", 0.5)
+    monkeypatch.setattr(settings, "auto_column_refresh_days", 7)
+    root = Source(name="某政务站", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+                  lifecycle="active", serves_needs=[need.id], entry_url="https://gov-x.cn/",
+                  site_key="gov-x.cn", identity_key="gov-x.cn", adapter_config={})
+    db.add(root); db.flush()
+    root_html = '<a href="/zhifa/index.htm">执法处罚</a><a href="/about">关于</a>'
+
+    def fake_fetch(url, **k):
+        html = root_html if url.rstrip("/") == "https://gov-x.cn" else _COL_HTML
+        return columns.fetcher.FetchResult(url, url, 200, html)
+    monkeypatch.setattr(columns.fetcher, "fetch", fake_fetch)
+
+    kids1, recomputed1 = columns.discover_and_persist(db, root)
+    assert recomputed1 is True and len(kids1) == 1
+    child = kids1[0]
+    assert child.discovered_from == "column_auto"
+    assert child.adapter_config["parent_site_id"] == root.id
+    assert root.adapter_config.get("columns_discovered_at")   # 已记录时间戳
+
+    # 再次调用 → TTL 内直接复用,不重算(不新增子源)
+    kids2, recomputed2 = columns.discover_and_persist(db, root)
+    assert recomputed2 is False and len(kids2) == 1 and kids2[0].id == child.id
+    assert db.query(Source).filter_by(discovered_from="column_auto").count() == 1
+
+
+def test_child_columns_excluded_from_scheduling(db, need, monkeypatch):
+    from app.models import Source
+    from app.services.crawl_runner import _pick_sources
+    child = Source(name="子栏目", kind="page", adapter="generic_list", credibility="S1", tier="B",
+                   lifecycle="active", serves_needs=[need.id], entry_url="https://p.cn/col/",
+                   adapter_config={"parent_site_id": 999})
+    db.add(child); db.flush()
+    picked = _pick_sources(db, need, 999)
+    assert child.id not in [s.id for s in picked]   # 子栏目不独立占名额

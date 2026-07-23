@@ -169,8 +169,15 @@ def source_discover_columns(source_id: int, db: Session = Depends(get_session),
     if not columns.is_root_only(src.entry_url):
         return {"root_only": False, "note": "该源已是具体栏目/或非根域,采集时直接抓其自身",
                 "columns": []}
-    cols = columns.discover_columns(src)
-    return {"root_only": True, "count": len(cols), "columns": cols}
+    render_pref = (src.adapter_config or {}).get("render", "auto")
+    cands = columns.discover_columns(src)
+    out = []
+    for c in cands:
+        v = columns.validate_column(c["url"], render_pref)   # 文章一致性验证
+        out.append({**c, "valid": v["valid"], "article_count": v["article_count"],
+                    "consistency": v["consistency"], "reason": v.get("reason", "")})
+    valid_n = sum(1 for c in out if c["valid"])
+    return {"root_only": True, "count": len(out), "valid": valid_n, "columns": out}
 
 
 @api.post("/sources/{source_id}/to-search-retry")

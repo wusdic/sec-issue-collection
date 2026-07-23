@@ -53,6 +53,8 @@ def _pick_sources(db: Session, need: NeedProfile, limit: int) -> list[Source]:
     """手动采集:取活跃/试运行、服务本需求、非半自动的源前 N 个(不看 tier 到期)。"""
     out = []
     for s in db.query(Source).filter(Source.lifecycle.in_(["active", "trial"])).order_by(Source.id).all():
+        if (s.adapter_config or {}).get("parent_site_id"):
+            continue  # 自动发现的子栏目由父源统一采集,不独立占用名额
         if need.id in (s.serves_needs or []) and not s.manual_assist:
             out.append(s)
         if len(out) >= limit:

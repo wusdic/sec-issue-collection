@@ -523,11 +523,13 @@ async function previewCols(id,name){
     const r=await api(`/sources/${id}/discover-columns`,{method:"POST"});
     if(!r.root_only){ box.innerHTML=`<span class="pill info">${esc(r.note||"非根域源")}</span>`; return; }
     if(!r.columns.length){ box.innerHTML=`<span class="pill warn">未识别到相关栏目</span> <span class="muted">(可能需开渲染,或该站结构特殊;采集时会退回抓根页)</span>`; return; }
-    box.innerHTML=`<div class="card" style="padding:12px"><b>「${esc(name)}」自动识别到 ${r.count} 个相关栏目</b>
-      <span class="muted">(采集时会自动分别抓这些栏目,而不是首页要闻)</span>
+    box.innerHTML=`<div class="card" style="padding:12px"><b>「${esc(name)}」识别到 ${r.count} 个候选栏目,验证通过 ${r.valid} 个</b>
+      <span class="muted">(通过=文章足够多且结构高度一致;采集时只抓通过的,结果会记录不必每次重算)</span>
       <ol style="margin:6px 0 0;padding-left:20px">${r.columns.map(c=>
-        `<li style="margin:2px 0"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.anchor)}</a>
-         <span class="muted mono"> ${esc(c.url)}</span> <span class="pill info">相关度${c.score}</span></li>`).join("")}</ol></div>`;
+        `<li style="margin:2px 0">${c.valid?'<span class="pill ok">✓栏目</span>':'<span class="pill">✗'+esc(c.reason||'未通过')+'</span>'}
+         <a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.anchor)}</a>
+         <span class="muted mono"> ${esc(c.url)}</span>
+         <span class="muted">相关度${c.score}·文章${c.article_count}·一致性${c.consistency}</span></li>`).join("")}</ol></div>`;
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }
 async function scanDup(){

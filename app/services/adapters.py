@@ -133,7 +133,7 @@ class GenericRSSAdapter(BaseAdapter):
         parsed = feedparser.parse(feed_url)
         return [
             DiscoveredItem(url=e.get("link"), title=e.get("title"), published=e.get("published"))
-            for e in parsed.entries[:50] if e.get("link")
+            for e in parsed.entries[:settings.rss_max_items] if e.get("link")
         ]
 
 
@@ -159,7 +159,7 @@ class GenericListAdapter(BaseAdapter):
         template = self._template(fr.html)
         soup = BeautifulSoup(fr.html, "lxml")
         items = []
-        for node in soup.select(template.get("item_selector", "a"))[:80]:
+        for node in soup.select(template.get("item_selector", "a"))[:settings.list_max_items]:
             href = node.get("href") if node.name == "a" else (node.find("a") or {}).get("href")
             if not href:
                 continue
