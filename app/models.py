@@ -72,7 +72,10 @@ class Source(Base):
     __tablename__ = "source"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    identity_key: Mapped[str | None] = mapped_column(String(256), unique=True, nullable=True)
+    # identity_key = 采集目标唯一键(栏目粒度:页面→归一化URL、站内检索→site:域名、公众号→mp:账号);
+    # site_key = 站点/发布主体身份(注册域/公众号,不唯一)——同站不同栏目共享 site_key、各有 identity_key。
+    identity_key: Mapped[str | None] = mapped_column(String(400), unique=True, nullable=True)
+    site_key: Mapped[str | None] = mapped_column(String(256), index=True, nullable=True)
     discovery_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     homepage: Mapped[str | None] = mapped_column(Text, nullable=True)
     entry_url: Mapped[str | None] = mapped_column(Text, nullable=True)

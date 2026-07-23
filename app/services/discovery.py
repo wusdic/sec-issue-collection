@@ -28,8 +28,8 @@ def record_evidence(db: Session, url: str | None, channel: str,
         return None  # C3 未还原的搜索引擎域名不计
     if db.get(SourceBlacklist, key):
         return None
-    if db.query(Source).filter_by(identity_key=key).one_or_none():
-        return None  # 已是注册源
+    if db.query(Source).filter_by(site_key=key).first():
+        return None  # 该站点已有源(任一栏目)→ 不再当候选
     ev = (
         db.query(SourceDiscoveryEvidence)
         .filter_by(identity_key=key, channel=channel)
@@ -85,18 +85,22 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
     keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
     results = []
     for key in keys:
-        if db.query(Source).filter_by(identity_key=key).one_or_none():
-            continue
+        if db.query(Source).filter_by(site_key=key).first():
+            continue  # 该站点已有源(任一栏目)→ 不重复建
         score = candidate_score(db, key, llm_scores.get(key, 0.0))
         item = {"identity_key": key, "score": score, "auto_trial": False}
         if score >= threshold:
             rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
             display = next((r.display_name for r in rows if r.display_name), key)
             is_mp = key.startswith("mp:")
+            entry = None if is_mp else f"https://{key}/"
+            _sk, ident = url_tools.source_keys(
+                "query" if is_mp else "page", entry,
+                {"account": key[3:]} if is_mp else {})
             db.add(Source(
                 name=f"[候选]{display}",
-                identity_key=key, discovery_score=score,
-                entry_url=None if is_mp else f"https://{key}/",
+                identity_key=ident, site_key=key, discovery_score=score,
+                entry_url=entry,
                 kind="query" if is_mp else "page",
                 adapter="sogou_wechat" if is_mp else "generic_rss",
                 adapter_config={"account": key[3:]} if is_mp else {},
@@ -109,6 +113,53 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
         results.append(item)
     db.flush()
     return sorted(results, key=lambda x: -x["score"])
+
+
+def recompute_keys(db: Session) -> int:
+    """回填/校正所有源的 site_key 与 identity_key(目标键)。identity_key 冲突时不覆盖,避免破坏唯一性。"""
+    updated = 0
+    for s in db.query(Source).all():
+        sk, ik = url_tools.source_keys(s.kind, s.entry_url, s.adapter_config)
+        changed = False
+        if s.site_key != sk:
+            s.site_key = sk
+            changed = True
+        if ik and s.identity_key != ik:
+            clash = db.query(Source).filter(Source.identity_key == ik, Source.id != s.id).first()
+            if not clash:
+                s.identity_key = ik
+                changed = True
+        if changed:
+            updated += 1
+    db.flush()
+    return updated
+
+
+def duplicate_groups(db: Session, need_id: str | None = None) -> list[dict]:
+    """按 site_key 分组,列出同一站点下的多个源(栏目)。同站不同栏目属正常(各自采集);
+    只有同一 identity_key(同栏目)的多条才是真重复,用 has_exact_duplicate 标出。"""
+    from collections import defaultdict
+    groups: dict[str, list[Source]] = defaultdict(list)
+    for s in db.query(Source).filter(Source.site_key.isnot(None)).all():
+        if need_id and need_id not in (s.serves_needs or []):
+            continue
+        groups[s.site_key].append(s)
+    out = []
+    for site, srcs in groups.items():
+        if len(srcs) < 2:
+            continue
+        by_target: dict[str, list[Source]] = defaultdict(list)
+        for s in srcs:
+            by_target[s.identity_key or f"__none__{s.id}"].append(s)
+        out.append({
+            "site_key": site,
+            "has_exact_duplicate": any(len(v) > 1 for v in by_target.values()),
+            "sources": [{"id": s.id, "name": s.name, "entry_url": s.entry_url,
+                         "kind": s.kind, "identity_key": s.identity_key,
+                         "lifecycle": s.lifecycle, "docs_total": s.stat_docs_total,
+                         "discovered_from": s.discovered_from} for s in srcs],
+        })
+    return sorted(out, key=lambda x: (-int(x["has_exact_duplicate"]), -len(x["sources"])))
 
 
 def blacklist(db: Session, identity_key: str, reason: str, by_user: int | None = None):

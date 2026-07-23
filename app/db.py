@@ -35,6 +35,26 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def init_db():
     from app import models  # noqa: F401  确保模型注册
     Base.metadata.create_all(engine)
+    _ensure_columns()
+
+
+# 轻量列迁移(无 Alembic):对已存在的表补加新增列。仅做 ADD COLUMN(幂等),不改类型/不删列。
+_ADDED_COLUMNS = [
+    ("source", "site_key", "VARCHAR(256)"),
+]
+
+
+def _ensure_columns():
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table, col, ddl in _ADDED_COLUMNS:
+            if table not in existing_tables:
+                continue
+            cols = {c["name"] for c in insp.get_columns(table)}
+            if col not in cols:
+                conn.execute(text(f'ALTER TABLE {table} ADD COLUMN {col} {ddl}'))
 
 
 def get_session():

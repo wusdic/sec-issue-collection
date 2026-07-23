@@ -62,7 +62,8 @@ def list_sources(lifecycle: str | None = None, db: Session = Depends(get_session
     return [{"id": s.id, "name": s.name, "kind": s.kind, "adapter": s.adapter,
              "entry_url": s.entry_url, "note": s.note,
              "credibility": s.credibility, "tier": s.tier, "lifecycle": s.lifecycle,
-             "identity_key": s.identity_key, "discovery_score": s.discovery_score,
+             "identity_key": s.identity_key, "site_key": s.site_key,
+             "discovery_score": s.discovery_score,
              "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total,
              "fail_streak": s.fail_streak, "discovered_from": s.discovered_from,
              "last_crawled": s.last_success_at.isoformat() if s.last_success_at else None}
@@ -91,16 +92,10 @@ def create_source(body: SourceIn, db: Session = Depends(get_session),
     if kind == "page" and not entry:
         raise HTTPException(422, "页面型源必须填入口链接(栏目页或 RSS 地址)")
     adapter = (body.adapter or "").strip() or ("baidu_search" if kind == "query" else "generic_rss")
-    ident = None
-    if entry:
-        try:
-            ident = url_tools.identity_key_for(entry)
-        except Exception:  # noqa: BLE001
-            ident = None
-    # identity_key 唯一:已存在同域源则合并需求而非重复建
+    site_key, ident = url_tools.source_keys(kind, entry)
+    # 只在"同一栏目"(identity_key 相同)时合并;同站不同栏目(site_key 同、identity_key 异)各算一条
     if ident and (dup := db.query(Source).filter_by(identity_key=ident).one_or_none()):
-        needs = sorted(set(dup.serves_needs or []) | {body.need_id})
-        dup.serves_needs = needs
+        dup.serves_needs = sorted(set(dup.serves_needs or []) | {body.need_id})
         if dup.lifecycle == "retired":
             dup.lifecycle = "active"
         db.commit()
@@ -108,7 +103,7 @@ def create_source(body: SourceIn, db: Session = Depends(get_session),
     src = Source(name=body.name.strip(), entry_url=entry, kind=kind, adapter=adapter,
                  adapter_config={}, credibility=body.credibility, tier=body.tier,
                  lifecycle="active", serves_needs=[body.need_id],
-                 identity_key=ident, manual_assist=False, note=body.note,
+                 identity_key=ident, site_key=site_key, manual_assist=False, note=body.note,
                  discovered_from="manual")
     db.add(src)
     db.commit()
@@ -131,6 +126,23 @@ def delete_source(source_id: int, db: Session = Depends(get_session),
     db.delete(src)
     db.commit()
     return {"id": source_id, "action": "deleted"}
+
+
+@api.get("/sources/duplicates")
+def source_duplicates(need_id: str | None = None, db: Session = Depends(get_session),
+                      _: AppUser = Depends(current_user)):
+    """扫描同站多源:按站点身份(site_key)分组列出。同站不同栏目属正常(各自采集),
+    仅 has_exact_duplicate=true 的是真重复(同栏目多条),建议删多余。"""
+    return discovery_svc.duplicate_groups(db, need_id)
+
+
+@api.post("/sources/recompute-keys")
+def sources_recompute_keys(db: Session = Depends(get_session),
+                           _: AppUser = Depends(require_roles("analyst"))):
+    """回填/校正所有源的站点身份键与采集目标键(老库升级或导入后跑一次,便于同站归组与去重)。"""
+    n = discovery_svc.recompute_keys(db)
+    db.commit()
+    return {"updated": n}
 
 
 @api.post("/sources/{source_id}/to-search-retry")
@@ -161,7 +173,7 @@ def source_to_search_retry(source_id: int, retire_original: bool = True,
             name=f"{src.name}·站内检索", entry_url=None, kind="query",
             adapter="baidu_search", adapter_config={"site": domain, "list_order": "relevance"},
             credibility=src.credibility, tier=src.tier, lifecycle="active",
-            serves_needs=list(src.serves_needs or []), identity_key=ident,
+            serves_needs=list(src.serves_needs or []), identity_key=ident, site_key=domain,
             discovered_from="search_retry", note=f"由页面型源「{src.name}」直连抓不到,改站内检索兜底",
         )
         db.add(retry)

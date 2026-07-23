@@ -27,7 +27,9 @@ def test_add_page_source_auto_adapter(db, admin):
     assert src.adapter == "generic_rss"        # 页面型留空 → 自动通用 RSS(带 list 回退)
     assert src.lifecycle == "active"
     assert src.discovered_from == "manual"
-    assert src.identity_key == url_tools.identity_key_for("https://newsrc.example.com/news")
+    # identity_key = 采集目标(归一化 URL 栏目粒度);site_key = 站点身份(注册域)
+    assert src.identity_key == url_tools.normalize_url("https://newsrc.example.com/news")
+    assert src.site_key == "example.com"
 
 
 def test_add_query_source_needs_no_url(db, admin):
@@ -41,13 +43,19 @@ def test_page_source_requires_url(db, admin):
         create_source(SourceIn(name="没链接的页面源", kind="page"), db, admin)
 
 
-def test_same_domain_merges_not_duplicates(db, admin):
-    a = create_source(SourceIn(name="A 栏目", entry_url="https://dup.example.com/a",
+def test_same_column_merges_but_different_columns_dont(db, admin):
+    # 同一栏目(同 URL)→ 合并
+    a = create_source(SourceIn(name="A 栏目", entry_url="https://colsite.com/a",
                                kind="page"), db, admin)
-    b = create_source(SourceIn(name="B 栏目", entry_url="https://dup.example.com/b",
+    a2 = create_source(SourceIn(name="A 栏目(重复)", entry_url="https://colsite.com/a",
+                                kind="page"), db, admin)
+    assert a2["merged"] is True and a2["id"] == a["id"]
+    # 同站不同栏目 → 各算一条(不合并),但共享 site_key
+    b = create_source(SourceIn(name="B 栏目", entry_url="https://colsite.com/b",
                                kind="page"), db, admin)
-    assert b["merged"] is True
-    assert b["id"] == a["id"]                 # 同注册域合并到同一源
+    assert b["merged"] is False and b["id"] != a["id"]
+    assert db.get(Source, a["id"]).site_key == db.get(Source, b["id"]).site_key == "colsite.com"
+    assert db.get(Source, a["id"]).identity_key != db.get(Source, b["id"]).identity_key
 
 
 def test_delete_source_without_docs_is_hard_deleted(db, admin):
@@ -152,8 +160,50 @@ def test_auto_trial_threshold_from_settings(db, need, monkeypatch):
     res = discovery.evaluate_candidates(db, need.id)
     auto = [c for c in res if c.get("auto_trial") and c["identity_key"] == "newsrc.auto.com"]
     assert auto, f"阈值调低后应自动入库: {res}"
-    src = db.query(Source).filter_by(identity_key="newsrc.auto.com").first()
+    # 候选键 = 站点身份(site_key);采集目标 identity_key = 归一化入口 URL
+    src = db.query(Source).filter_by(site_key="newsrc.auto.com").first()
     assert src and src.lifecycle == "trial" and src.credibility == "S4"
+
+
+def test_duplicate_scan_groups_by_site_not_column(db, admin, need):
+    from app.services import discovery
+    create_source(SourceIn(name="栏目甲", entry_url="https://multicol.cn/a",
+                           kind="page", need_id=need.id), db, admin)
+    create_source(SourceIn(name="栏目乙", entry_url="https://multicol.cn/b",
+                           kind="page", need_id=need.id), db, admin)
+    groups = discovery.duplicate_groups(db, need.id)
+    g = [x for x in groups if x["site_key"] == "multicol.cn"]
+    assert g and len(g[0]["sources"]) == 2
+    assert g[0]["has_exact_duplicate"] is False   # 不同栏目 → 非真重复
+
+
+def test_recompute_keys_backfills_legacy(db, admin, need):
+    from app.services import discovery
+    # 造一条"旧数据":无 site_key
+    s = Source(name="旧源", kind="page", adapter="generic_rss", credibility="S3", tier="B",
+               lifecycle="active", serves_needs=[need.id], entry_url="https://legacy.cn/col",
+               identity_key=None, site_key=None)
+    db.add(s); db.flush()
+    discovery.recompute_keys(db)
+    assert db.get(Source, s.id).site_key == "legacy.cn"
+    assert db.get(Source, s.id).identity_key == url_tools.normalize_url("https://legacy.cn/col")
+
+
+def test_discovery_skips_site_already_covered(db, need):
+    from app.models import Source as S
+    from app.models import SourceDiscoveryEvidence
+    from app.services import discovery
+    # 已有该站一个栏目源(site_key=covered.cn)
+    db.add(S(name="已有栏目", kind="page", adapter="generic_rss", credibility="S3", tier="B",
+             lifecycle="active", serves_needs=[need.id], entry_url="https://covered.cn/x",
+             site_key="covered.cn", identity_key="https://covered.cn/x"))
+    # 同站的候选证据
+    db.add(SourceDiscoveryEvidence(identity_key="covered.cn", display_name="覆盖站",
+                                   kind_guess="website", channel="event_search",
+                                   evidence_url="https://covered.cn/y"))
+    db.flush()
+    res = discovery.evaluate_candidates(db, need.id)
+    assert not any(c["identity_key"] == "covered.cn" for c in res)  # 站已覆盖 → 不再当候选
 
 
 def test_delete_source_with_docs_is_retired(db, admin, need):

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import DictionaryRelease, KeywordSet, NeedProfile, Source
+from app.services import url_tools
 
 REQUIRED_TOP_KEYS = ["need", "record_schemas", "dictionaries", "sources", "update", "quality", "outputs", "benchmark", "compliance"]
 VALID_ARCHETYPES = {"事件型", "文档型", "对象型", "观测型"}
@@ -116,12 +117,25 @@ def load_seed_sources(db: Session, need_id: str, path: str | Path) -> int:
             needs = set(existing.serves_needs or [])
             needs.add(need_id)
             existing.serves_needs = sorted(needs)
+            if not existing.site_key:  # 旧数据补键
+                sk, ik = url_tools.source_keys(existing.kind, existing.entry_url,
+                                               existing.adapter_config)
+                existing.site_key = sk
+                if ik and not existing.identity_key and \
+                        not db.query(Source).filter_by(identity_key=ik).first():
+                    existing.identity_key = ik
             continue
+        cfg = s.get("adapter_config", {})
+        site_key, ident = url_tools.source_keys(s["kind"], entry, cfg)
+        # identity_key 唯一:若目标键已被占用(极少),留空避免冲突,不影响该源采集
+        if ident and db.query(Source).filter_by(identity_key=ident).first():
+            ident = None
         db.add(Source(
             name=s["name"], entry_url=entry, kind=s["kind"], adapter=s["adapter"],
-            adapter_config=s.get("adapter_config", {}),
+            adapter_config=cfg,
             credibility=s["credibility"], tier=s.get("tier", "B"),
             lifecycle="active", serves_needs=[need_id],
+            identity_key=ident, site_key=site_key,
             manual_assist=bool(s.get("manual_assist", False)),
             note=s.get("note"), discovered_from="seed",
         ))

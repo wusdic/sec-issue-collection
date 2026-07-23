@@ -53,11 +53,33 @@ def registered_domain(host: str) -> str:
 
 
 def identity_key_for(url: str, wechat_account: str | None = None) -> str:
-    """源发现归一键:公众号用 mp:账号名,网站用注册域名。"""
+    """站点/发布主体身份键(site_key):公众号用 mp:账号名,网站用注册域名。"""
     if wechat_account:
         return f"mp:{wechat_account.strip()}"
     host = urlparse(url).netloc
     return registered_domain(host)
+
+
+def source_keys(kind: str, entry_url: str | None, adapter_config: dict | None = None,
+                wechat_account: str | None = None) -> tuple[str | None, str | None]:
+    """算一个源的 (site_key, identity_key)。
+
+    site_key = 站点/主体身份(注册域 / mp:账号),同站不同栏目共享 → 可信度/发现/信誉按它算。
+    identity_key = 采集目标唯一键(栏目粒度):公众号→mp:账号、站内检索(config.site)→site:域名、
+                   页面型→归一化 entry_url。纯搜索引擎等无固定目标 → (None, None) 不参与去重。
+    """
+    cfg = adapter_config or {}
+    acct = wechat_account or cfg.get("account")
+    if acct:
+        key = f"mp:{str(acct).strip()}"
+        return key, key
+    if cfg.get("site"):
+        dom = str(cfg["site"]).strip()
+        return dom, f"site:{dom}"
+    if entry_url and entry_url.startswith("http"):
+        dom = registered_domain(urlparse(entry_url).netloc)
+        return dom, normalize_url(entry_url)
+    return None, None
 
 
 def is_search_redirect(url: str) -> bool:

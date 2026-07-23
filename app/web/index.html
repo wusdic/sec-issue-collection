@@ -426,8 +426,10 @@ async function vSources(){
     <div class="toolbar" style="margin:4px 0 10px">
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
       <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
-      <span class="sub">体检:逐个试抓,连续失败达阈值自动停用。转站内检索:把直连抓不到的页面型源改用搜索引擎按 site: 抓(政务站兜底)。</span>
+      <button class="ghost" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
+      <span class="sub">体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
     </div>
+    <div id="dupBox" style="margin-bottom:8px"></div>
     <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
   loadSources();
@@ -507,6 +509,26 @@ async function testAllSources(){
     +(fail>retired?` <span class="muted">抓不到但未达停用阈值的会保留,多测几次连续失败才停用。</span>`:``);
   btn.disabled=false;
   loadSources();
+}
+async function scanDup(){
+  const box=document.getElementById("dupBox"); box.innerHTML=`<span class="muted">扫描中…</span>`;
+  try{
+    await api(`/sources/recompute-keys`,{method:"POST"});   // 先回填站点键,老库也能归组
+    const groups=await api(`/sources/duplicates?need_id=${NEED}`);
+    if(!groups.length){ box.innerHTML=`<span class="pill ok">未发现同站多源</span>`; return; }
+    const realDup=groups.filter(g=>g.has_exact_duplicate).length;
+    box.innerHTML=`<div class="card" style="padding:12px">
+      <b>同站多源 ${groups.length} 组</b> <span class="muted">(其中真重复 ${realDup} 组标红;同站不同栏目属正常,可保留分别采集)</span>
+      ${groups.map(g=>`<div style="margin:8px 0;padding:8px;border-left:3px solid ${g.has_exact_duplicate?'#e5534b':'#3b7'}">
+        <div class="mono" style="font-size:12px">${esc(g.site_key)} ${g.has_exact_duplicate?'<span class="pill warn">有同栏目重复</span>':'<span class="pill info">不同栏目</span>'}</div>
+        ${g.sources.map(s=>`<div style="margin:3px 0">
+          <span class="pill ${s.lifecycle==='retired'?'':'ok'}">${esc(s.kind)}</span>
+          ${esc(s.name)} <span class="muted mono">${esc(s.entry_url||s.identity_key||'')}</span>
+          <span class="muted">· 文档${s.docs_total}</span>
+          ${canEditSrc()&&s.lifecycle!=='retired'?`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`:''}
+        </div>`).join("")}
+      </div>`).join("")}</div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }
 async function toSearchRetry(id,name){
   if(!confirm(`把页面型源「${name}」改造成『站内检索』兜底?\n\n将新建一个用搜索引擎按 site:域名 抓该站的检索型源,并把原页面源停用。适合直连抓不到(政务站/反爬)的情况。`)) return;
