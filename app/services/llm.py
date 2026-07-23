@@ -52,11 +52,16 @@ class OpenAICompatLLM(BaseLLM):
         # 部分接口(如 MiniMax abab)不支持 response_format,故做成可关闭并自动降级
         if use_json_format:
             body["response_format"] = {"type": "json_object"}
-        resp = httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=body, timeout=self.timeout,
-        )
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=body, timeout=self.timeout,
+            )
+        except httpx.TimeoutException as e:
+            raise LLMError(f"接口超时(>{self.timeout}s):{type(e).__name__}")
+        except httpx.HTTPError as e:
+            raise LLMError(f"网络错误:{type(e).__name__}: {e}"[:160])
         if resp.status_code >= 400:
             raise LLMError(f"HTTP {resp.status_code}: {_api_err(resp)}")
         data = resp.json()
@@ -85,6 +90,9 @@ class OpenAICompatLLM(BaseLLM):
                     use_json = False
                     format_fallback_used = True
                     continue
+                # 超时:重试也会超时,直接放弃该篇,避免整批被慢篇卡住
+                if "超时" in last_err or "timeout" in last_err.lower():
+                    break
                 left -= 1
             except json.JSONDecodeError as e:
                 last_err = f"输出非 JSON: {e}"
@@ -465,6 +473,7 @@ def get_llm() -> BaseLLM:
             _client = OpenAICompatLLM(
                 settings.llm_base_url, settings.llm_api_key, settings.llm_model,
                 settings.llm_embed_base_url, settings.llm_embed_api_key, settings.llm_embed_model,
+                timeout=float(getattr(settings, "llm_timeout", 90) or 90),
             )
         else:
             _client = MockLLM()

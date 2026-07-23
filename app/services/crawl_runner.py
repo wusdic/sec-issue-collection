@@ -98,7 +98,19 @@ def _process_one(need_id: str, doc_id: int, rec) -> dict:
         return r
     except Exception as e:  # noqa: BLE001
         wdb.rollback()
-        return {"action": "error", "error": str(e)[:200], "doc_id": doc_id}
+        # 处理异常(如 LLM 超时)不静默丢文档:转人工待定,下次不会重复处理也不会丢
+        pub = None
+        try:
+            doc = wdb.get(RawDocument, doc_id)
+            if doc:
+                pub = doc.publisher
+                if doc.screen_status in ("pending", "screened_in"):
+                    doc.screen_status = "manual_queue"
+                    doc.screen_reason = f"处理异常(如大模型超时),待人工:{str(e)[:150]}"
+                    wdb.commit()
+        except Exception:  # noqa: BLE001
+            wdb.rollback()
+        return {"action": "error", "error": str(e)[:200], "doc_id": doc_id, "publisher": pub}
     finally:
         wdb.close()
 

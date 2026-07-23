@@ -36,6 +36,8 @@ class Settings:
     llm_embed_api_key: str = os.getenv("LLM_EMBED_API_KEY", "")
     # 输出上限:抽取记录较大,推理模型(如 MiniMax-M3)还会先输出思维链,需足够 token 否则 JSON 被截断
     llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "8192"))
+    # 单次 LLM 请求超时(秒)。推理模型偶尔很慢,超时即放弃该篇(不重试,重试也会超时),避免卡住
+    llm_timeout: float = float(os.getenv("LLM_TIMEOUT", "90"))
 
     # 原文存档
     archive_root: str = os.getenv("ARCHIVE_ROOT", str(BASE_DIR / "data" / "archive"))

@@ -27,38 +27,44 @@ def _truncate(v):
 
 
 class _Recorder:
+    """并行处理时多线程共用一个记录器:内存缓冲 + 批量落库(每批用短会话,线程安全)。"""
+
     def __init__(self, job_id: int | None):
         self.job_id = job_id
         self.count = 0
-        self._db = SessionLocal()
-        self._lock = threading.Lock()     # 并行处理时多线程共用同一记录器,写入串行化
+        self._buf: list[dict] = []
+        self._lock = threading.Lock()
 
     def add(self, kind: str, summary: str = "", ref: str | None = None, detail: dict | None = None):
+        from datetime import datetime
+        row = {"job_id": self.job_id, "kind": kind, "at": datetime.utcnow(),
+               "ref": (ref or "")[:400] or None, "summary": (summary or "")[:2000] or None,
+               "detail": _truncate(detail) if detail else None}
         with self._lock:
+            self._buf.append(row)
+            self.count += 1
+            if len(self._buf) >= 100:
+                self._flush_locked()
+
+    def _flush_locked(self):
+        if not self._buf:
+            return
+        rows, self._buf = self._buf, []
+        db = SessionLocal()
+        try:
+            db.bulk_insert_mappings(RunTrace, rows)
+            db.commit()
+        except Exception:  # noqa: BLE001 诊断留痕绝不能影响主流程
             try:
-                self._db.add(RunTrace(
-                    job_id=self.job_id, kind=kind,
-                    ref=(ref or "")[:400] or None,
-                    summary=(summary or "")[:2000] or None,
-                    detail=_truncate(detail) if detail else None,
-                ))
-                self.count += 1
-                if self.count % 20 == 0:
-                    self._db.commit()
-            except Exception:  # noqa: BLE001 诊断留痕绝不能影响主流程
-                try:
-                    self._db.rollback()
-                except Exception:  # noqa: BLE001
-                    pass
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            db.close()
 
     def close(self):
         with self._lock:
-            try:
-                self._db.commit()
-            except Exception:  # noqa: BLE001
-                pass
-            finally:
-                self._db.close()
+            self._flush_locked()
 
 
 @contextmanager
