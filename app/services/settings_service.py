@@ -17,6 +17,8 @@ EDITABLE = [
     ("llm_api_key", "LLM 密钥", "LLM 大模型", "str", True, "API Key,留空表示不修改已存值"),
     ("llm_model", "抽取模型", "LLM 大模型", "str", False, "结构化抽取用,如 qwen-plus / deepseek-chat"),
     ("llm_screen_model", "粗筛模型", "LLM 大模型", "str", False, "粗筛用小模型省钱,如 qwen-turbo;留空同抽取模型"),
+    ("llm_max_tokens", "单次输出上限(token)", "LLM 大模型", "int", False,
+     "抽取记录较大,推理模型(MiniMax-M3 等)还会先输出思维链,太小会截断 JSON 致抽取失败。默认 8192"),
     ("llm_embed_base_url", "向量接口地址", "LLM 大模型", "str", False, "Embedding 接口,留空回退 LLM 接口"),
     ("llm_embed_api_key", "向量接口密钥", "LLM 大模型", "str", True, "留空表示不修改"),
     ("llm_embed_model", "向量模型", "LLM 大模型", "str", False,

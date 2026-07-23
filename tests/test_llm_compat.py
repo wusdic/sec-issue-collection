@@ -101,3 +101,25 @@ def test_response_format_fallback(monkeypatch):
     out = c.complete_json("sys", "user", retries=0)  # retries=0 也应触发降级
     assert out == {"ok": True}
     assert calls == [True, False]  # 先带 format 失败,再不带 format 成功
+
+
+def test_parse_json_handles_reasoning_think():
+    from app.services.llm import _parse_json
+    # <think> 里含示例 JSON,答案在后
+    r = ('<think>date format is {"date":"YYYY-MM-DD"}, let me think...</think>\n'
+         '{"title":"某公司数据泄露","org_name":"某公司","record_type":"单一事件"}')
+    out = _parse_json(r)
+    assert out["title"] == "某公司数据泄露" and out["record_type"] == "单一事件"
+
+
+def test_parse_json_unwraps_list():
+    from app.services.llm import _parse_json
+    out = _parse_json('[{"title":"数组包裹","org_name":"X"}]')
+    assert out["title"] == "数组包裹"
+
+
+def test_parse_json_picks_largest_object():
+    from app.services.llm import _parse_json
+    # 前面有个小对象干扰,真记录更大
+    r = 'noise {"k":1} then {"title":"真记录","org_name":"Y","a":1,"b":2,"c":3}'
+    assert _parse_json(r)["title"] == "真记录"

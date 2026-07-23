@@ -34,6 +34,8 @@ class Settings:
     llm_embed_model: str = os.getenv("LLM_EMBED_MODEL", "")
     llm_embed_base_url: str = os.getenv("LLM_EMBED_BASE_URL", "")
     llm_embed_api_key: str = os.getenv("LLM_EMBED_API_KEY", "")
+    # 输出上限:抽取记录较大,推理模型(如 MiniMax-M3)还会先输出思维链,需足够 token 否则 JSON 被截断
+    llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "8192"))
 
     # 原文存档
     archive_root: str = os.getenv("ARCHIVE_ROOT", str(BASE_DIR / "data" / "archive"))

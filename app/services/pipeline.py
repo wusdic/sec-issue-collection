@@ -215,6 +215,15 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     diagnostics.record("extract", "结构化抽取完成",
                        detail={"payload": payload, "violations": extraction["violations"],
                                "schema_errors": extraction["schema_errors"]})
+    # 抽取空壳(标题/单位/要素全无)→ 不建空事件,转人工待定,避免仪表盘一堆空记录
+    if not _payload_has_content(payload):
+        doc.screen_status = "manual_queue"
+        doc.screen_reason = "抽取结果为空(疑似模型输出异常/正文不足),待人工确认"
+        result["action"] = "manual_queue"
+        diagnostics.record("extract", "抽取为空,转人工待定(不建事件)",
+                           detail={"raw_keys": list(payload.keys())[:20]})
+        db.flush()
+        return result
 
     # 记录级去重:指纹 → 语义召回
     existing = dedup.fingerprint_match(db, need.id, payload)
@@ -275,6 +284,18 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
 def _item_pub(item: DiscoveredItem):
     """列表项的发布日期(用于时效早停):优先 item.published,回退 URL 日期。"""
     return _parse_dt(item.published) or url_tools.date_from_url(item.url)
+
+
+def _payload_has_content(p: dict) -> bool:
+    """抽取结果是否有实质内容(至少有标题、或具体单位、或攻击/后果要素)。"""
+    if not isinstance(p, dict):
+        return False
+    if (p.get("title") or "").strip():
+        return True
+    org = (p.get("org_name") or "").strip()
+    if org and org not in ("未披露", "未知", "不明", ""):
+        return True
+    return bool(p.get("attack_type") or p.get("consequences"))
 
 
 def _consume_paginated(db, need, source, run, fetch_page, max_pages,

@@ -47,6 +47,7 @@ class OpenAICompatLLM(BaseLLM):
                 {"role": "user", "content": user},
             ],
             "temperature": 0,
+            "max_tokens": int(getattr(settings, "llm_max_tokens", 0) or 8192),
         }
         # 部分接口(如 MiniMax abab)不支持 response_format,故做成可关闭并自动降级
         if use_json_format:
@@ -258,16 +259,82 @@ def _extract_balanced(raw: str):
     return None
 
 
+def _strip_think(s: str) -> str:
+    """去掉推理模型的思维链(<think>…</think>),避免把思维里的示例 JSON 当成答案。"""
+    if "</think>" in s:
+        s = s.rsplit("</think>", 1)[1]          # 取最后一个 </think> 之后的正文
+    return re.sub(r"(?is)<think>.*?</think>", " ", s)
+
+
+def _iter_balanced(raw: str):
+    """扫描出所有顶层平衡的 {...} / [...] 子串。"""
+    i, n = 0, len(raw)
+    while i < n:
+        if raw[i] in "{[":
+            open_ch = raw[i]
+            close_ch = "}" if open_ch == "{" else "]"
+            depth, in_str, esc, j, done = 0, False, False, i, False
+            while j < n:
+                c = raw[j]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif c == "\\":
+                        esc = True
+                    elif c == '"':
+                        in_str = False
+                else:
+                    if c == '"':
+                        in_str = True
+                    elif c == open_ch:
+                        depth += 1
+                    elif c == close_ch:
+                        depth -= 1
+                        if depth == 0:
+                            yield raw[i:j + 1]
+                            i, done = j + 1, True
+                            break
+                j += 1
+            if not done:
+                i += 1
+        else:
+            i += 1
+
+
+def _best_json_object(raw: str) -> dict | None:
+    """从文本里挑出最像答案的 JSON 对象:所有能解析的平衡块中取最大的 dict(list 则取其中 dict)。"""
+    best = None
+    for blk in _iter_balanced(raw):
+        try:
+            v = json.loads(blk)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(v, list):
+            v = next((x for x in v if isinstance(x, dict)), None)
+        if isinstance(v, dict) and (best is None or len(blk) > best[0]):
+            best = (len(blk), v)
+    return best[1] if best else None
+
+
 def _parse_json(raw: str) -> dict:
-    """鲁棒 JSON 解析:去 markdown fence → 直接解析 → 提取平衡括号子串再解析。"""
-    cleaned = _strip_fence(raw)
+    """鲁棒 JSON 解析:去 fence/思维链 → 直接解析(list 取其中 dict)→ 取最大平衡对象。
+
+    兼容推理模型(MiniMax-M3 等)先输出 <think> 再给 JSON、以及把记录包成数组的情况。
+    """
+    cleaned = _strip_think(_strip_fence(raw))
     try:
-        return json.loads(cleaned)
+        v = json.loads(cleaned)
+        if isinstance(v, list):
+            v = next((x for x in v if isinstance(x, dict)), None)
+        if isinstance(v, dict):
+            return v
     except json.JSONDecodeError:
-        sub = _extract_balanced(cleaned)
-        if sub:
-            return json.loads(sub)
-        raise
+        pass
+    for src in (cleaned, raw):          # 先在去思维链后的正文找,再退回原文兜底
+        obj = _best_json_object(src)
+        if obj is not None:
+            return obj
+    raise json.JSONDecodeError("未找到 JSON 对象", cleaned[:120], 0)
 
 
 class MockLLM(BaseLLM):
