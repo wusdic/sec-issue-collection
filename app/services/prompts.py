@@ -10,7 +10,9 @@ def screen_prompts(profile_cfg: dict, title: str, text: str) -> tuple[str, str]:
     system = (
         "TASK=screen\n"
         "你是网络安全事件库的粗筛分类器。仅输出 JSON:"
-        '{"is_candidate": bool, "confidence": 0-1, "reason": "一句话"}\n'
+        '{"is_candidate": bool, "relevance": 0-1, "confidence": 0-1, "reason": "一句话"}\n'
+        "字段含义(务必区分):relevance=这篇与『网络安全事件库』的相关程度(1=高度相关,0=完全无关);"
+        "confidence=你对本次判断的把握程度。判为不相关时 relevance 必须给低分(而不是把把握程度写进去)。\n"
         f"判定标准:{goal}。\n"
         "【算相关 is_candidate=true】仅限网络/数据/信息安全:安全事件(攻击/入侵/泄露/勒索/篡改/宕机/"
         "供应链投毒)、安全监管处罚决定、威胁情报(木马/僵尸网络/黑产/钓鱼/漏洞利用)、漏洞公告、"

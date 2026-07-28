@@ -22,9 +22,17 @@ def screen_document(profile_cfg: dict, title: str, text: str) -> dict:
     """粗筛:{'is_candidate': bool, 'confidence': float, 'reason': str}"""
     system, user = screen_prompts(profile_cfg, title or "", text or "")
     out = get_screen_llm().complete_json(system, user)   # 粗筛用小模型(配了才生效),省钱提速
+    is_cand = bool(out.get("is_candidate"))
+    # 阈值必须用「相关度」而不是「判断置信度」。历史上二者被混用:模型判"不相关"且很有把握时
+    # confidence=0.99 反而 ≥ 待定阈值,导致越确信不相关越被塞进人工队列(实测 91% 文档中招)。
+    rel = out.get("relevance")
+    if rel is None:                       # 兼容未输出 relevance 的模型
+        conf = float(out.get("confidence") or 0)
+        rel = conf if is_cand else 1.0 - conf   # 判不相关时:越有把握 → 相关度越低
     return {
-        "is_candidate": bool(out.get("is_candidate")),
-        "confidence": float(out.get("confidence") or 0),
+        "is_candidate": is_cand,
+        "confidence": max(0.0, min(1.0, float(rel))),   # 对外仍叫 confidence(相关度语义)
+        "judge_confidence": float(out.get("confidence") or 0),
         "reason": str(out.get("reason") or ""),
     }
 
