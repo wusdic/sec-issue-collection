@@ -194,7 +194,10 @@ def test_discover_and_persist_records_and_reuses(db, need, monkeypatch):
     # 再次调用 → TTL 内直接复用,不重算(不新增子源)
     kids2, recomputed2 = columns.discover_and_persist(db, root)
     assert recomputed2 is False and len(kids2) == 1 and kids2[0].id == child.id
-    assert db.query(Source).filter_by(discovered_from="column_auto").count() == 1
+    # 限定本测试自己的父源:discover_and_persist 会 commit,全局计数会被其他用例的数据干扰
+    mine = [x for x in db.query(Source).filter_by(discovered_from="column_auto").all()
+            if (x.adapter_config or {}).get("parent_site_id") == root.id]
+    assert len(mine) == 1
 
 
 def test_child_columns_excluded_from_scheduling(db, need, monkeypatch):

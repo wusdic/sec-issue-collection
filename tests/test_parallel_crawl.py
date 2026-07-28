@@ -138,3 +138,10 @@ def test_column_discovery_does_not_hold_write_lock(db, need, monkeypatch):
     last_fetch = max(i for i, (k, _) in enumerate(order) if k == "fetch")
     first_db = min((i for i, (k, _) in enumerate(order) if k == "db"), default=10**9)
     assert last_fetch < first_db, f"写库后仍在抓网络(会占着写锁): {order}"
+
+    # discover_and_persist 会 commit,清理掉自己建的子源与父源,避免污染后续用例
+    monkeypatch.undo()
+    for k in kids:
+        db.delete(k)
+    db.delete(root)
+    db.commit()
