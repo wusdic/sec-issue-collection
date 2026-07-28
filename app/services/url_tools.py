@@ -93,6 +93,48 @@ _URL_DATE_RES = [
 ]
 
 
+def dget(obj, *keys, default=None):
+    """安全读取 LLM 产出的嵌套字段:任一层不是 dict 就返回 default。
+
+    LLM 时常把本该是对象的字段给成字符串(如 region:"广东省"),裸写
+    (p.get("region") or {}).get("province") 会 AttributeError 并使整条记录处理失败。
+    """
+    cur = obj
+    for k in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k)
+    return default if cur is None else cur
+
+
+def to_date(v):
+    """容错日期解析:接受 str / {date|value|raw|raw_text} / date / datetime / None,返回 date 或 None。
+
+    LLM 抽取的日期形态多变(纯字符串、月精度 "2026-04"、嵌套对象、"近期"),直接 fromisoformat
+    会抛异常并使整条记录处理失败,故统一走这里。无四位年份(如"未披露")一律判无日期。
+    """
+    from datetime import date as _date
+    from datetime import datetime as _dt
+    if v is None:
+        return None
+    if isinstance(v, _dt):
+        return v.date()
+    if isinstance(v, _date):
+        return v
+    if isinstance(v, dict):
+        v = v.get("date") or v.get("value") or v.get("raw") or v.get("raw_text")
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not re.search(r"(19|20)\d{2}", s):
+        return None
+    try:
+        from dateutil import parser as _p
+        return _p.parse(s, fuzzy=True, default=_dt(2000, 1, 1)).date()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def date_from_url(url: str):
     """从 URL 里提取发布日期(政务/新闻站常见 /YYYY-MM/DD/ 或 YYYYMMDD 连写)。取不到返回 None。"""
     from datetime import date as _date

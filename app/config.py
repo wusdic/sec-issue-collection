@@ -80,6 +80,9 @@ class Settings:
     # 并发度:多源同时抓取、多文档同时抽取(LLM 调用是网络等待,并发可大幅提速)。1=串行
     crawl_concurrency: int = int(os.getenv("CRAWL_CONCURRENCY", "5"))
     process_concurrency: int = int(os.getenv("PROCESS_CONCURRENCY", "6"))
+    # 开启浏览器渲染时的抓取并发上限:同步 Playwright 要求每线程独立浏览器,并发几个源就有
+    # 几个 Chromium(每个约数百 MB),故单独设更小的上限保护内存
+    render_max_concurrency: int = int(os.getenv("RENDER_MAX_CONCURRENCY", "2"))
     # 根域页面型源自动发现相关栏目:每站最多注册/抓取的栏目数
     auto_column_max: int = int(os.getenv("AUTO_COLUMN_MAX", "8"))
     # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库

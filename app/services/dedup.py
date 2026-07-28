@@ -1,6 +1,7 @@
 """三层去重(方案第 10 节):URL 层 / 文档层(SimHash 同稿簇)/ 记录层(指纹+语义召回)。"""
 from datetime import datetime, timedelta
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -36,8 +37,11 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int | None = No
     doc.simhash = simhash64(body or doc.title or "")
     lookback_days = lookback_days if lookback_days is not None else settings.dedup_lookback_days
     since = datetime.utcnow() - timedelta(days=lookback_days)
-    candidates = (
-        db.query(RawDocument)
+    # 只取比对必需的轻量列(不加载 content_text 大字段),命中后再按 id 取完整行:
+    # 否则每处理一篇都要把近 N 天所有文档正文读进内存,量大时急剧变慢。
+    rows = (
+        db.query(RawDocument.id, RawDocument.simhash, RawDocument.title,
+                 func.length(RawDocument.content_text))
         .filter(RawDocument.need_id == doc.need_id,
                 RawDocument.fetched_at >= since,
                 RawDocument.id != (doc.id or -1),
@@ -45,17 +49,20 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int | None = No
         .all()
     )
     my_title = _title_key(doc.title)
-    for other in candidates:
-        if hamming(doc.simhash, other.simhash) <= settings.simhash_hamming_max:
+    for other_id, other_simhash, other_title, other_len in rows:
+        if hamming(doc.simhash, other_simhash) <= settings.simhash_hamming_max:
             # 二次确认防模板化误命中:双方都有标题 → 必须标题一致;否则退回正文长度相近(比值>0.6)
-            ot = _title_key(other.title)
+            ot = _title_key(other_title)
             if my_title and ot:
                 if my_title != ot:
                     continue
             else:
-                ol = len(other.content_text or "")
+                ol = other_len or 0
                 if not (ol > 0 and min(len(body), ol) / max(len(body), ol) > settings.dedup_len_ratio_min):
                     continue
+            other = db.get(RawDocument, other_id)   # 命中才加载完整行
+            if other is None:
+                continue
             cluster = db.get(DocCluster, other.cluster_id) if other.cluster_id else None
             if cluster is None:
                 cluster = DocCluster(primary_doc_id=other.id,
@@ -91,19 +98,19 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int | None = No
 
 def _org_key(payload: dict) -> str:
     return payload.get("org_uscc") or (
-        (payload.get("org_name") or "未披露") + "|" + ((payload.get("region") or {}).get("province") or "")
+        (payload.get("org_name") or "未披露") + "|" + (url_tools.dget(payload, "region", "province") or "")
     )
 
 
 def fingerprint_match(db: Session, need_id: str, payload: dict) -> Event | None:
     """10.3 记录层第一步:单位键 + 攻击类型交集 + 时间窗 ±N 天。"""
     org = _org_key(payload)
-    occurred = ((payload.get("occurred_date") or {}).get("date"))
     attack = set(payload.get("attack_type") or [])
-    if not occurred:
+    # 容错解析:LLM 可能给纯字符串、月精度("2026-04")或嵌套对象,直接 fromisoformat 会抛异常
+    # 导致整篇处理失败被丢进人工队列(实测已发生),故统一走 url_tools.to_date。
+    d = url_tools.to_date(payload.get("occurred_date"))
+    if d is None:
         return None
-    from datetime import date as _date
-    d = _date.fromisoformat(occurred)
     window = timedelta(days=settings.fingerprint_window_days)
     candidates = (
         db.query(Event)

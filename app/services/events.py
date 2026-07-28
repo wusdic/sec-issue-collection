@@ -11,6 +11,7 @@ from datetime import date, datetime
 from sqlalchemy.orm import Session
 
 from app.models import Event, EventChangeLog, EventSource, ReviewTask
+from app.services import url_tools
 from app.services.extraction import completeness_score, validate_payload
 from app.services.llm import get_llm
 from app.services.money_guard import confirmed_fields
@@ -39,25 +40,8 @@ _ADVISORY_ORGS = ("", "未披露", "未知", "不明", "无", "多家", "多个"
 
 
 def _to_date(v):
-    """把各种形态的日期(str / {date|value|raw} / None)容错解析为 date;失败返回 None,绝不抛。
-
-    支持 YYYY-MM-DD / YYYY-MM / YYYY / 斜杠点分 / 带时间 / 中文年月;无四位年份(如"近期"、
-    "未披露")直接判无日期,避免被兜底成脏值。
-    """
-    if v is None:
-        return None
-    if isinstance(v, dict):
-        v = v.get("date") or v.get("value") or v.get("raw") or v.get("raw_text")
-    if not isinstance(v, str):
-        return None
-    s = v.strip()
-    if not re.search(r"(19|20)\d{2}", s):
-        return None
-    try:
-        from dateutil import parser as _p
-        return _p.parse(s, fuzzy=True, default=datetime(2000, 1, 1)).date()
-    except Exception:  # noqa: BLE001
-        return None
+    """容错日期解析(统一走 url_tools.to_date:支持 str/{date|value|raw}/月精度/带时间,失败返回 None)。"""
+    return url_tools.to_date(v)
 
 
 def _scalar_severity(v) -> str | None:
@@ -85,10 +69,10 @@ def _sync_columns(ev: Event):
     p = ev.payload or {}
     ev.occurred_date = _to_date(p.get("occurred_date"))
     ev.disclosed_date = _to_date(p.get("disclosed_date"))
-    ev.industry_l1 = (p.get("industry") or {}).get("level1") or (p.get("industry") or {}).get("l1")
-    ev.industry_l2 = (p.get("industry") or {}).get("level2") or (p.get("industry") or {}).get("l2")
-    ev.province = (p.get("region") or {}).get("province")
-    ev.city = (p.get("region") or {}).get("city")
+    ev.industry_l1 = url_tools.dget(p, "industry", "level1") or url_tools.dget(p, "industry", "l1")
+    ev.industry_l2 = url_tools.dget(p, "industry", "level2") or url_tools.dget(p, "industry", "l2")
+    ev.province = url_tools.dget(p, "region", "province")
+    ev.city = url_tools.dget(p, "region", "city")
     ev.org_name = p.get("org_name")
     ev.org_uscc = p.get("org_uscc")
     ev.org_type = p.get("org_type")
@@ -220,7 +204,7 @@ def validate_publish(db: Session, ev: Event, record_schema: dict,
             )
         # pending_human 未清除 = 复核未确认
         for f in conf:
-            if (ev.payload.get(f) or {}).get("pending_human"):
+            if url_tools.dget(ev.payload, f, "pending_human"):
                 errors.append(f"红线:{f} 的 confirmed 金额未经人工确认(pending_human)")
     return errors
 

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Event, Lead
+from app.services import url_tools
 
 _SEVERITY_W = {"特别重大": 1.0, "重大": 0.85, "较大": 0.65, "一般": 0.45, "未定级": 0.35}
 _SIZE_W = {"特大": 1.0, "大": 0.85, "中": 0.6, "小微": 0.35, "未知": 0.5}
@@ -38,7 +39,7 @@ def _match_rule(rule: dict, payload: dict) -> bool:
         "attack_type": set(payload.get("attack_type") or []),
         "consequences": set(payload.get("consequences") or []),
         "entry_vector": {e.get("vector") for e in payload.get("entry_vector") or []},
-        "root_cause": {(payload.get("root_cause") or {}).get("category")},
+        "root_cause": {url_tools.dget(payload, "root_cause", "category")},
         "security_controls": {c.get("control") for c in payload.get("security_controls") or []
                               if c.get("status") in ("缺位", "在位但失效", "在位被绕过")},
     }
@@ -78,7 +79,7 @@ def talk_track(ev: Event, products: list[str]) -> str:
         money = p.get(f) or {}
         if money.get("status") not in (None, "未披露", "无此类损失"):
             facts.append(f"{f} 状态:{money.get('status')}")
-    if (p.get("ransom") or {}).get("demanded_amount"):
+    if url_tools.dget(p, "ransom", "demanded_amount"):
         facts.append(f"攻击者要求赎金 {p['ransom']['demanded_amount']}(注意:要求≠损失)")
     facts.append(f"建议切入:{'、'.join(products[:5]) or '待产品映射'}")
     facts.append("话术仅引用公开来源事实,禁止贬损任何在位厂商")

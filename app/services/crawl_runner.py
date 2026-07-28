@@ -133,9 +133,15 @@ def _run(job_id: int):
         db.commit()
         rec = diagnostics.current()          # 主记录器,worker 线程共享绑定
         cc = max(1, int(getattr(settings, "crawl_concurrency", 1) or 1))
+        note = ""
+        if settings.playwright_enabled:
+            # 每个并行 worker 会各自启一个 Chromium(同步 Playwright 的线程要求),故限并发护内存
+            cap = max(1, int(getattr(settings, "render_max_concurrency", 2) or 2))
+            if cc > cap:
+                cc, note = cap, f"(已开浏览器渲染,抓取并发降至 {cap} 以控内存)"
         _log(db, job_id, "info", None,
              f"开始采集:选中 {len(srcs)} 个源、关键词 {len(queries)} 条(每查询最多 {max_pages} 页)、"
-             f"并发 {cc}")
+             f"并发 {cc}{note}")
         db.commit()
 
         # 并行抓取:多源同时抓,单源失败不影响其他

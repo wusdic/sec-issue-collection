@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Event, EventSource, FollowupTask, Lead, RawDocument
 from app.services.money_guard import LOSS_FIELDS, confirmed_fields
+from app.services import url_tools
 
 
 def heatmap(db: Session, need_id: str, days: int = 365) -> dict:
@@ -49,7 +50,7 @@ def loss_stats(db: Session, need_id: str, scope: str = "confirmed") -> dict:
         p = ev.payload or {}
         touched = False
         for f in LOSS_FIELDS:
-            amt = _amount((p.get(f) or {}).get(channel_key))
+            amt = _amount(url_tools.dget(p, f, channel_key))
             if amt:
                 per_loss[f] += amt
                 per_industry[ev.industry_l1 or "未知"] += amt

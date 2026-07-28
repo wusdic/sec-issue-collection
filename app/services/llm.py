@@ -464,20 +464,34 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 _client: BaseLLM | None = None
+_screen_client: BaseLLM | None = None
+
+
+def _build(model: str) -> BaseLLM:
+    if settings.llm_provider == "openai_compat" and settings.llm_base_url:
+        return OpenAICompatLLM(
+            settings.llm_base_url, settings.llm_api_key, model,
+            settings.llm_embed_base_url, settings.llm_embed_api_key, settings.llm_embed_model,
+            timeout=float(getattr(settings, "llm_timeout", 90) or 90),
+        )
+    return MockLLM()
 
 
 def get_llm() -> BaseLLM:
+    """抽取/通用客户端(用 llm_model)。"""
     global _client
     if _client is None:
-        if settings.llm_provider == "openai_compat" and settings.llm_base_url:
-            _client = OpenAICompatLLM(
-                settings.llm_base_url, settings.llm_api_key, settings.llm_model,
-                settings.llm_embed_base_url, settings.llm_embed_api_key, settings.llm_embed_model,
-                timeout=float(getattr(settings, "llm_timeout", 90) or 90),
-            )
-        else:
-            _client = MockLLM()
+        _client = _build(settings.llm_model)
     return _client
+
+
+def get_screen_llm() -> BaseLLM:
+    """粗筛客户端:配了 llm_screen_model 就用小模型(省钱提速),否则回退抽取模型。"""
+    global _screen_client
+    if _screen_client is None:
+        model = (settings.llm_screen_model or "").strip() or settings.llm_model
+        _screen_client = _build(model) if model != settings.llm_model else get_llm()
+    return _screen_client
 
 
 def set_llm(client: BaseLLM):
@@ -486,6 +500,7 @@ def set_llm(client: BaseLLM):
 
 
 def reset():
-    """清空客户端缓存(配置变更后调用,下次 get_llm 用新配置重建)。"""
-    global _client
+    """清空客户端缓存(配置变更后调用,下次 get_llm/get_screen_llm 用新配置重建)。"""
+    global _client, _screen_client
     _client = None
+    _screen_client = None

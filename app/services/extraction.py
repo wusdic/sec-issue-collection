@@ -5,7 +5,7 @@ from pathlib import Path
 import jsonschema
 
 from app.config import settings
-from app.services.llm import get_llm
+from app.services.llm import get_llm, get_screen_llm
 from app.services.money_guard import apply_guard
 from app.services.prompts import extract_prompts, screen_prompts
 
@@ -22,7 +22,7 @@ def load_record_schema(path: str | Path) -> dict:
 def screen_document(profile_cfg: dict, title: str, text: str) -> dict:
     """粗筛:{'is_candidate': bool, 'confidence': float, 'reason': str}"""
     system, user = screen_prompts(profile_cfg, title or "", text or "")
-    out = get_llm().complete_json(system, user)
+    out = get_screen_llm().complete_json(system, user)   # 粗筛用小模型(配了才生效),省钱提速
     return {
         "is_candidate": bool(out.get("is_candidate")),
         "confidence": float(out.get("confidence") or 0),
