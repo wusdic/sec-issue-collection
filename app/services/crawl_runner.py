@@ -63,6 +63,49 @@ def _pick_sources(db: Session, need: NeedProfile, limit: int) -> list[Source]:
     return out
 
 
+def _force_fail_job(job_id: int, err: str):
+    """用全新会话把任务标记为失败(原会话已不可用时的最后兜底,防止僵尸 running 卡住页面)。"""
+    db2 = SessionLocal()
+    try:
+        job = db2.get(CrawlJob, job_id)
+        if job and job.status == "running":
+            job.status = "failed"
+            job.finished_at = datetime.utcnow()
+            job.error = (err or "")[-500:]
+            db2.commit()
+    except Exception:  # noqa: BLE001
+        try:
+            db2.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        db2.close()
+
+
+def _reap_stale_job(job_id: int):
+    """线程退出时兜底:若任务仍是 running(说明中途异常退出),标记失败,避免页面永远不能再采集。"""
+    _force_fail_job(job_id, "任务线程异常退出(已自动标记失败)")
+
+
+def reap_orphan_jobs() -> int:
+    """启动时回收僵尸任务:进程重启后 DB 里仍是 running 的任务不可能再有线程在跑。"""
+    db = SessionLocal()
+    try:
+        rows = db.query(CrawlJob).filter(CrawlJob.status == "running").all()
+        for j in rows:
+            j.status = "failed"
+            j.finished_at = datetime.utcnow()
+            j.error = (j.error or "") + " [进程重启,任务中断]"
+        if rows:
+            db.commit()
+        return len(rows)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        return 0
+    finally:
+        db.close()
+
+
 def _crawl_one(need_id: str, queries, max_pages: int, src_id: int, rec) -> dict:
     """并行抓取单个源:独立 DB 会话 + 绑定共享诊断记录器。返回统计供主线程汇总。"""
     wdb = SessionLocal()
@@ -146,7 +189,10 @@ def _run(job_id: int):
 
         # 并行抓取:多源同时抓,单源失败不影响其他
         canceled = False
-        with ThreadPoolExecutor(max_workers=cc) as ex:
+        # 手动管理线程池:取消时用 shutdown(wait=False) 立即返回;若用 with,退出时会再
+        # shutdown(wait=True) 等已在跑的源跑完(最长 source_time_budget_seconds),表现为"点了取消没反应"。
+        ex = ThreadPoolExecutor(max_workers=cc)
+        try:
             futs = {ex.submit(_crawl_one, need.id, queries, max_pages, sid, rec): sid
                     for sid in src_ids}
             for fut in as_completed(futs):
@@ -164,12 +210,13 @@ def _run(job_id: int):
                     canceled = True
                     break
             if canceled:
-                ex.shutdown(wait=False, cancel_futures=True)
                 job.status = "canceled"
                 job.finished_at = datetime.utcnow()
                 _log(db, job_id, "warn", None, "用户取消采集")
                 db.commit()
                 return
+        finally:
+            ex.shutdown(wait=not canceled, cancel_futures=True)
 
         # 处理待粗筛文档(并行:LLM 抽取是网络等待,多篇并发大幅提速)
         job.phase = "过滤与抽取"
@@ -182,8 +229,9 @@ def _run(job_id: int):
              f"抓取完成,开始处理 {len(pend_ids)} 篇文档(粗筛过滤 → 抽取),并发 {pc}")
         db.commit()
 
-        with ThreadPoolExecutor(max_workers=pc) as ex:
-            futs = {ex.submit(_process_one, need.id, did, rec): did for did in pend_ids}
+        pex, p_canceled = ThreadPoolExecutor(max_workers=pc), False
+        try:
+            futs = {pex.submit(_process_one, need.id, did, rec): did for did in pend_ids}
             for fut in as_completed(futs):
                 r = fut.result()
                 a = r.get("action")
@@ -205,11 +253,13 @@ def _run(job_id: int):
                 job.done_docs += 1
                 db.commit()
                 if job_id in _CANCEL:
-                    ex.shutdown(wait=False, cancel_futures=True)
+                    p_canceled = True
                     job.status = "canceled"
                     job.finished_at = datetime.utcnow()
                     db.commit()
                     return
+        finally:
+            pex.shutdown(wait=not p_canceled, cancel_futures=True)
 
         job.phase = "收尾(候选源自动入库/线索刷新)"
         db.commit()
@@ -249,16 +299,27 @@ def _run(job_id: int):
              f"生成事件 {job.new_events} 条")
         db.commit()
     except Exception:  # noqa: BLE001 兜底记录完整栈
-        job = db.get(CrawlJob, job_id)
-        if job:
-            job.status = "failed"
-            job.finished_at = datetime.utcnow()
-            job.error = traceback.format_exc()[-500:]
+        tb = traceback.format_exc()
+        # 必须先回滚:异常可能来自 commit/写锁,会话已中毒,此时直接 db.get 会再抛
+        # PendingRollbackError 使本函数崩溃 → 任务永远停在 running,页面"开始采集"被永久占用。
         try:
-            _log(db, job_id, "error", None, f"任务失败:\n{traceback.format_exc()[:1500]}")
-            db.commit()
+            db.rollback()
         except Exception:  # noqa: BLE001
             pass
+        try:
+            job = db.get(CrawlJob, job_id)
+            if job:
+                job.status = "failed"
+                job.finished_at = datetime.utcnow()
+                job.error = tb[-500:]
+            _log(db, job_id, "error", None, f"任务失败:\n{tb[:1500]}")
+            db.commit()
+        except Exception:  # noqa: BLE001 最后兜底:换新会话也要把任务标记成失败,绝不留僵尸 running
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            _force_fail_job(job_id, tb)
     finally:
         try:
             _diag.__exit__(None, None, None)   # 关闭诊断会话(flush 留痕)
@@ -266,3 +327,4 @@ def _run(job_id: int):
             pass
         _CANCEL.discard(job_id)
         db.close()
+        _reap_stale_job(job_id)

@@ -8,6 +8,7 @@
 import re
 from datetime import date, datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Event, EventChangeLog, EventSource, ReviewTask
@@ -104,9 +105,6 @@ def create_draft(db: Session, need_id: str, payload: dict, doc=None,
     payload.setdefault("confidence_overall", {
         "S1": "已证实", "S2": "多源印证", "S3": "单源待证", "S4": "单源待证",
     }.get(source_credibility, "单源待证"))
-    ev = Event(event_id=next_event_id(db), need_id=need_id, payload=payload,
-               status="draft", dict_version=dict_version,
-               confidence_overall=payload.get("confidence_overall"))
     # 来源 url 反幻觉:抽取给的占位/非法链接用采集文档真实链接回填(禁止 c_XXXXX 之类进库)
     if payload.get("sources") and doc is not None:
         real = doc.final_url or doc.url
@@ -128,12 +126,34 @@ def create_draft(db: Session, need_id: str, payload: dict, doc=None,
         }]
     summary = f"{payload.get('title','')} {payload.get('org_name','')} {' '.join(payload.get('attack_type') or [])}"
     try:
-        ev.embedding = get_llm().embed(summary)
+        # 先算 embedding(慢:网络调用),再取号入库。否则取号与插入之间夹着这次网络请求,
+        # 并行下多个 worker 必然算出同一个事件号 → 主键冲突 → 已抽取结果被丢弃。
+        embedding = get_llm().embed(summary)
     except Exception:  # noqa: BLE001 embedding 服务不可用时降级:跳过第三层语义去重,不阻断入库
-        ev.embedding = None
-    _sync_columns(ev)
-    db.add(ev)
-    db.flush()
+        embedding = None
+
+    # 事件号按"当日最大序号+1"生成,并发下会撞主键;用 savepoint 重试重新取号,保证不丢记录。
+    ev, last_err = None, None
+    for _ in range(10):
+        cand = Event(event_id=next_event_id(db), need_id=need_id, payload=payload,
+                     status="draft", dict_version=dict_version,
+                     confidence_overall=payload.get("confidence_overall"),
+                     embedding=embedding)
+        _sync_columns(cand)
+        try:
+            with db.begin_nested():
+                db.add(cand)
+                db.flush()
+            ev = cand
+            break
+        except IntegrityError as e:  # 事件号被其他 worker 抢先占用 → 重新取号
+            last_err = e
+            try:
+                db.expunge(cand)
+            except Exception:  # noqa: BLE001
+                pass
+    if ev is None:
+        raise last_err
     if doc is not None:
         db.add(EventSource(event_id=ev.event_id, ref_id="SRC-001", doc_id=doc.id,
                            snapshot_id=doc.snapshot_id, credibility=source_credibility,

@@ -83,6 +83,8 @@ class Settings:
     # 开启浏览器渲染时的抓取并发上限:同步 Playwright 要求每线程独立浏览器,并发几个源就有
     # 几个 Chromium(每个约数百 MB),故单独设更小的上限保护内存
     render_max_concurrency: int = int(os.getenv("RENDER_MAX_CONCURRENCY", "2"))
+    # SQLite 写锁等待(毫秒)。并行采集下多 worker 争写锁,过小会直接 "database is locked"
+    sqlite_busy_timeout_ms: int = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000"))
     # 根域页面型源自动发现相关栏目:每站最多注册/抓取的栏目数
     auto_column_max: int = int(os.getenv("AUTO_COLUMN_MAX", "8"))
     # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库

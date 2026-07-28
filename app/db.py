@@ -23,7 +23,8 @@ def _make_engine(url: str):
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
             cur.execute("PRAGMA journal_mode=WAL")       # 后台采集写 + 前端轮询读并发
-            cur.execute("PRAGMA busy_timeout=8000")      # 锁等待,避免 database is locked
+            # SQLite 单写者:并行采集时多 worker 抢写锁,等待要足够长(配合流水线的短事务)
+            cur.execute(f"PRAGMA busy_timeout={int(settings.sqlite_busy_timeout_ms)}")
             cur.close()
     return eng
 

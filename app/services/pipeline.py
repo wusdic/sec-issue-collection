@@ -290,6 +290,19 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
     return early_enabled, stop_th
 
 
+def _safe_commit(db) -> bool:
+    """提交并释放写锁;失败则回滚保证会话可继续用(避免后续 flush 抛 PendingRollbackError)。"""
+    try:
+        db.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+
 def _item_pub(item: DiscoveredItem):
     """列表项的发布日期(用于时效早停):优先 item.published,回退 URL 日期。"""
     return _parse_dt(item.published) or url_tools.date_from_url(item.url)
@@ -365,6 +378,7 @@ def _consume_paginated(db, need, source, run, fetch_page, max_pages,
             else:                                      # 新增(或失败)→ 重置连续计数
                 consecutive_stop = 0
                 page_new += 1
+        _safe_commit(db)   # 每页落盘并释放写锁,避免长事务阻塞其他并行 worker
         if early:
             break
         if early_enabled and page_new == 0 and page_items:
@@ -384,6 +398,10 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     run = CrawlRun(source_id=source.id)
     db.add(run)
     db.flush()
+    # 立刻提交释放写锁:SQLite 只允许一个写事务,若整个源抓完才提交,其他并行 worker 会在
+    # 第一次写时等锁超时直接 "database is locked"(实测 5 并发会失败 4 个)。
+    _safe_commit(db)
+    run_id, source_id = run.id, source.id   # 回滚后按 id 重取,避免用到已失效的实例
     adapter = get_adapter(source)
     stats = {"new": 0, "skipped": 0, "failed": 0, "blacklist": 0, "too_old": 0}
     found = 0
@@ -455,13 +473,22 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
         source.last_success_at = datetime.utcnow()
         source.fail_streak = 0
     except Exception as e:  # noqa: BLE001 单源失败不拖垮批次
+        err = str(e)[:500]
+        # 先回滚:失败可能来自 flush(唯一约束/锁超时),会话已中毒,不回滚则后续写全部抛
+        # PendingRollbackError,真实错因被掩盖、fail_streak 也白加。
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        run = db.get(CrawlRun, run_id) or run
+        source = db.get(Source, source_id) or source
         run.status = "failed"
-        run.error = str(e)[:500]
-        source.fail_streak += 1
+        run.error = err
+        source.fail_streak = (source.fail_streak or 0) + 1
     run.urls_found = found
     run.urls_new = stats["new"]
     run.urls_skipped = stats["skipped"]
     run.urls_failed = stats["failed"]
     run.finished_at = datetime.utcnow()
-    db.flush()
+    _safe_commit(db)
     return run

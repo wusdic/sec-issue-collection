@@ -31,6 +31,12 @@ def _startup():
             db.rollback()
     finally:
         db.close()
+    # 回收上次进程残留的 running 僵尸任务,否则"开始采集"会一直提示已有任务在跑
+    from app.services.crawl_runner import reap_orphan_jobs
+    try:
+        reap_orphan_jobs()
+    except Exception:  # noqa: BLE001
+        pass
     # 每日自动采集调度(进程内轻量,daily_auto_enabled 关闭时线程空转不做事)
     from app.services import daily
     daily.start()

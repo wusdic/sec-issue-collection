@@ -54,10 +54,13 @@ def record_evidence(db: Session, url: str | None, channel: str,
         return None
     if db.query(Source).filter_by(site_key=key).first():
         return None  # 该站点已有源(任一栏目)→ 不再当候选
+    # 用 first() 而非 one_or_none():并发下 check-then-insert 可能留下同 (key, channel) 重复行,
+    # one_or_none 会抛 MultipleResultsFound,并使此后每轮采集碰到该域名都失败(持久性损坏)。
     ev = (
         db.query(SourceDiscoveryEvidence)
         .filter_by(identity_key=key, channel=channel)
-        .one_or_none()
+        .order_by(SourceDiscoveryEvidence.id)
+        .first()
     )
     if ev:
         ev.hit_count += 1

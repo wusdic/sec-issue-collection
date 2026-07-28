@@ -17,9 +17,11 @@ _stop = threading.Event()
 
 
 def _already_ran_today(db, need_id: str, day) -> bool:
+    """今天是否已经"自动"跑过。只看自动任务(triggered_by 为空):手动试跑不应顶掉当天的自动采集。"""
     start = datetime(day.year, day.month, day.day)
     return db.query(CrawlJob).filter(CrawlJob.need_id == need_id,
-                                     CrawlJob.started_at >= start).first() is not None
+                                     CrawlJob.started_at >= start,
+                                     CrawlJob.triggered_by.is_(None)).first() is not None
 
 
 def _tick():

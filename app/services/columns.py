@@ -206,8 +206,16 @@ def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tu
                 note=(f"自动栏目(相关度{c['score']}/文章{v['article_count']}"
                       f"/一致性{v['consistency']})"))
             db.add(child); db.flush()
-            known_ids.add(ik)
-            result.append(child)
+        else:
+            # 该栏目已作为源存在(如上轮建过或人工添加):补挂到本站并纳入本轮采集,
+            # 否则它既不会被父源抓、自身又可能不在调度里,栏目实际漏采。
+            cfg = dict(child.adapter_config or {})
+            cfg.setdefault("parent_site_id", source.id)
+            child.adapter_config = cfg
+            if child.lifecycle == "retired":
+                child.lifecycle = "active"
+        known_ids.add(ik)
+        result.append(child)
     cfg["columns_discovered_at"] = datetime.utcnow().isoformat()
     source.adapter_config = cfg
     db.flush()
