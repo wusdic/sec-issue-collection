@@ -77,6 +77,10 @@ import threading
 from contextlib import contextmanager
 
 _render_local = threading.local()  # 当前线程的渲染会话(采集批次内复用浏览器)
+# 同步版 Playwright 在多线程并发使用时可能死锁(其内部是 greenlet 事件循环),
+# 而 sync_playwright().start() 本身没有超时——一旦卡住该 worker 永远不返回。
+# 故用全局锁把"浏览器渲染"串行化:牺牲一点并行度,换取绝不挂死。
+_RENDER_GLOBAL_LOCK = threading.Lock()
 
 
 def _playwright_available() -> bool:
@@ -124,12 +128,20 @@ class _RenderSession:
         return self._browser
 
     def render(self, url: str, referer: str | None, timeout: float | None) -> FetchResult | None:
+        # 全局串行:避免多线程同时驱动同步 Playwright 造成死锁
+        if not _RENDER_GLOBAL_LOCK.acquire(timeout=max(30.0, float(timeout or settings.fetch_timeout) * 2)):
+            return None            # 等不到渲染槽位就降级 httpx,绝不无限等
         try:
             browser = self._browser_ok()
             res = _render_one(browser, url, referer, timeout)
         except Exception:  # noqa: BLE001 单页渲染失败不拖垮批次;浏览器可能已坏 → 回收待重启
             self.close()
             return None
+        finally:
+            try:
+                _RENDER_GLOBAL_LOCK.release()
+            except RuntimeError:
+                pass
         self._count += 1
         recycle = int(getattr(settings, "render_recycle_after", 0) or 0)
         if recycle and self._count >= recycle:

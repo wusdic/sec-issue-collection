@@ -744,9 +744,9 @@ async function vCrawl(){
 function crawlStopPoll(){ if(CRAWL_POLL){ clearInterval(CRAWL_POLL); CRAWL_POLL=null; } }
 async function refreshJob(){
   try{
-    const {job}=await api(`/crawl/current?need_id=${NEED}`);
+    const {job,inflight}=await api(`/crawl/current?need_id=${NEED}`);
     if(!document.getElementById("jobStatus")) return;  // 已切走
-    renderJob(job);
+    renderJob(job, inflight);
     if(job) window.__jobId=job.id;
     if(job && job.status==="running"){
       if(!CRAWL_POLL) CRAWL_POLL=setInterval(refreshJob,2000);
@@ -754,7 +754,7 @@ async function refreshJob(){
     }else{ crawlStopPoll(); loadDocs(); }
   }catch(e){ /* 页面可能已切走 */ }
 }
-function renderJob(job){
+function renderJob(job, inflight){
   const el=document.getElementById("jobStatus"); if(!el) return;
   if(!job){ el.innerHTML=`<span class="muted">尚无采集任务。点“开始采集”试跑一轮。</span>`; return; }
   const st={running:["info","运行中"],done:["ok","已完成"],failed:["bad","失败"],canceled:["warn","已取消"]}[job.status]||["",job.status];
@@ -768,6 +768,9 @@ function renderJob(job){
     ${job.status==="running"?`<button class="sm bad" style="float:right" onclick="cancelJob(${job.id})">取消</button>`:""}
     ${bar(srcPct,`源 ${job.done_sources}/${job.total_sources}`)}
     ${job.total_docs?bar(docPct,`文档处理 ${job.done_docs}/${job.total_docs}`):""}
+    ${(inflight&&inflight.length)?`<div style="font-size:12px;margin:4px 0">正在抓取(${inflight.length}):
+      ${inflight.map(f=>`<span class="pill ${f.elapsed>=180?'warn':''}" title="已运行 ${f.elapsed}s">${esc(f.name)} ${Math.round(f.elapsed)}s</span>`).join(" ")}
+      ${inflight.some(f=>f.elapsed>=180)?'<span class="muted">← 标黄的已超单源时长上限,可能卡住</span>':''}</div>`:""}
     <div style="font-size:13px;margin-top:6px">新入库 <b>${job.new_docs}</b> ·
       <span style="color:var(--ok)">相关 ${job.kept_docs}</span> ·
       <span class="muted">过滤 ${job.dropped_docs}</span> · 生成事件 <b>${job.new_events}</b></div>

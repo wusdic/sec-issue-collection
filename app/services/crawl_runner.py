@@ -24,6 +24,21 @@ def _now() -> float:
     return time.time()
 
 
+# 正在抓取的源:{source_id: (名称, 开始时间)}。并行版此前无从得知"当前在跑什么",
+# 一旦某个源卡住,页面只会停在某个数字不动,无法定位元凶。
+_INFLIGHT: dict[int, tuple[str, float]] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def inflight() -> list[dict]:
+    """当前正在抓取的源及已耗时(秒),按耗时降序——最久的那个通常就是卡住的。"""
+    now = _now()
+    with _INFLIGHT_LOCK:
+        rows = [{"source_id": sid, "name": nm, "elapsed": round(now - t0, 1)}
+                for sid, (nm, t0) in _INFLIGHT.items()]
+    return sorted(rows, key=lambda r: -r["elapsed"])
+
+
 def _log(db: Session, job_id: int, level: str, source: str | None, message: str):
     db.add(CrawlLog(job_id=job_id, level=level, source=source, message=(message or "")[:2000]))
 
@@ -121,9 +136,13 @@ def _crawl_one(need_id: str, queries, max_pages: int, src_id: int, rec) -> dict:
     t0 = _t.time()
     wdb = SessionLocal()
     diagnostics.bind(rec)
+    _nm = f"源#{src_id}"
     try:
         need = wdb.get(NeedProfile, need_id)
         src = wdb.get(Source, src_id)
+        _nm = src.name if src else _nm
+        with _INFLIGHT_LOCK:
+            _INFLIGHT[src_id] = (_nm, t0)
         run = pipeline.crawl_source(wdb, need, src, queries=queries, max_pages=max_pages, do_archive=True)
         wdb.commit()
         return {"name": src.name, "kind": src.kind, "adapter": src.adapter,
@@ -132,9 +151,11 @@ def _crawl_one(need_id: str, queries, max_pages: int, src_id: int, rec) -> dict:
                 "elapsed": _t.time() - t0}
     except Exception as e:  # noqa: BLE001 单源失败不终止整批
         wdb.rollback()
-        return {"name": f"源#{src_id}", "status": "failed", "error": str(e)[:200],
+        return {"name": _nm, "status": "failed", "error": str(e)[:200],
                 "found": 0, "new": 0, "skipped": 0, "failed": 0, "elapsed": _t.time() - t0}
     finally:
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.pop(src_id, None)
         wdb.close()
 
 
@@ -217,8 +238,17 @@ def _run(job_id: int):
             job_budget = int(getattr(settings, "job_max_seconds", 0) or 0)
             _t0 = _now()
             _pending = dict(futs)          # future -> source_id,用于超时后报告未完成的源
+            _warned: set[int] = set()
             for fut in as_completed(futs, timeout=job_budget if job_budget > 0 else None):
                 _pending.pop(fut, None)
+                # 每完成一个就看一眼:有没有源已经跑很久(卡住的那个自己没法记日志)
+                slow_th = max(60, int(getattr(settings, "source_time_budget_seconds", 180) or 180))
+                for f in inflight():
+                    if f["elapsed"] >= slow_th and f["source_id"] not in _warned:
+                        _warned.add(f["source_id"])
+                        _log(db, job_id, "warn", f["name"],
+                             f"该源已运行 {f['elapsed']:.0f}s 仍未完成,可能卡住(超出单源上限 {slow_th}s)")
+                        db.commit()
                 res = fut.result()
                 lvl = "info" if res["status"] == "ok" else "error"
                 if res.get("elapsed", 0) >= max(30, int(getattr(settings, "source_time_budget_seconds", 180) or 180)):

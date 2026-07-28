@@ -880,7 +880,8 @@ def crawl_current(need_id: str = "sec_events", db: Session = Depends(get_session
                   _: AppUser = Depends(current_user)):
     """当前/最近一次采集任务的状态与进度(任何页面/刷新都能查到是否在运行)。"""
     from app.services import crawl_runner
-    return {"job": _job_dict(crawl_runner.current_job(db, need_id))}
+    return {"job": _job_dict(crawl_runner.current_job(db, need_id)),
+            "inflight": crawl_runner.inflight()}   # 当前在抓哪些源、各已耗时,便于定位卡住的源
 
 
 @api.get("/crawl/jobs/{job_id}/logs")

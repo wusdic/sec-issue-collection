@@ -145,3 +145,35 @@ def test_column_discovery_does_not_hold_write_lock(db, need, monkeypatch):
         db.delete(k)
     db.delete(root)
     db.commit()
+
+
+def test_inflight_reports_running_sources(db, need, monkeypatch):
+    """能查到"当前在抓哪些源、各已跑多久"——此前卡住时完全无从定位。"""
+    import threading
+    import time as _t
+    from app.db import SessionLocal
+    from app.models import NeedProfile
+
+    src = Source(name="慢源", kind="page", adapter="generic_list", credibility="S3", tier="B",
+                 lifecycle="active", serves_needs=[need.id], entry_url="https://slow.example.com/c")
+    db.add(src); db.commit()
+    sid = src.id
+    started, release = threading.Event(), threading.Event()
+
+    class _Slow:
+        kind = "page"
+        def discover_page(self, page):
+            started.set()
+            release.wait(5)          # 模拟卡住的源
+            return []
+
+    monkeypatch.setattr(pipeline, "get_adapter", lambda s: _Slow())
+    t = threading.Thread(target=crawl_runner._crawl_one,
+                         args=(need.id, [], 1, sid, None), daemon=True)
+    t.start()
+    assert started.wait(5)
+    _t.sleep(0.2)
+    rows = crawl_runner.inflight()
+    assert any(r["source_id"] == sid and r["name"] == "慢源" and r["elapsed"] > 0 for r in rows), rows
+    release.set(); t.join(10)
+    assert all(r["source_id"] != sid for r in crawl_runner.inflight())   # 结束后自动注销
