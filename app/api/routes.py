@@ -57,18 +57,36 @@ def login(body: LoginIn, db: Session = Depends(get_session)):
 @api.get("/sources")
 def list_sources(lifecycle: str | None = None, db: Session = Depends(get_session),
                  _: AppUser = Depends(current_user)):
+    from app.services import columns as columns_svc
     q = db.query(Source)
     if lifecycle:
         q = q.filter_by(lifecycle=lifecycle)
-    return [{"id": s.id, "name": s.name, "kind": s.kind, "adapter": s.adapter,
-             "entry_url": s.entry_url, "note": s.note,
-             "credibility": s.credibility, "tier": s.tier, "lifecycle": s.lifecycle,
-             "identity_key": s.identity_key, "site_key": s.site_key,
-             "discovery_score": s.discovery_score,
-             "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total,
-             "fail_streak": s.fail_streak, "discovered_from": s.discovered_from,
-             "last_crawled": s.last_success_at.isoformat() if s.last_success_at else None}
-            for s in q.order_by(Source.id).all()]
+    rows = q.order_by(Source.id).all()
+    # 精准度:一次性统计各根域源已定位到几个栏目,避免逐源查库
+    child_n: dict[int, int] = {}
+    for s in rows:
+        pid = (s.adapter_config or {}).get("parent_site_id")
+        if pid and s.discovered_from == "column_auto" and s.lifecycle != "retired":
+            child_n[pid] = child_n.get(pid, 0) + 1
+    out = []
+    for s in rows:
+        p = columns_svc.precision_of(s)
+        if p["level"] == "root" and child_n.get(s.id):
+            n = child_n[s.id]
+            p = {"level": "resolved", "precise": True, "label": f"已定位{n}个栏目",
+                 "hint": "根域入口,但采集时按已识别的相关栏目分别抓"}
+        out.append({"id": s.id, "name": s.name, "kind": s.kind, "adapter": s.adapter,
+                    "entry_url": s.entry_url, "note": s.note,
+                    "credibility": s.credibility, "tier": s.tier, "lifecycle": s.lifecycle,
+                    "identity_key": s.identity_key, "site_key": s.site_key,
+                    "discovery_score": s.discovery_score,
+                    "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total,
+                    "fail_streak": s.fail_streak, "discovered_from": s.discovered_from,
+                    "parent_site_id": (s.adapter_config or {}).get("parent_site_id"),
+                    "precision": p["level"], "precise": p["precise"],
+                    "precision_label": p["label"], "precision_hint": p["hint"],
+                    "last_crawled": s.last_success_at.isoformat() if s.last_success_at else None})
+    return out
 
 
 class SourceIn(BaseModel):
@@ -149,7 +167,11 @@ def create_source(body: SourceIn, db: Session = Depends(get_session),
                  discovered_from="manual")
     db.add(src)
     db.commit()
-    return {"id": src.id, "merged": False, "name": src.name}
+    # 只填了根地址 → 提示这不是"精准源",引导去定位栏目(采集时也会自动定位)
+    from app.services import columns as columns_svc
+    p = columns_svc.precision_of(src, db)
+    return {"id": src.id, "merged": False, "name": src.name,
+            "precision": p["level"], "precise": p["precise"], "precision_hint": p["hint"]}
 
 
 @api.delete("/sources/{source_id}")
@@ -159,6 +181,10 @@ def delete_source(source_id: int, db: Session = Depends(get_session),
     src = db.get(Source, source_id)
     if not src:
         raise HTTPException(404, "源不存在")
+    # 打上人工停用标记:自动栏目发现下次不再把它拉回来抓(尊重人工判断)
+    cfg = dict(src.adapter_config or {})
+    cfg["manually_retired"] = True
+    src.adapter_config = cfg
     has_docs = db.query(RawDocument.id).filter_by(source_id=source_id).first() is not None
     if has_docs:
         src.lifecycle = "retired"
@@ -221,6 +247,32 @@ def cancel_health_check(_: AppUser = Depends(require_roles("analyst"))):
     return {"ok": True, "note": "已请求取消,当前源测完即停"}
 
 
+@api.post("/sources/locate-columns")
+def start_locate_columns(need_id: str = "sec_events", force: bool = False,
+                         _: AppUser = Depends(require_roles("analyst"))):
+    """启动"批量精准定位栏目"后台任务:把只填了根地址的源逐个定位到具体栏目(立即返回)。"""
+    from app.services import locate
+    return locate.start(need_id, force)
+
+
+@api.get("/sources/locate-columns")
+def locate_columns_status(need_id: str = "sec_events", db: Session = Depends(get_session),
+                          _: AppUser = Depends(current_user)):
+    """定位进度 + 当前还有多少源没精准到栏目。"""
+    from app.services import locate
+    st = locate.status()
+    if not st.get("running"):
+        st = {**st, "pending": len(locate.pending(db, need_id))}
+    return st
+
+
+@api.post("/sources/locate-columns/cancel")
+def cancel_locate_columns(_: AppUser = Depends(require_roles("analyst"))):
+    from app.services import locate
+    locate.cancel()
+    return {"ok": True, "note": "已请求取消,当前源定位完即停"}
+
+
 @api.get("/sources/duplicates")
 def source_duplicates(need_id: str | None = None, db: Session = Depends(get_session),
                       _: AppUser = Depends(current_user)):
@@ -243,9 +295,14 @@ def sources_recompute_keys(db: Session = Depends(get_session),
 
 
 @api.post("/sources/{source_id}/discover-columns")
-def source_discover_columns(source_id: int, db: Session = Depends(get_session),
+def source_discover_columns(source_id: int, persist: bool = False,
+                            db: Session = Depends(get_session),
                             _: AppUser = Depends(require_roles("analyst"))):
-    """预览某根域页面型源自动识别到的相关栏目(不落库,仅展示;采集时会自动按这些栏目抓)。"""
+    """把根域源精准定位到具体栏目。
+
+    persist=false:仅预览识别结果(校验明细含文章数/结构一致性/内容相关度);
+    persist=true :把校验通过的栏目落库为子源(该站从此按栏目采,不再抓首页)。
+    """
     from app.services import columns
     src = db.get(Source, source_id)
     if not src:
@@ -254,14 +311,26 @@ def source_discover_columns(source_id: int, db: Session = Depends(get_session),
         return {"root_only": False, "note": "该源已是具体栏目/或非根域,采集时直接抓其自身",
                 "columns": []}
     render_pref = (src.adapter_config or {}).get("render", "auto")
+    terms = columns.relevance_terms(db, (src.serves_needs or ["sec_events"])[0])
+    if persist:
+        # 强制重算(用户点「定位栏目」就是要现在定位一次),再按记录返回
+        cfg = dict(src.adapter_config or {})
+        cfg.pop("columns_discovered_at", None)
+        src.adapter_config = cfg
+        kids, _re = columns.discover_and_persist(db, src)
+        return {"root_only": True, "persisted": True, "count": len(kids), "valid": len(kids),
+                "columns": [{"url": k.entry_url, "anchor": k.name, "valid": True,
+                             "note": k.note, "source_id": k.id} for k in kids]}
     cands = columns.discover_columns(src)
     out = []
     for c in cands:
-        v = columns.validate_column(c["url"], render_pref)   # 文章一致性验证
+        v = columns.validate_column(c["url"], render_pref, terms)   # 一致性 + 内容相关度
         out.append({**c, "valid": v["valid"], "article_count": v["article_count"],
-                    "consistency": v["consistency"], "reason": v.get("reason", "")})
+                    "consistency": v["consistency"], "relevance": v.get("relevance", 0.0),
+                    "reason": v.get("reason", "")})
     valid_n = sum(1 for c in out if c["valid"])
-    return {"root_only": True, "count": len(out), "valid": valid_n, "columns": out}
+    return {"root_only": True, "persisted": False, "count": len(out), "valid": valid_n,
+            "columns": out}
 
 
 @api.post("/sources/{source_id}/to-search-retry")
@@ -286,6 +355,11 @@ def source_to_search_retry(source_id: int, retire_original: bool = True,
     if existing:
         if existing.lifecycle == "retired":
             existing.lifecycle = "active"
+        # 该检索源可能是"根域源没定位到栏目"时自动建的挂靠源(经父源采集,不独立排期);
+        # 现在要把父源停掉改走它,必须解除挂靠,否则父源一停它就再也不会被采。
+        ecfg = dict(existing.adapter_config or {})
+        if retire_original and ecfg.pop("parent_site_id", None) is not None:
+            existing.adapter_config = ecfg
         created_id, created = existing.id, False
     else:
         retry = Source(
@@ -835,6 +909,8 @@ def put_keywords(body: KeywordsIn, db: Session = Depends(get_session),
     db.add(AuditLog(user_id=user.id, action="keywords.update", target=body.need_id,
                     detail={"version": content["version"]}))
     db.commit()
+    from app.services import columns as columns_svc
+    columns_svc.reset_terms_cache()   # 栏目相关度用的是这份词表,改完要立即生效
     expanded = expand_queries(content)
     return {"ok": True, "version": content["version"], "expanded_count": len(expanded),
             "sample": expanded[:20]}

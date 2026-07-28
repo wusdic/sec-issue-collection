@@ -26,7 +26,11 @@ def test_negative_terms_filter_items_before_fetch(db, need, monkeypatch):
     ks.content = content
     db.flush()
 
-    src = db.query(Source).first()
+    # 用"具体栏目"源:根域源已改为不抓首页(见 test_precise_sources.py),那条路径不适合验排除词
+    src = Source(name="排除词测试栏目", kind="page", adapter="generic_list", credibility="S3",
+                 tier="B", lifecycle="active", serves_needs=[need.id],
+                 entry_url="https://neg.example.com/col/")
+    db.add(src); db.flush()
     items = [DiscoveredItem(url="https://neg.example.com/a", title="某安全公司招聘工程师"),
              DiscoveredItem(url="https://neg.example.com/b", title="某公司数据泄露被攻击")]
 

@@ -448,6 +448,102 @@ def _consume_paginated(db, need, source, run, fetch_page, max_pages,
     return found, pages_used, truncated, snapshot
 
 
+def _run_queries(db, need, source, run, adapter, queries, behavior, max_pages,
+                 early_enabled, stop_th, do_archive, stats, deadline, neg) -> int:
+    """检索型采集:逐关键词翻页取结果并记账。返回本源命中条数。
+
+    抽成函数是为了让"根域源没识别到栏目"时也能走同一套站内检索兜底逻辑。
+    """
+    has_pager = hasattr(adapter, "search_page")
+    # 搜索型源限流:关键词截到上限,避免 400 词硬打慢站空跑几十分钟
+    cap = int(getattr(settings, "search_source_query_cap", 0) or 0)
+    qlist = (queries or [])[:cap] if cap > 0 else (queries or [])
+    found = 0
+    for q in qlist:
+        if deadline and time.time() > deadline:
+            break  # 单源超时:放弃剩余关键词
+        qh = url_tools.query_hash(q)
+        wm = db.get(SearchWatermark, (source.id, qh))
+        before = stats["new"]
+
+        def fetch_page(page, _q=q):
+            if has_pager:
+                return adapter.search_page(_q, page)
+            return adapter.search(_q, max_pages=1)[0] if page == 0 else None
+
+        q_found, pages_used, truncated, snapshot = _consume_paginated(
+            db, need, source, run, fetch_page, max_pages, early_enabled, stop_th,
+            do_archive, stats, deadline, neg)
+        db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
+                          query=q, pages_fetched=pages_used, truncated=truncated,
+                          results=q_found, new_docs=stats["new"] - before,
+                          result_snapshot=snapshot[:50]))
+        found += q_found
+        if wm:
+            wm.last_ran_at = datetime.utcnow()
+        else:
+            db.add(SearchWatermark(source_id=source.id, query_hash=qh,
+                                   last_ran_at=datetime.utcnow()))
+    return found
+
+
+def _root_fallback(db, need, source, run, queries, behavior, max_pages,
+                   early_enabled, stop_th, do_archive, stats, deadline, neg) -> int:
+    """根域源识别不到有效栏目时的兜底(默认转站内检索,而不是抓首页)。
+
+    抓首页拿到的是"要闻/领导活动"这类与需求无关的内容(用户反馈的"习近平会见…"就是这么进来的);
+    站内检索用 site:域名 + 需求关键词,同样只用一次网络往返,却能精准圈出该站的相关页面集合。
+    行为可用 root_no_column_fallback 配置:search(默认)/ root(旧行为)/ skip。
+    """
+    mode = str(getattr(settings, "root_no_column_fallback", "search") or "search").lower()
+    if mode == "skip":
+        diagnostics.record("note", f"源「{source.name}」未定位到相关栏目,按配置跳过(不抓根页)")
+        return 0
+    if mode == "root":
+        found, _pu, _tr, _sn = _consume_paginated(
+            db, need, source, run, lambda page: get_adapter(source).discover_page(page),
+            max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
+        return found
+    domain = url_tools.identity_key_for(source.entry_url or "")
+    if not domain or domain.startswith("mp:"):
+        return 0
+    sibling = _site_search_sibling(db, source, domain)
+    if sibling is None:
+        return 0
+    diagnostics.record("note",
+                       f"源「{source.name}」未定位到相关栏目 → 转站内检索 site:{domain}(不抓根页,避免首页噪声)")
+    found = _run_queries(db, need, sibling, run, get_adapter(sibling), queries, behavior,
+                         max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
+    if found:
+        sibling.last_success_at = datetime.utcnow()
+    return found
+
+
+def _site_search_sibling(db, source: Source, domain: str) -> Source | None:
+    """取/建该站的『站内检索』兄弟源(site:域名),供根域兜底与后续独立调度复用。"""
+    ident = f"site:{domain}"
+    sib = db.query(Source).filter_by(identity_key=ident).one_or_none()
+    if sib is not None:
+        if sib.lifecycle == "retired":
+            sib.lifecycle = "active"
+        return sib
+    sib = Source(
+        name=f"{source.name}·站内检索", entry_url=None, kind="query", adapter="baidu_search",
+        adapter_config={"site": domain, "list_order": "relevance",
+                        "parent_site_id": source.id},
+        credibility=source.credibility, tier=source.tier, lifecycle="active",
+        serves_needs=list(source.serves_needs or []), identity_key=ident, site_key=domain,
+        discovered_from="root_fallback",
+        note=f"根域源「{source.name}」未定位到相关栏目,自动转站内检索精准定位相关页面")
+    db.add(sib)
+    try:
+        db.flush()
+    except Exception:  # noqa: BLE001 并发下可能被别的 worker 抢先建了同一条
+        db.rollback()
+        return db.query(Source).filter_by(identity_key=ident).one_or_none()
+    return sib
+
+
 def crawl_source(db: Session, need: NeedProfile, source: Source,
                  queries: list[str] | None = None, behavior: str = "B1",
                  max_pages: int = 1, do_archive: bool = True) -> CrawlRun:
@@ -470,35 +566,9 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
         # 批次内浏览器实例复用:本源所有需渲染的页面共用一个浏览器(嵌套则复用上层 job 会话)
         with fetcher.render_session():
             if source.kind == "query":
-                has_pager = hasattr(adapter, "search_page")
-                # 搜索型源限流:关键词截到上限,避免 400 词硬打慢站空跑几十分钟
-                cap = int(getattr(settings, "search_source_query_cap", 0) or 0)
-                qlist = (queries or [])[:cap] if cap > 0 else (queries or [])
-                for q in qlist:
-                    if deadline and time.time() > deadline:
-                        break  # 单源超时:放弃剩余关键词
-                    qh = url_tools.query_hash(q)
-                    wm = db.get(SearchWatermark, (source.id, qh))
-                    before = stats["new"]
-
-                    def fetch_page(page, _q=q):
-                        if has_pager:
-                            return adapter.search_page(_q, page)
-                        return adapter.search(_q, max_pages=1)[0] if page == 0 else None
-
-                    q_found, pages_used, truncated, snapshot = _consume_paginated(
-                        db, need, source, run, fetch_page, max_pages, early_enabled, stop_th,
-                        do_archive, stats, deadline, neg)
-                    db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
-                                      query=q, pages_fetched=pages_used, truncated=truncated,
-                                      results=q_found, new_docs=stats["new"] - before,
-                                      result_snapshot=snapshot[:50]))
-                    found += q_found
-                    if wm:
-                        wm.last_ran_at = datetime.utcnow()
-                    else:
-                        db.add(SearchWatermark(source_id=source.id, query_hash=qh,
-                                               last_ran_at=datetime.utcnow()))
+                found += _run_queries(db, need, source, run, adapter, queries, behavior,
+                                      max_pages, early_enabled, stop_th, do_archive,
+                                      stats, deadline, neg)
             elif columns.is_root_only(source.entry_url):
                 # 根域页面型源:不抓首页要闻,自动发现并持久化相关栏目为子源,分别抓;
                 # 栏目记录 TTL 内复用不重算(应对动态站,过期才重识别验证)。
@@ -518,10 +588,8 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                         found += f
                         child.last_success_at = datetime.utcnow()
                 else:
-                    # 没识别到有效栏目 → 退回抓根页本身
-                    found, _pu, _tr, _sn = _consume_paginated(
-                        db, need, source, run, lambda page: adapter.discover_page(page),
-                        max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
+                    found += _root_fallback(db, need, source, run, queries, behavior, max_pages,
+                                            early_enabled, stop_th, do_archive, stats, deadline, neg)
             else:
                 # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
                 found, _pu, _tr, _sn = _consume_paginated(

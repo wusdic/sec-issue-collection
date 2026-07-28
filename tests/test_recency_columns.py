@@ -203,9 +203,24 @@ def test_discover_and_persist_records_and_reuses(db, need, monkeypatch):
 def test_child_columns_excluded_from_scheduling(db, need, monkeypatch):
     from app.models import Source
     from app.services.crawl_runner import _pick_sources
+    parent = Source(name="父站", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+                    lifecycle="active", serves_needs=[need.id], entry_url="https://p.cn/")
+    db.add(parent); db.flush()
     child = Source(name="子栏目", kind="page", adapter="generic_list", credibility="S1", tier="B",
                    lifecycle="active", serves_needs=[need.id], entry_url="https://p.cn/col/",
-                   adapter_config={"parent_site_id": 999})
+                   adapter_config={"parent_site_id": parent.id})
     db.add(child); db.flush()
-    picked = _pick_sources(db, need, 999)
-    assert child.id not in [s.id for s in picked]   # 子栏目不独立占名额
+    picked = _pick_sources(db, need, 0)
+    assert child.id not in [s.id for s in picked]    # 父源在,子栏目不独立占名额
+    assert parent.id in [s.id for s in picked]
+
+
+def test_orphan_child_is_scheduled_when_parent_gone(db, need):
+    """父源被停用/删除后,挂靠的子源必须自己上场,否则永远采不到。"""
+    from app.models import Source
+    from app.services.crawl_runner import _pick_sources
+    orphan = Source(name="孤儿子栏目", kind="page", adapter="generic_list", credibility="S1",
+                    tier="B", lifecycle="active", serves_needs=[need.id],
+                    entry_url="https://orphan.cn/col/", adapter_config={"parent_site_id": 999999})
+    db.add(orphan); db.flush()
+    assert orphan.id in [s.id for s in _pick_sources(db, need, 0)]

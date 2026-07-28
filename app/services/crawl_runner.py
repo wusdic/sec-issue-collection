@@ -76,10 +76,15 @@ def _pick_sources(db: Session, need: NeedProfile, limit: int) -> list[Source]:
     按"最久没成功采过的优先"轮转(从未采过的排最前),避免限制源数时永远只采 id 最小的那几个
     ——源库几十上百个时,靠后的源过去一辈子采不到。limit<=0 表示不限(全量)。
     """
+    rows = db.query(Source).filter(Source.lifecycle.in_(["active", "trial"])).all()
+    live = {s.id for s in rows}
     out = []
-    for s in db.query(Source).filter(Source.lifecycle.in_(["active", "trial"])).all():
-        if (s.adapter_config or {}).get("parent_site_id"):
-            continue  # 自动发现的子栏目由父源统一采集,不独立占用名额
+    for s in rows:
+        pid = (s.adapter_config or {}).get("parent_site_id")
+        # 自动发现的子栏目/挂靠检索源由父源统一采集,不独立占用名额;
+        # 但父源若已被停用/删除,子源必须自己上场,否则永远采不到(挂靠成了黑洞)。
+        if pid and pid in live:
+            continue
         if need.id in (s.serves_needs or []) and not s.manual_assist:
             out.append(s)
     # 从未采过(last_success_at 为 None)优先,其余按上次成功时间升序;同序时按 id 稳定排序

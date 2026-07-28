@@ -91,7 +91,8 @@ def restore(db, source_id: int) -> Source:
     src.lifecycle = "active"
     src.fail_streak = 0
     cfg = dict(src.adapter_config or {})
-    cfg.pop("auto_merged", None)      # 人工恢复后不再被启动查重自动并掉
+    cfg.pop("auto_merged", None)         # 人工恢复后不再被启动查重自动并掉
+    cfg.pop("manually_retired", None)    # 恢复即撤销"人工停用",自动栏目发现可再纳入
     cfg["manually_restored"] = True
     src.adapter_config = cfg
     if src.note and "[自动查重" in src.note:

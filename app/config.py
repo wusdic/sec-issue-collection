@@ -94,6 +94,14 @@ class Settings:
     # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库
     column_min_articles: int = int(os.getenv("COLUMN_MIN_ARTICLES", "5"))
     column_consistency_min: float = float(os.getenv("COLUMN_CONSISTENCY_MIN", "0.5"))
+    # 栏目内容相关度下限:栏目里文章标题命中安全相关词的比例。结构一致只能说明"是个栏目",
+    # 还必须内容相关才算"能精准定位到相关内容的栏目",否则会把"要闻/领导活动"当栏目抓进来。
+    column_relevance_min: float = float(os.getenv("COLUMN_RELEVANCE_MIN", "0.3"))
+    # 判定相关度所需的最少标题样本数;不足(如全是图片链接无文字)则不卡相关度,只看结构
+    column_relevance_min_titles: int = int(os.getenv("COLUMN_RELEVANCE_MIN_TITLES", "3"))
+    # 根域源识别不到有效栏目时怎么办:
+    # search=转"站内检索"(按 site:域名+关键词精准定位相关页面集合,默认)/ root=抓根页(旧行为,噪声大)/ skip=跳过
+    root_no_column_fallback: str = os.getenv("ROOT_NO_COLUMN_FALLBACK", "search")
     # 栏目发现结果记录后多久重算一次(天),期间直接复用不重复识别;应对栏目动态变化
     auto_column_refresh_days: int = int(os.getenv("AUTO_COLUMN_REFRESH_DAYS", "7"))
     # 单个根域源"栏目自动发现"的时间上限(秒):要抓根页+逐个验证候选栏目,不设限会拖垮整批

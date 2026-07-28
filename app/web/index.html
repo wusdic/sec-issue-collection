@@ -427,29 +427,35 @@ async function vSources(){
           <option value="S3" selected>S3 专业媒体</option><option value="S4">S4 需佐证</option></select>
         <button onclick="addSource()" id="nsBtn">添加</button>
       </div>
-      <p class="sub" style="margin:8px 0 0">适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。<br>
+      <p class="sub" style="margin:8px 0 0">🎯 入口链接尽量填到<b>具体栏目页</b>(如 .../zhifa/index.htm),而不是网站首页——首页抓到的是要闻/领导活动,与安全事件无关。只填了根地址也可以:系统会自动识别该站的相关栏目,也可以加完后点「立即定位栏目」。<br>
+        适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。<br>
         📱 公众号:直接把一条该号的文章链接粘到"入口链接"即可,系统会自动识别出它属于哪个公众号并持续跟踪该号(不是只存这一篇)。</p>
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
     </div>
     <div class="toolbar" style="margin:4px 0 10px">
+      <button class="ghost" onclick="locateAll(false)" id="locBtn">🎯 精准定位栏目(未定位的源)</button>
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
       <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
       <button class="ghost" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
-      <span class="sub">体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
+      <span class="sub">定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
     </div>
+    <div id="locProgress" class="sub" style="margin-bottom:8px"></div>
     <div id="dupBox" style="margin-bottom:8px"></div>
     <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
   loadSources();
-  if(canEditSrc()) pollHealth();   // 切回本页时自动接上正在跑的体检进度
+  if(canEditSrc()){ pollHealth(); pollLocate(); }   // 切回本页时自动接上正在跑的后台任务进度
 }
 async function loadSources(){
   try{
     const rows=await api(`/sources`);
     const act=rows.filter(s=>s.lifecycle!=="retired").length;
-    document.getElementById("srcTable").innerHTML=`<p class="sub">共 ${rows.length} 个源(生效 ${act})</p>
+    const vague=rows.filter(s=>s.lifecycle!=="retired"&&!s.precise).length;
+    document.getElementById("srcTable").innerHTML=`<p class="sub">共 ${rows.length} 个源(生效 ${act})
+      ${vague?`｜<span class="pill warn">${vague} 个还没精准到栏目</span> <span class="muted">只填了网站根地址,抓到的是首页要闻;点上方「🎯 精准定位栏目」或每行的「定位栏目」</span>`
+             :`｜<span class="pill ok">全部已精准到栏目/页面集合</span>`}</p>
       <table><thead><tr>
-      <th>名称</th><th>入口链接</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>文档数</th><th>上次采集</th>
+      <th>名称</th><th>入口链接</th><th>精准度</th><th>类型</th><th>可信度</th><th>频率</th><th>状态</th><th>文档数</th><th>上次采集</th>
       ${canEditSrc()?"<th>操作</th>":""}</tr></thead><tbody>`+
       rows.map(s=>{
         const link=s.entry_url&&s.entry_url.startsWith("http")
@@ -457,8 +463,11 @@ async function loadSources(){
           : `<span class="muted">${s.kind==="query"?"检索型无固定入口":"—"}</span>`;
         const retired=s.lifecycle==="retired";
         const fail=s.fail_streak>=3?`<span class="pill warn" title="连续失败 ${s.fail_streak} 次,可能已失效">连败${s.fail_streak}</span>`:"";
+        const sub=s.parent_site_id?`<span class="pill info" title="由所属站点自动识别出来的栏目,随该站一起采集">子栏目</span>`:"";
+        const prec=`<span class="pill ${s.precise?'ok':'warn'}" title="${esc(s.precision_hint||"")}">${esc(s.precision_label||"")}</span>`;
         return `<tr style="${retired?'opacity:.5':''}">
-        <td>${esc(s.name)} ${fail}</td><td>${link}</td>
+        <td>${esc(s.name)} ${fail} ${sub}</td><td>${link}</td>
+        <td>${prec}</td>
         <td>${s.kind==="query"?"检索型":"页面型"}</td>
         <td><span class="pill ${s.credibility==="S1"?"ok":s.credibility==="S4"?"warn":"info"}">${s.credibility}</span></td>
         <td>${s.tier}</td><td>${retired?'<span class="pill">已停用</span>':esc(s.lifecycle)}</td>
@@ -467,13 +476,14 @@ async function loadSources(){
         ${canEditSrc()?`<td style="white-space:nowrap">
           ${retired?`<button class="ghost sm" title="误判停用时点这里恢复,并清零失败计数" onclick="restoreSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">恢复启用</button>`:''}
           ${retired?"":`<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>`}
-          ${(s.kind==="page"&&isRootUrl(s.entry_url))?
-            `<button class="ghost sm" title="根域源:预览自动识别到的相关栏目(采集时会自动按栏目抓)" onclick="previewCols(${s.id},'${esc(s.name).replace(/'/g,"")}')">栏目?</button>`:""}
+          ${(!retired&&s.kind==="page"&&isRootUrl(s.entry_url))?
+            `<button class="ghost sm" title="抓根页识别出相关栏目并落库,之后只抓这些栏目(不再抓首页)" onclick="locateCols(${s.id},'${esc(s.name).replace(/'/g,"")}')">定位栏目</button>
+             <button class="ghost sm" title="只预览识别结果(含篇数/结构一致性/内容相关度),不落库" onclick="previewCols(${s.id},'${esc(s.name).replace(/'/g,"")}')">预览</button>`:""}
           ${(s.kind==="page"&&s.entry_url&&s.entry_url.startsWith("http"))?
             `<button class="ghost sm" title="直连抓不到时,改用搜索引擎按 site:域名 抓该站" onclick="toSearchRetry(${s.id},'${esc(s.name).replace(/'/g,"")}')">站内检索</button>`:""}
           ${retired?"":`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`}</td>`:""}
       </tr>
-      <tr id="srcTest${s.id}" style="display:none"><td colspan="${canEditSrc()?9:8}" style="background:#0d1526"></td></tr>`}).join("")+`</tbody></table>`;
+      <tr id="srcTest${s.id}" style="display:none"><td colspan="${canEditSrc()?11:10}" style="background:#0d1526"></td></tr>`}).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("srcTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
 }
 async function addSource(){
@@ -489,7 +499,9 @@ async function addSource(){
   try{
     const r=await api("/sources",{method:"POST",body:JSON.stringify({name,entry_url,kind,credibility,need_id:NEED})});
     msg.innerHTML=(r.merged?`<span class="pill ok">已合并到已有源「${esc(r.name)}」</span>`:`<span class="pill ok">已添加</span>`)
-      +(r.account?` <span class="muted">识别到公众号:${esc(r.account)}</span>`:``);
+      +(r.account?` <span class="muted">识别到公众号:${esc(r.account)}</span>`:``)
+      +(r.precise===false?` <span class="pill warn">只填了网站根地址</span> <span class="muted">${esc(r.precision_hint||"")}</span>
+          <button class="ghost sm" onclick="locateCols(${r.id},'${esc(r.name).replace(/'/g,"")}')">立即定位栏目</button>`:``);
     document.getElementById("nsName").value="";document.getElementById("nsUrl").value="";
     loadSources();
   }catch(e){ msg.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
@@ -571,15 +583,79 @@ async function previewCols(id,name){
   try{
     const r=await api(`/sources/${id}/discover-columns`,{method:"POST"});
     if(!r.root_only){ box.innerHTML=`<span class="pill info">${esc(r.note||"非根域源")}</span>`; return; }
-    if(!r.columns.length){ box.innerHTML=`<span class="pill warn">未识别到相关栏目</span> <span class="muted">(可能需开渲染,或该站结构特殊;采集时会退回抓根页)</span>`; return; }
+    if(!r.columns.length){ box.innerHTML=`<span class="pill warn">未识别到相关栏目</span> <span class="muted">(可能需开渲染,或该站结构特殊;采集时会改用 site:域名 站内检索精准定位,不会去抓首页)</span>`; return; }
     box.innerHTML=`<div class="card" style="padding:12px"><b>「${esc(name)}」识别到 ${r.count} 个候选栏目,验证通过 ${r.valid} 个</b>
-      <span class="muted">(通过=文章足够多且结构高度一致;采集时只抓通过的,结果会记录不必每次重算)</span>
+      <span class="muted">(通过=文章够多 + 结构高度一致 + 内容确实安全相关;仅预览未落库,点「定位栏目」才生效)</span>
       <ol style="margin:6px 0 0;padding-left:20px">${r.columns.map(c=>
         `<li style="margin:2px 0">${c.valid?'<span class="pill ok">✓栏目</span>':'<span class="pill">✗'+esc(c.reason||'未通过')+'</span>'}
          <a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.anchor)}</a>
          <span class="muted mono"> ${esc(c.url)}</span>
-         <span class="muted">相关度${c.score}·文章${c.article_count}·一致性${c.consistency}</span></li>`).join("")}</ol></div>`;
+         <span class="muted">栏目名相关${c.score}·文章${c.article_count}·结构一致${c.consistency}·内容相关${c.relevance}</span></li>`).join("")}</ol>
+      <button class="ghost sm" style="margin-top:8px" onclick="locateCols(${id},'${esc(name).replace(/'/g,"")}')">确认定位(落库,之后只抓这些栏目)</button></div>`;
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+async function locateCols(id,name){
+  const box=document.getElementById("dupBox");
+  box.innerHTML=`<span class="muted">正在为「${esc(name)}」定位栏目…(抓根页 + 逐个验证候选栏目,可能要十几秒)</span>`;
+  try{
+    const r=await api(`/sources/${id}/discover-columns?persist=true`,{method:"POST"});
+    if(!r.root_only){ box.innerHTML=`<span class="pill info">${esc(r.note||"该源已是具体栏目,无需定位")}</span>`; return; }
+    if(!r.count){ box.innerHTML=`<span class="pill warn">「${esc(name)}」未识别到内容相关的栏目</span>
+      <span class="muted">采集时会自动改用 site:域名 站内检索精准定位相关页面(不会抓首页)。也可手动把该站的栏目页地址直接添加为新源。</span>`; }
+    else box.innerHTML=`<div class="card" style="padding:12px"><span class="pill ok">已定位 ${r.count} 个栏目</span>
+      <b> 「${esc(name)}」之后只抓这些栏目</b>
+      <ol style="margin:6px 0 0;padding-left:20px">${r.columns.map(c=>
+        `<li style="margin:2px 0"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.anchor)}</a>
+         <span class="muted mono"> ${esc(c.url)}</span> <span class="muted">${esc(c.note||"")}</span></li>`).join("")}</ol></div>`;
+    loadSources();
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+let LOC_POLL=null;
+function locStopPoll(){ if(LOC_POLL){ clearInterval(LOC_POLL); LOC_POLL=null; } }
+async function locateAll(force){
+  if(!confirm("后台逐个为「只填了根地址」的源定位具体栏目(抓根页+验证候选栏目)。\n通过验证的栏目会落库,之后该站只抓这些栏目、不再抓首页。\n任务在服务端后台跑,切页面/刷新都不会中断。继续?")) return;
+  try{
+    await api(`/sources/locate-columns?need_id=${NEED}&force=${force?"true":"false"}`,{method:"POST"});
+    pollLocate();
+  }catch(e){ alert("启动定位失败:"+e.message); }
+}
+async function cancelLocate(){
+  try{ await api(`/sources/locate-columns/cancel`,{method:"POST"}); toast("已请求取消"); }catch(e){}
+}
+function renderLocate(h){
+  const prog=document.getElementById("locProgress"); if(!prog) return false;
+  if(!h || (!h.running && !h.finished_at)){
+    prog.innerHTML = (h&&h.pending)?`<span class="muted">还有 ${h.pending} 个源没精准到栏目,点上方「🎯 精准定位栏目」批量处理</span>`:"";
+    return false;
+  }
+  const total=h.total||0, done=h.done||0, pct= total? Math.round(done/total*100):0;
+  const bar=`<div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:4px 0">
+      <div style="height:100%;width:${pct}%;background:var(--brand);transition:width .3s"></div></div>`;
+  if(h.running){
+    prog.innerHTML=`<b>🎯 栏目定位中</b> ${done}/${total}(${pct}%)｜已定位 ${h.located||0} 站、共 ${h.columns||0} 个栏目｜未识别 ${h.failed||0}
+      <button class="ghost sm" style="margin-left:8px" onclick="cancelLocate()">取消</button>${bar}
+      <span class="muted">当前:${esc(h.current||"")}</span>`;
+    return true;
+  }
+  const miss=(h.results||[]).filter(r=>!r.count);
+  prog.innerHTML=`<span class="pill ok">定位完成</span> 共 ${total} 个源｜已定位 ${h.located||0} 站、共 ${h.columns||0} 个栏目｜未识别 ${h.failed||0}
+    ${h.canceled?'<span class="pill warn">已取消</span>':''}${bar}
+    ${miss.length?`<details style="margin-top:6px"><summary class="muted">未识别到栏目的 ${miss.length} 个(采集时改走站内检索)</summary>
+      <ul style="margin:4px 0;padding-left:18px">${miss.slice(0,50).map(r=>
+        `<li>${esc(r.name)} <span class="muted">${esc(r.hint||"")}</span></li>`).join("")}</ul></details>`:''}`;
+  return false;
+}
+async function pollLocate(){
+  locStopPoll();
+  const tick=async()=>{
+    try{
+      const h=await api(`/sources/locate-columns?need_id=${NEED}`);
+      const running=renderLocate(h);
+      if(!running){ locStopPoll(); loadSources(); }
+    }catch(e){ locStopPoll(); }
+  };
+  await tick();
+  LOC_POLL=setInterval(tick,2000);
 }
 async function scanDup(){
   const box=document.getElementById("dupBox"); box.innerHTML=`<span class="muted">扫描中…</span>`;

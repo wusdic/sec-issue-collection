@@ -32,6 +32,9 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 | `app/services/followup.py` | 生命周期回访 T+N + 一键检索包 |
 | `app/services/leads.py` | 四维产品映射 + 线索评分 + 采购窗口三阶段 |
 | `app/services/discovery.py` | 源发现引擎:证据登记/评分/自动 trial/黑名单 |
+| `app/services/columns.py` | **采集源精准化**:根域站点自动识别相关栏目 + 三重验证(篇数/结构一致性/内容相关度)+ 落库复用 |
+| `app/services/locate.py` | 批量「精准定位栏目」后台任务(可查进度/可取消) |
+| `app/services/health.py` | 源体检:后台批量试抓、连续失败自动停用、误判恢复 |
 | `app/services/scheduler.py` | 分级调度 + SLA 反向驱动 + 每日主任务 |
 | `app/services/kpi.py` | 看板/损失口径/控制缺失/白区/可追溯硬约束 |
 | `app/services/llm.py` | LLM 抽象层(OpenAI 兼容 + MockLLM 离线) |
@@ -47,6 +50,24 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 3. **发布层** `events.validate_publish`:confirmed 金额无 S1/S2 来源→拒绝发布;报表层 `kpi.traceability_check` 再兜一层,违规则拒绝出数。
 
 三层对应 `design/schema.sql` 中的 PG 触发器(生产库级兜底)。
+
+## 采集源必须"精准到栏目"
+
+只填网站根地址(如 `https://www.cac.gov.cn/`)的源抓到的是首页要闻(领导活动、政策解读),
+与安全事件无关。系统强制把每个源收敛到"具体栏目 / 能精准定位相关内容的页面集合":
+
+1. **栏目自动识别**(`columns.discover_columns`):抓根页,按栏目名相关词打分挑候选;
+2. **三重验证**(`columns.validate_column`):文章数 ≥ `column_min_articles`、URL 结构一致性 ≥
+   `column_consistency_min`(是不是一个栏目)、**标题内容相关度 ≥ `column_relevance_min`**
+   (是不是"安全"栏目——这条专门挡掉结构规整但全是要闻的栏目);
+3. **落库复用**:通过的栏目建成子源挂在站点下,`auto_column_refresh_days` 内不重算;
+   人工删除过的栏目不会被自动拉回(`manually_retired`);
+4. **兜底不抓首页**:识别不到相关栏目时按 `root_no_column_fallback` 处理,默认转
+   `site:域名` + 需求关键词的站内检索(仍是精准页面集合),而不是退回抓根页;
+5. **可见可操作**:`GET /sources` 返回每个源的 `precision`(column/resolved/search/wechat/root),
+   页面上标红"还没精准到栏目"的源,可单个「定位栏目」或批量「🎯 精准定位栏目」。
+
+`pytest tests/test_precise_sources.py` 覆盖上述全部行为。
 
 ## 框架泛化的落地证据
 
