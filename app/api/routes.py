@@ -18,6 +18,7 @@ from app.services import kpi as kpi_svc
 from app.services import leads as leads_svc
 from app.services import review as review_svc
 from app.services import url_tools
+from app.services import wechat
 from app.services.events import PublishError, log_change, update_payload
 from app.services.extraction import load_record_schema
 from app.services.profiles import get_active_profile
@@ -73,7 +74,8 @@ def list_sources(lifecycle: str | None = None, db: Session = Depends(get_session
 class SourceIn(BaseModel):
     name: str
     entry_url: str | None = None
-    kind: str = "page"                 # page(栏目/RSS 抓取) / query(关键词检索)
+    kind: str = "page"                 # page(栏目/RSS 抓取) / query(关键词检索) / wechat(公众号)
+    account: str | None = None         # 公众号名(kind=wechat 时用;也可粘文章链接自动解析)
     adapter: str | None = None         # 留空自动:page→generic_rss/list,query→baidu_search
     credibility: str = "S3"
     tier: str = "B"
@@ -84,11 +86,51 @@ class SourceIn(BaseModel):
 @api.post("/sources", status_code=201)
 def create_source(body: SourceIn, db: Session = Depends(get_session),
                   _: AppUser = Depends(require_roles("analyst"))):
-    """手动添加数据源。零适配器:留空 adapter 时按类型自动选通用适配器(RSS/列表/搜索)。"""
-    kind = body.kind if body.kind in ("page", "query") else "page"
+    """手动添加数据源。零适配器:留空 adapter 时按类型自动选通用适配器(RSS/列表/搜索)。
+
+    公众号:入口填一条公众号文章链接(mp.weixin.qq.com/s/...)即可——系统自动解析出它属于
+    哪个公众号,并把「该公众号」建成源持续跟踪(而不是只收藏这一篇文章)。
+    也可直接在名称处填公众号名并把 kind 设为 wechat。
+    """
+    kind = body.kind if body.kind in ("page", "query", "wechat") else "page"
     if body.credibility not in ("S1", "S2", "S3", "S4"):
         raise HTTPException(422, "可信度须为 S1-S4")
     entry = (body.entry_url or "").strip() or None
+
+    # ① 粘贴公众号文章链接 → 解析出公众号名,建成"该公众号"的持续源
+    account = (body.account or "").strip() or None
+    if entry and wechat.is_wechat_article_url(entry):
+        info = wechat.resolve_account(entry)
+        if not info["ok"]:
+            raise HTTPException(422, f"公众号文章解析失败:{info['error']}")
+        account, kind = info["account"], "wechat"
+        if not (body.name or "").strip():
+            body.name = info["account"]
+    elif kind == "wechat" and not account:
+        account = (body.name or "").strip()   # 直接按公众号名添加
+
+    # ② 公众号源:目标键为 mp:账号名,用搜狗微信按该号检索
+    if kind == "wechat":
+        if not account:
+            raise HTTPException(422, "公众号源需要公众号名称,或粘贴一条该号的文章链接")
+        ident = f"mp:{account}"
+        if dup := db.query(Source).filter_by(identity_key=ident).one_or_none():
+            dup.serves_needs = sorted(set(dup.serves_needs or []) | {body.need_id})
+            if dup.lifecycle == "retired":
+                dup.lifecycle = "active"
+            db.commit()
+            return {"id": dup.id, "merged": True, "name": dup.name, "account": account}
+        src = Source(name=(body.name or account).strip(), entry_url=None, kind="query",
+                     adapter="sogou_wechat",
+                     adapter_config={"account": account, "list_order": "relevance"},
+                     credibility=body.credibility, tier=body.tier, lifecycle="active",
+                     serves_needs=[body.need_id], identity_key=ident, site_key=ident,
+                     manual_assist=False, note=body.note or f"公众号:{account}",
+                     discovered_from="manual")
+        db.add(src)
+        db.commit()
+        return {"id": src.id, "merged": False, "name": src.name, "account": account}
+
     if kind == "page" and not entry:
         raise HTTPException(422, "页面型源必须填入口链接(栏目页或 RSS 地址)")
     adapter = (body.adapter or "").strip() or ("baidu_search" if kind == "query" else "generic_rss")

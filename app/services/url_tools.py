@@ -8,6 +8,11 @@ _TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "spm", "from", "fr", "src", "share_token", "wxfrom", "scene", "chksm",
     "mpshare", "srcid", "ref", "_t", "timestamp",
+    # 微信公众号文章分享链常带的追踪参数,不剥掉会让同一篇文章反复入库
+    "click_id", "clicktime", "enterid", "sharer_sharetime", "sharer_shareid",
+    "sharer_appversion", "sharer_platform", "exportkey", "devicetype",
+    "version", "nettype", "abtest_cookie", "poc_token", "key", "ascene",
+    "subscene", "sessionid", "clicktime", "countrycode", "pass_ticket",
 }
 
 # 简化版多段公共后缀(覆盖国内常见;生产可换 publicsuffix2 库)

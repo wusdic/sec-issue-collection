@@ -261,17 +261,30 @@ class SogouWechatAdapter(SearchEngineAdapter):
     base_tpl = "https://weixin.sogou.com/weixin?type=2&query={q}&page={page}"
     result_selector = "ul.news-list h3 a"
 
+    def _augment(self, query: str) -> str:
+        """配了 account 就把检索限定到该公众号(此前 account 完全没被使用,
+        导致"某公众号源"实际只是又跑了一遍全局关键词搜索)。"""
+        acct = (self.config.get("account") or "").strip()
+        if acct:
+            return f"{acct} {query}" if query else acct
+        return super()._augment(query)
+
     def parse(self, html: str) -> list[DiscoveredItem]:
         soup = BeautifulSoup(html, "lxml")
+        want = (self.config.get("account") or "").strip()
         out = []
         for li in soup.select("ul.news-list li"):
             a = li.select_one("h3 a")
             account = li.select_one("a.account")
             if a and a.get("href"):
+                acct_name = account.get_text(strip=True) if account else None
+                # 限定了公众号时,只保留确实来自该号的结果(搜狗会返回其他号的相近内容)
+                if want and acct_name and acct_name != want:
+                    continue
                 out.append(DiscoveredItem(
                     url=urljoin("https://weixin.sogou.com/", a["href"]),
                     title=a.get_text(" ", strip=True)[:200],
-                    wechat_account=account.get_text(strip=True) if account else None,
+                    wechat_account=acct_name or (want or None),
                 ))
         return out
 

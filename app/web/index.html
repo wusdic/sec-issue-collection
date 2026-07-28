@@ -416,16 +416,18 @@ async function vSources(){
       <h3 style="margin:0 0 10px;font-size:15px">➕ 手动添加数据源</h3>
       <div class="toolbar" style="flex-wrap:wrap;gap:8px">
         <input id="nsName" placeholder="名称,如 FreeBuf 资讯" style="min-width:170px">
-        <input id="nsUrl" placeholder="入口链接:栏目页或 RSS 地址(检索型可留空)" style="min-width:300px;flex:1">
+        <input id="nsUrl" placeholder="入口链接:栏目页/RSS 地址,或直接粘一条公众号文章链接(mp.weixin.qq.com/s/...)" style="min-width:300px;flex:1">
         <select id="nsKind">
           <option value="page">页面型(栏目/RSS,按链接定时抓)</option>
-          <option value="query">检索型(关键词搜索)</option></select>
+          <option value="query">检索型(关键词搜索)</option>
+          <option value="wechat">公众号(名称填在"名称"处,或粘文章链接)</option></select>
         <select id="nsCred">
           <option value="S1">S1 官方权威</option><option value="S2">S2 企业自披露</option>
           <option value="S3" selected>S3 专业媒体</option><option value="S4">S4 需佐证</option></select>
         <button onclick="addSource()" id="nsBtn">添加</button>
       </div>
-      <p class="sub" style="margin:8px 0 0">适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。</p>
+      <p class="sub" style="margin:8px 0 0">适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。<br>
+        📱 公众号:直接把一条该号的文章链接粘到"入口链接"即可,系统会自动识别出它属于哪个公众号并持续跟踪该号(不是只存这一篇)。</p>
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
     </div>
     <div class="toolbar" style="margin:4px 0 10px">
@@ -479,10 +481,12 @@ async function addSource(){
   const msg=document.getElementById("nsMsg");
   if(!name){ msg.innerHTML=`<span class="pill warn">请填名称</span>`; return; }
   if(kind==="page"&&!entry_url){ msg.innerHTML=`<span class="pill warn">页面型必须填入口链接</span>`; return; }
+  if(kind==="wechat"&&!entry_url&&!name){ msg.innerHTML=`<span class="pill warn">公众号需填名称,或粘一条该号文章链接</span>`; return; }
   const btn=document.getElementById("nsBtn"); btn.disabled=true;
   try{
     const r=await api("/sources",{method:"POST",body:JSON.stringify({name,entry_url,kind,credibility,need_id:NEED})});
-    msg.innerHTML=r.merged?`<span class="pill ok">已合并到同域已有源「${esc(r.name)}」</span>`:`<span class="pill ok">已添加</span>`;
+    msg.innerHTML=(r.merged?`<span class="pill ok">已合并到已有源「${esc(r.name)}」</span>`:`<span class="pill ok">已添加</span>`)
+      +(r.account?` <span class="muted">识别到公众号:${esc(r.account)}</span>`:``);
     document.getElementById("nsName").value="";document.getElementById("nsUrl").value="";
     loadSources();
   }catch(e){ msg.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
