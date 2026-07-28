@@ -19,6 +19,11 @@ from app.services.scheduler import expand_queries
 _CANCEL: set[int] = set()  # 请求取消的 job_id
 
 
+def _now() -> float:
+    import time
+    return time.time()
+
+
 def _log(db: Session, job_id: int, level: str, source: str | None, message: str):
     db.add(CrawlLog(job_id=job_id, level=level, source=source, message=(message or "")[:2000]))
 
@@ -112,6 +117,8 @@ def reap_orphan_jobs() -> int:
 
 def _crawl_one(need_id: str, queries, max_pages: int, src_id: int, rec) -> dict:
     """并行抓取单个源:独立 DB 会话 + 绑定共享诊断记录器。返回统计供主线程汇总。"""
+    import time as _t
+    t0 = _t.time()
     wdb = SessionLocal()
     diagnostics.bind(rec)
     try:
@@ -121,11 +128,12 @@ def _crawl_one(need_id: str, queries, max_pages: int, src_id: int, rec) -> dict:
         wdb.commit()
         return {"name": src.name, "kind": src.kind, "adapter": src.adapter,
                 "status": run.status, "found": run.urls_found, "new": run.urls_new,
-                "skipped": run.urls_skipped, "failed": run.urls_failed, "error": run.error}
+                "skipped": run.urls_skipped, "failed": run.urls_failed, "error": run.error,
+                "elapsed": _t.time() - t0}
     except Exception as e:  # noqa: BLE001 单源失败不终止整批
         wdb.rollback()
         return {"name": f"源#{src_id}", "status": "failed", "error": str(e)[:200],
-                "found": 0, "new": 0, "skipped": 0, "failed": 0}
+                "found": 0, "new": 0, "skipped": 0, "failed": 0, "elapsed": _t.time() - t0}
     finally:
         wdb.close()
 
@@ -199,10 +207,23 @@ def _run(job_id: int):
         try:
             futs = {ex.submit(_crawl_one, need.id, queries, max_pages, sid, rec): sid
                     for sid in src_ids}
-            for fut in as_completed(futs):
+            # 并行版此前只记"完成",一旦某个源卡住,日志里看不出当前在跑什么 → 像是"没反应"。
+            # 这里先把本轮要跑的源列出来,便于对照"已完成"定位卡住的是哪几个。
+            _names = [s.name for s in srcs]
+            _log(db, job_id, "info", None,
+                 "本轮源清单(按最久未采优先): " + "、".join(_names[:60]) +
+                 (f" …共 {len(_names)} 个" if len(_names) > 60 else ""))
+            db.commit()
+            job_budget = int(getattr(settings, "job_max_seconds", 0) or 0)
+            _t0 = _now()
+            _pending = dict(futs)          # future -> source_id,用于超时后报告未完成的源
+            for fut in as_completed(futs, timeout=job_budget if job_budget > 0 else None):
+                _pending.pop(fut, None)
                 res = fut.result()
                 lvl = "info" if res["status"] == "ok" else "error"
-                msg = (f"完成:发现 {res['found']} 条、新增 {res['new']} 条、已采过跳过 "
+                if res.get("elapsed", 0) >= max(30, int(getattr(settings, "source_time_budget_seconds", 180) or 180)):
+                    lvl = "warn"      # 明显超时的源单独标出来,便于定位"拖慢整批"的元凶
+                msg = (f"完成(耗时 {res.get('elapsed', 0):.0f}s):发现 {res['found']} 条、新增 {res['new']} 条、已采过跳过 "
                        f"{res['skipped']} 条、抓取失败 {res['failed']} 条、状态 {res['status']}")
                 if res.get("error"):
                     msg += f" | 错误:{res['error']}"
@@ -219,8 +240,15 @@ def _run(job_id: int):
                 _log(db, job_id, "warn", None, "用户取消采集")
                 db.commit()
                 return
+        except TimeoutError:
+            # 整批超时:不再无限等待,收尾并写明是哪些源没跑完(此前会一直挂在 running)
+            stuck = [db.get(Source, sid).name for sid in _pending.values() if db.get(Source, sid)]
+            _log(db, job_id, "warn", None,
+                 f"采集总时长超过上限({settings.job_max_seconds}s),停止等待。"
+                 f"未完成 {len(stuck)} 个源:" + "、".join(stuck[:20]))
+            db.commit()
         finally:
-            ex.shutdown(wait=not canceled, cancel_futures=True)
+            ex.shutdown(wait=False, cancel_futures=True)
 
         # 处理待粗筛文档(并行:LLM 抽取是网络等待,多篇并发大幅提速)
         job.phase = "过滤与抽取"

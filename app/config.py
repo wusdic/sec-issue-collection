@@ -96,6 +96,10 @@ class Settings:
     column_consistency_min: float = float(os.getenv("COLUMN_CONSISTENCY_MIN", "0.5"))
     # 栏目发现结果记录后多久重算一次(天),期间直接复用不重复识别;应对栏目动态变化
     auto_column_refresh_days: int = int(os.getenv("AUTO_COLUMN_REFRESH_DAYS", "7"))
+    # 单个根域源"栏目自动发现"的时间上限(秒):要抓根页+逐个验证候选栏目,不设限会拖垮整批
+    column_discovery_budget_seconds: int = int(os.getenv("COLUMN_DISCOVERY_BUDGET_SECONDS", "60"))
+    # 整个采集任务的总时长上限(秒)。超时即收尾并标注未完成的源,保证任务不会永远挂着
+    job_max_seconds: int = int(os.getenv("JOB_MAX_SECONDS", "3600"))
 
     # 同稿去重:回溯比对天数;缺标题时判"正文长度相近"的比值下限
     dedup_lookback_days: int = int(os.getenv("DEDUP_LOOKBACK_DAYS", "30"))

@@ -186,13 +186,25 @@ def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tu
         return existing, False   # 记录仍新鲜 → 直接复用,不重算
 
     render_pref = cfg.get("render", "auto")
-    candidates = discover_columns(source, extra_terms)
+
+    # ① 先把所有网络活儿干完(不碰数据库)。此前是"验证一个→写库一个→再去验证下一个",
+    #    第一次写库就拿到 SQLite 全局写锁,之后每次 validate_column 的网络抓取都占着锁不放,
+    #    一个根域源最长可占锁上百秒 → 其他并行 worker 与主线程全部卡住,任务看起来"死了"。
+    import time as _time
+    budget = int(getattr(settings, "column_discovery_budget_seconds", 0) or 0)
+    deadline = (_time.time() + budget) if budget > 0 else None
+    validated = []
+    for c in discover_columns(source, extra_terms):
+        if deadline and _time.time() > deadline:
+            break                                    # 栏目发现自身也要有时间上限
+        v = validate_column(c["url"], render_pref)   # 文章高度一致才确认为栏目
+        if v["valid"]:
+            validated.append((c, v))
+
+    # ② 再一次性写库(短事务),写完立刻提交释放写锁
     result = list(existing)
     known_ids = {c.identity_key for c in existing}
-    for c in candidates:
-        v = validate_column(c["url"], render_pref)   # 文章高度一致才确认为栏目
-        if not v["valid"]:
-            continue
+    for c, v in validated:
         ik = url_tools.normalize_url(c["url"])
         if ik in known_ids:
             continue
@@ -207,13 +219,13 @@ def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tu
                 identity_key=ik, site_key=source.site_key, discovered_from="column_auto",
                 note=(f"自动栏目(相关度{c['score']}/文章{v['article_count']}"
                       f"/一致性{v['consistency']})"))
-            db.add(child); db.flush()
+            db.add(child)
         else:
             # 该栏目已作为源存在(如上轮建过或人工添加):补挂到本站并纳入本轮采集,
             # 否则它既不会被父源抓、自身又可能不在调度里,栏目实际漏采。
-            cfg = dict(child.adapter_config or {})
-            cfg.setdefault("parent_site_id", source.id)
-            child.adapter_config = cfg
+            ccfg = dict(child.adapter_config or {})   # 注意用独立变量:此前复用 cfg 会把子源配置写回父源
+            ccfg.setdefault("parent_site_id", source.id)
+            child.adapter_config = ccfg
             if child.lifecycle == "retired":
                 child.lifecycle = "active"
         known_ids.add(ik)
@@ -221,4 +233,8 @@ def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tu
     cfg["columns_discovered_at"] = datetime.utcnow().isoformat()
     source.adapter_config = cfg
     db.flush()
+    try:
+        db.commit()          # 立即释放写锁,避免后续抓取期间继续占用
+    except Exception:  # noqa: BLE001
+        db.rollback()
     return result, True

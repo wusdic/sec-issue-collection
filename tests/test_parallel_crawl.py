@@ -100,3 +100,41 @@ def test_reap_orphan_jobs(db, need):
     assert n >= 1
     db.expire_all()
     assert db.get(CrawlJob, jid).status == "failed"
+
+
+def test_column_discovery_does_not_hold_write_lock(db, need, monkeypatch):
+    """栏目发现必须"先跑完网络、再一次性写库",否则会占着 SQLite 写锁做网络 I/O,
+    让其他并行 worker 全部卡住(实测表现为任务跑到一半就不动了)。"""
+    from app.config import settings
+    from app.services import columns
+    monkeypatch.setattr(settings, "column_min_articles", 1)
+    monkeypatch.setattr(settings, "column_consistency_min", 0.0)
+    monkeypatch.setattr(settings, "auto_column_refresh_days", 7)
+
+    root = Source(name="根域站", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+                  lifecycle="active", serves_needs=[need.id], entry_url="https://lockchk.cn/",
+                  site_key="lockchk.cn", identity_key="lockchk.cn", adapter_config={})
+    db.add(root); db.commit()
+
+    order = []          # 记录"网络抓取"与"写库"的先后顺序
+    root_html = ('<a href="/zhifa/a.htm">执法处罚</a><a href="/tongbao/b.htm">安全通报</a>')
+    art = "".join(f'<a href="/c/2026-07/{i:02d}/x.htm">通报{i}</a>' for i in range(6))
+
+    def fake_fetch(url, **k):
+        order.append(("fetch", url))
+        html = root_html if url.rstrip("/") == "https://lockchk.cn" else art
+        return columns.fetcher.FetchResult(url, url, 200, html)
+    monkeypatch.setattr(columns.fetcher, "fetch", fake_fetch)
+
+    real_flush = db.flush
+    def spy_flush(*a, **kw):
+        order.append(("db", None))
+        return real_flush(*a, **kw)
+    monkeypatch.setattr(db, "flush", spy_flush)
+
+    kids, recomputed = columns.discover_and_persist(db, root)
+    assert recomputed is True and len(kids) >= 1
+    # 关键断言:最后一次网络抓取必须发生在第一次写库之前
+    last_fetch = max(i for i, (k, _) in enumerate(order) if k == "fetch")
+    first_db = min((i for i, (k, _) in enumerate(order) if k == "db"), default=10**9)
+    assert last_fetch < first_db, f"写库后仍在抓网络(会占着写锁): {order}"
