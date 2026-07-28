@@ -60,12 +60,13 @@ def _mk_event(db, need_id, sev="L4", industry="金融", org="某银行"):
 
 
 def test_digest_counts_today_events(db, need):
-    _mk_event(db, need.id, sev="L5", industry="金融", org="A银行")
-    _mk_event(db, need.id, sev="L3", industry="医疗", org="B医院")
+    # 严重度用词表真实取值(此前测试用 L5/L3,与 Event.severity 实际枚举对不上,掩盖了排序失效)
+    _mk_event(db, need.id, sev="一般", industry="医疗", org="B医院")
+    _mk_event(db, need.id, sev="重大", industry="金融", org="A银行")
     c = digest_svc.build_content(db, need.id, datetime.utcnow().date())
     assert c["events_total"] >= 2
     assert c["events_by_industry"].get("金融", 0) >= 1
-    assert c["top_events"][0]["severity"] == "L5"  # 高严重度排前
+    assert c["top_events"][0]["severity"] == "重大"  # 高严重度排前(即便它后创建)
     md = digest_svc.render_markdown(c)
     assert "安全事件日报" in md and "行业热点" in md
 

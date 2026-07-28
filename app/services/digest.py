@@ -5,7 +5,6 @@
 """
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import CrawlJob, DailyDigest, Event, Lead, Source
@@ -32,7 +31,9 @@ def build_content(db: Session, need_id: str, day: date) -> dict:
         by_industry[e.industry_l1 or "未分类"] = by_industry.get(e.industry_l1 or "未分类", 0) + 1
         by_severity[e.severity or "未定级"] = by_severity.get(e.severity or "未定级", 0) + 1
     # 重点事件:严重度高 + 完整度高优先
-    sev_rank = {"L6": 6, "L5": 5, "L4": 4, "L3": 3, "L2": 2, "L1": 1}
+    # 严重度取值来自词表(特别重大/重大/较大/一般/未定级);此前误用 loss_L1..L6 的编号,
+    # 匹配不上导致排序恒为 0,"重点事件"实际只按完备度排,头条永远不是最严重的。
+    sev_rank = {"特别重大": 5, "重大": 4, "较大": 3, "一般": 2, "未定级": 0}
     for e in sorted(events, key=lambda x: (sev_rank.get(x.severity or "", 0),
                                            x.completeness_score or 0), reverse=True)[:10]:
         top_events.append({

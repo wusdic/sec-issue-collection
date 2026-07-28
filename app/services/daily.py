@@ -5,7 +5,6 @@
 POST /crawl/run + /digest/run,避免重复触发。
 """
 import threading
-import time
 from datetime import datetime
 
 from app.config import settings

@@ -68,7 +68,7 @@ def demo():
     from datetime import datetime
 
     from app.models import NeedProfile, RawDocument, Source
-    from app.services import dedup, profiles
+    from app.services import dedup
     from app.services.events import PublishError
     from app.services.extraction import load_record_schema
     from app.services.followup import schedule_followups

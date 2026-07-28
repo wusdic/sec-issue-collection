@@ -17,7 +17,7 @@ except ImportError:  # feedparser 依赖 sgmllib3k 编译失败时降级:RSS 探
 from bs4 import BeautifulSoup
 
 from app.config import settings
-from app.services import fetcher, url_tools
+from app.services import fetcher
 from app.services.llm import get_llm
 from app.services.prompts import list_template_prompts
 

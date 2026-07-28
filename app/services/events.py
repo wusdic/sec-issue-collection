@@ -5,8 +5,7 @@
 - 发布时 strict schema 校验;
 - B7/B9(root_cause/security_controls)必填(可为"未披露/不明")。
 """
-import re
-from datetime import date, datetime
+from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session

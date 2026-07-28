@@ -4,7 +4,6 @@ from pathlib import Path
 
 import jsonschema
 
-from app.config import settings
 from app.services.llm import get_llm, get_screen_llm
 from app.services.money_guard import apply_guard
 from app.services.prompts import extract_prompts, screen_prompts

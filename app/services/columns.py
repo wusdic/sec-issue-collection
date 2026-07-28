@@ -159,8 +159,10 @@ def validate_column(url: str, render_pref="auto") -> dict:
 
 def _children_of(db, parent_id: int) -> list:
     from app.models import Source
+    # 排除已停用的:用户手动删/停某个自动栏目后,父源不应下次又把它拉回来抓
     return [s for s in db.query(Source).filter_by(discovered_from="column_auto").all()
-            if (s.adapter_config or {}).get("parent_site_id") == parent_id]
+            if (s.adapter_config or {}).get("parent_site_id") == parent_id
+            and s.lifecycle != "retired"]
 
 
 def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tuple[list, bool]:

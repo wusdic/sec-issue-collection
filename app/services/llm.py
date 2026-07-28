@@ -495,8 +495,10 @@ def get_screen_llm() -> BaseLLM:
 
 
 def set_llm(client: BaseLLM):
-    global _client
+    """注入客户端(测试/离线用)。同时覆盖粗筛客户端,否则粗筛仍会走真实接口。"""
+    global _client, _screen_client
     _client = client
+    _screen_client = client
 
 
 def reset():

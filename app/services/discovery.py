@@ -171,9 +171,17 @@ def recompute_keys(db: Session) -> dict:
             if s is keeper:
                 continue
             keeper.serves_needs = sorted(set(keeper.serves_needs or []) | set(s.serves_needs or []))
+            cfg = dict(s.adapter_config or {})
             if s.lifecycle != "retired":
+                # 尊重人工:曾被自动并掉、用户又手动启用的源不再反复停用(此前每次重启都会被并掉)
+                if cfg.get("auto_merged"):
+                    continue
                 s.lifecycle = "retired"
-                s.note = ((s.note or "") + " [自动查重:并入同采集目标的源]")[:250]
+                cfg["auto_merged"] = True
+                s.adapter_config = cfg
+                tag = " [自动查重:并入同采集目标的源]"
+                if tag.strip() not in (s.note or ""):        # 备注只追加一次,避免重启刷屏
+                    s.note = ((s.note or "") + tag)[:250]
             merged += 1
     db.flush()
     return {"updated": len(srcs), "merged": merged}

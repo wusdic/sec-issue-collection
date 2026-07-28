@@ -290,6 +290,26 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
     return early_enabled, stop_th
 
 
+def _negative_terms(db, need_id: str) -> list[str]:
+    """取该需求关键词矩阵里的排除词(降噪)。设置页填了就必须真的生效。"""
+    from app.models import KeywordSet
+    ks = db.query(KeywordSet).filter_by(need_id=need_id, is_active=True).first()
+    if not ks:
+        return []
+    return [str(t).strip() for t in (ks.content or {}).get("negative_terms") or [] if str(t).strip()]
+
+
+def _hits_negative(title: str | None, neg: list[str]) -> str | None:
+    """标题命中排除词则返回该词(用于日志说明为什么被剔除)。"""
+    t = title or ""
+    for term in neg:
+        # 词条可写成"课程 培训班"表示需同时出现,拆开逐个判
+        parts = [p for p in term.split() if p]
+        if parts and all(p in t for p in parts):
+            return term
+    return None
+
+
 def _safe_commit(db) -> bool:
     """提交并释放写锁;失败则回滚保证会话可继续用(避免后续 flush 抛 PendingRollbackError)。"""
     try:
@@ -341,7 +361,7 @@ def _payload_has_content(p: dict) -> bool:
 
 
 def _consume_paginated(db, need, source, run, fetch_page, max_pages,
-                       early_enabled, stop_th, do_archive, stats, deadline=None):
+                       early_enabled, stop_th, do_archive, stats, deadline=None, neg=None):
     """逐页消费 + 早停(query/page 共用)。fetch_page(page)->list|None。
     早停信号:连续遇到『已采过』或『早于时效窗口』的条目(时间倒序源);另有单源时长上限。
     返回 (found, pages_used, truncated, snapshot)。"""
@@ -360,6 +380,12 @@ def _consume_paginated(db, need, source, run, fetch_page, max_pages,
         snapshot += [{"url": i.url, "title": i.title} for i in page_items[:20]]
         page_new = 0
         for item in page_items:
+            # 排除词降噪:标题命中即跳过,不抓正文也不喂大模型(设置页"排除词"在此生效)
+            hit = _hits_negative(item.title, neg or [])
+            if hit:
+                stats["excluded"] = stats.get("excluded", 0) + 1
+                diagnostics.record("note", f"排除词命中「{hit}」,跳过:{item.title}", ref=item.url)
+                continue
             # 时效早停:列表按时间倒序,遇到早于窗口的历史条目 → 不抓,计入连续停止信号
             if _too_old(_item_pub(item)):
                 stats["too_old"] = stats.get("too_old", 0) + 1
@@ -406,6 +432,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
     stats = {"new": 0, "skipped": 0, "failed": 0, "blacklist": 0, "too_old": 0}
     found = 0
     early_enabled, stop_th = _early_stop_config(source, adapter)
+    neg = _negative_terms(db, need.id)
     budget = int(getattr(settings, "source_time_budget_seconds", 0) or 0)
     deadline = (time.time() + budget) if budget > 0 else None
     try:
@@ -430,7 +457,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
 
                     q_found, pages_used, truncated, snapshot = _consume_paginated(
                         db, need, source, run, fetch_page, max_pages, early_enabled, stop_th,
-                        do_archive, stats, deadline)
+                        do_archive, stats, deadline, neg)
                     db.add(KeywordRun(need_id=need.id, source_id=source.id, behavior=behavior,
                                       query=q, pages_fetched=pages_used, truncated=truncated,
                                       results=q_found, new_docs=stats["new"] - before,
@@ -456,19 +483,19 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                         ca = get_adapter(child)
                         f, _pu, _tr, _sn = _consume_paginated(
                             db, need, child, run, lambda page, a=ca: a.discover_page(page),
-                            max_pages, early_enabled, stop_th, do_archive, stats, deadline)
+                            max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
                         found += f
                         child.last_success_at = datetime.utcnow()
                 else:
                     # 没识别到有效栏目 → 退回抓根页本身
                     found, _pu, _tr, _sn = _consume_paginated(
                         db, need, source, run, lambda page: adapter.discover_page(page),
-                        max_pages, early_enabled, stop_th, do_archive, stats, deadline)
+                        max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
             else:
                 # 页面型:官方栏目/公众号历史列表按时间倒序,支持翻页 + 早停(默认早停开启)
                 found, _pu, _tr, _sn = _consume_paginated(
                     db, need, source, run, lambda page: adapter.discover_page(page),
-                    max_pages, early_enabled, stop_th, do_archive, stats, deadline)
+                    max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
         run.status = "ok"
         source.last_success_at = datetime.utcnow()
         source.fail_streak = 0
@@ -485,6 +512,11 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
         run.status = "failed"
         run.error = err
         source.fail_streak = (source.fail_streak or 0) + 1
+        # 日常采集也应用"连续失败自动停用"(此前只有手动体检才生效,坏源会一直重试)
+        th = int(getattr(settings, "source_auto_retire_fail_streak", 0) or 0)
+        if th > 0 and source.fail_streak >= th and source.lifecycle in ("active", "trial"):
+            source.lifecycle = "retired"
+            run.error = (err + f" [连续失败{source.fail_streak}次,已自动停用]")[:500]
     run.urls_found = found
     run.urls_new = stats["new"]
     run.urls_skipped = stats["skipped"]
