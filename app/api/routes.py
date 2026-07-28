@@ -18,7 +18,7 @@ from app.services import kpi as kpi_svc
 from app.services import leads as leads_svc
 from app.services import review as review_svc
 from app.services import url_tools
-from app.services.events import PublishError, update_payload
+from app.services.events import PublishError, log_change, update_payload
 from app.services.extraction import load_record_schema
 from app.services.profiles import get_active_profile
 
@@ -363,6 +363,63 @@ def list_documents(need_id: str, status: str | None = None, relevant: bool = Fal
              "snapshot_id": d.snapshot_id,
              "fetched_at": d.fetched_at.isoformat() if d.fetched_at else None}
             for d in q.order_by(RawDocument.id.desc()).limit(limit).all()]
+
+
+class ResolveDocIn(BaseModel):
+    action: str                    # discard(判为不相干) / requeue(重新处理) / attach(并入已有事件)
+    event_id: str | None = None    # action=attach 时的目标事件
+    note: str | None = None
+
+
+@api.post("/documents/{doc_id}/resolve")
+def resolve_document(doc_id: int, body: ResolveDocIn, db: Session = Depends(get_session),
+                     user: AppUser = Depends(require_roles("analyst", "editor"))):
+    """处理「待人工」文档,给它一个出口。
+
+    此前 manual_queue(粗筛存疑/疑似同事件/抽取为空/处理异常)只能看不能动,是只进不出的黑洞。
+    - discard:判为不相干,移出队列;
+    - requeue:置回待处理,下轮重新粗筛+抽取(适合当时大模型超时的);
+    - attach:确认与某已有事件为同一事件,把本文档作为该事件的补充来源挂上去。
+    """
+    from app.models import EventSource
+    d = db.get(RawDocument, doc_id)
+    if not d:
+        raise HTTPException(404, "文档不存在")
+    act = (body.action or "").strip()
+    if act == "discard":
+        d.screen_status = "screened_out"
+        d.screen_reason = f"人工判定不相干:{body.note or ''}".strip()
+    elif act == "requeue":
+        d.screen_status = "pending"
+        d.screen_reason = "人工退回重新处理"
+    elif act == "attach":
+        ev = db.get(Event, (body.event_id or "").strip())
+        if not ev:
+            raise HTTPException(422, "目标事件不存在")
+        exists = db.query(EventSource).filter_by(event_id=ev.event_id, doc_id=d.id).first()
+        if not exists:
+            src = db.get(Source, d.source_id)
+            ref = f"SRC-M{d.id}"
+            db.add(EventSource(event_id=ev.event_id, ref_id=ref, doc_id=d.id,
+                               snapshot_id=d.snapshot_id,
+                               credibility=(src.credibility if src else "S4"),
+                               supports_fields=["*"]))
+            payload = dict(ev.payload or {})
+            payload.setdefault("sources", [])
+            payload["sources"] = list(payload["sources"]) + [{
+                "ref_id": ref, "url_or_doc_number": d.final_url or d.url,
+                "title": d.title or "", "publisher": d.publisher or "",
+                "credibility": (src.credibility if src else "S4"),
+                "snapshot_id": d.snapshot_id or "",
+            }]
+            ev.payload = payload
+            log_change(db, ev.event_id, "sources", None, ref, user.id, source_ref=ref)
+        d.screen_status = "screened_out"
+        d.screen_reason = f"人工确认并入事件 {ev.event_id}"
+    else:
+        raise HTTPException(422, "action 须为 discard / requeue / attach")
+    db.commit()
+    return {"id": d.id, "screen_status": d.screen_status, "reason": d.screen_reason}
 
 
 @api.get("/documents/{doc_id}")

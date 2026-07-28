@@ -760,15 +760,34 @@ async function loadDocs(){
     const q=DOCS_RELEVANT_ONLY?`&relevant=true`:``;
     const rows=await api(`/documents?need_id=${NEED}&limit=200${q}`);
     if(!rows.length){ box.innerHTML=`<p class="muted">${DOCS_RELEVANT_ONLY?"暂无相关文档。取消“只看相关”可查看全部,或先跑一轮采集。":"暂无文档。点“开始采集”跑一轮,或到仪表盘载入演示数据。"}</p>`; return; }
-    box.innerHTML=`<table><thead><tr><th>标题</th><th>来源</th><th>粗筛</th><th>首发</th><th>原文</th></tr></thead><tbody>`+
+    const canAct=["analyst","editor","admin"].includes(ROLE);
+    box.innerHTML=`<table><thead><tr><th>标题</th><th>来源</th><th>粗筛</th><th>首发</th><th>原文</th>${canAct?"<th>待人工处理</th>":""}</tr></thead><tbody>`+
       rows.map(d=>`<tr>
         <td style="cursor:pointer;color:var(--brand)" onclick="openDoc(${d.id})">${esc(d.title||d.url)}</td>
         <td class="muted">${esc(d.publisher||"")}</td>
         <td title="${esc(d.screen_reason||'')}">${screenPill(d.screen_status)}${d.screen_score!=null?` <span class="muted">${d.screen_score}</span>`:""}</td>
         <td>${d.is_primary?'首发':'<span class="muted">转载</span>'}</td>
         <td>${d.url?`<a href="${esc(d.url)}" target="_blank" rel="noopener">原文↗</a>`:'<span class="muted">-</span>'}</td>
+        ${canAct?`<td style="white-space:nowrap">${d.screen_status==="manual_queue"?
+          `<button class="ghost sm" title="退回重新粗筛+抽取(适合当时大模型超时的)" onclick="resolveDoc(${d.id},'requeue')">重跑</button>
+           <button class="ghost sm" title="确认与某已有事件是同一事件,作为补充来源挂上去" onclick="resolveDoc(${d.id},'attach')">并入事件</button>
+           <button class="ghost sm" title="判为不相干,移出待人工队列" onclick="resolveDoc(${d.id},'discard')">不相干</button>`
+          :'<span class="muted">—</span>'}</td>`:""}
       </tr>`).join("")+`</tbody></table>`;
   }catch(e){ box.innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function resolveDoc(id, action){
+  let body={action};
+  if(action==="attach"){
+    const ev=prompt("并入哪个事件?请输入事件号(如 SEC-20260723-0001):\n(可在「事件」页复制事件号)");
+    if(!ev) return; body.event_id=ev.trim();
+  }
+  if(action==="discard" && !confirm("确认判为不相干并移出待人工队列?")) return;
+  try{
+    const r=await api(`/documents/${id}/resolve`,{method:"POST",body:JSON.stringify(body)});
+    toast({requeue:"已退回重跑",attach:"已并入事件",discard:"已标记不相干"}[action]||"已处理");
+    loadDocs();
+  }catch(e){ alert("处理失败:"+e.message); }
 }
 async function openDoc(id){
   try{
