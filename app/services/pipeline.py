@@ -19,7 +19,12 @@ from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
 from app.services.profiles import get_active_dictionaries
 
-CITATION_RE = re.compile(r"(?:来源|转载自|首发于|原文链接)[::\s]*([^\s,。;<>\"]{2,60})")
+# 分隔符必须含全角「:」(U+FF1A),否则会把冒号一起捕进来,形成「:新华社」与「新华社」两个不同的键
+CITATION_RE = re.compile(r"(?:来源|转载自|首发于|原文链接)[:：\s]*([^\s,，、。;；<>\"]{2,60})")
+# 明显不是"发布主体"的正文套话/碎片,禁止当成公众号或候选源
+_REF_STOPWORDS = ("转载", "出处", "请注明", "如若", "版权", "侵删", "免责", "声明", "来源",
+                  "附件", "下载", "点击", "可疑", "邮件", "代码", "平台", "共享", "原作者",
+                  "本文", "编辑", "责任", "投稿", "阅读", "关注")
 
 
 def _parse_dt(s: str | None):
@@ -128,10 +133,14 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
         dedup.assign_cluster(db, doc)
         # D2 引文/转载溯源(通用)
         for m in CITATION_RE.finditer(text[:5000]):
-            ref = m.group(1)
+            ref = (m.group(1) or "").strip(" \t:：、,，。;；「」『』\"'()（）")
+            if not ref:
+                continue
             if ref.startswith("http"):
                 discovery.record_evidence(db, ref, "citation", doc_id=doc.id)
-            elif "公众号" in ref or len(ref) <= 20:
+            elif _is_subject_like(ref):
+                # 仅在确实像"发布主体名"时才登记为公众号候选。此前 len(ref)<=20 的万能兜底
+                # 会把"请注明出处""于原作者或互联网共享平台"等套话当成公众号写进源库。
                 discovery.record_evidence(db, None, "wechat_reference",
                                           display_name=ref, wechat_account=ref, doc_id=doc.id)
         # 转载溯源(通用能力,任何需求可用):识别转载→本篇不作首发,原始出处登记候选源
@@ -139,10 +148,13 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
             rp = reputation.detect_repost(text)
             if rp["is_repost"]:
                 doc.is_primary = False   # 转载版不作首发,优先追原始出处
-                if rp["original_subject"]:
+                subj = (rp["original_subject"] or "").strip(" \t:：、,，。「」『』\"'")
+                if subj.startswith("http"):
+                    discovery.record_evidence(db, subj, "citation", doc_id=doc.id)
+                elif _is_subject_like(subj):
                     discovery.record_evidence(db, None, "citation",
-                                              display_name=rp["original_subject"],
-                                              wechat_account=rp["original_subject"], doc_id=doc.id)
+                                              display_name=subj,
+                                              wechat_account=subj, doc_id=doc.id)
                 for u in (rp["original_wechat_url"], rp["original_url"]):
                     if u:
                         discovery.record_evidence(db, u, "citation", doc_id=doc.id)
@@ -288,6 +300,25 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
     stop_th = int((source.adapter_config or {}).get("stop_consecutive")
                   or settings.crawl_stop_consecutive_seen)
     return early_enabled, stop_th
+
+
+def _is_subject_like(ref: str) -> bool:
+    """是否像一个"发布主体名"(公众号/机构),用于过滤正文套话碎片。
+
+    公众号名通常较短、不含 URL、不以助词起头、不含"转载/出处/版权"等套话。
+    """
+    s = (ref or "").strip()
+    if not (2 <= len(s) <= 20):
+        return False
+    if "://" in s or s.lower().startswith("www."):
+        return False
+    if any(w in s for w in _REF_STOPWORDS):
+        return False
+    if s[0] in "的于如和或与在等为被把将从对": 
+        return False                       # 以助词/介词开头的多是句子碎片
+    if not re.search(r"[\u4e00-\u9fffA-Za-z]", s):
+        return False
+    return True
 
 
 def _negative_terms(db, need_id: str) -> list[str]:
@@ -497,8 +528,18 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                     db, need, source, run, lambda page: adapter.discover_page(page),
                     max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
         run.status = "ok"
-        source.last_success_at = datetime.utcnow()
-        source.fail_streak = 0
+        if found > 0:
+            source.last_success_at = datetime.utcnow()
+            source.fail_streak = 0
+        else:
+            # 解析出 0 条不是"成功":此前无条件置 ok 并清零 fail_streak,导致选择器失效/被反爬的源
+            # 永远不会被自动停用,还因 last_success_at 被刷新而排到轮转末尾,长期静默占用采集名额。
+            source.fail_streak = (source.fail_streak or 0) + 1
+            run.error = (run.error or "") + "[本轮解析出 0 条,计入源健康]"
+            th = int(getattr(settings, "source_auto_retire_fail_streak", 0) or 0)
+            if th > 0 and source.fail_streak >= th and source.lifecycle in ("active", "trial"):
+                source.lifecycle = "retired"
+                run.error += f"[连续 {source.fail_streak} 轮无产出,已自动停用]" 
     except Exception as e:  # noqa: BLE001 单源失败不拖垮批次
         err = str(e)[:500]
         # 先回滚:失败可能来自 flush(唯一约束/锁超时),会话已中毒,不回滚则后续写全部抛

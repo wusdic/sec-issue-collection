@@ -4,6 +4,8 @@
 """
 import json
 
+from app.config import settings
+
 
 def screen_prompts(profile_cfg: dict, title: str, text: str) -> tuple[str, str]:
     goal = (profile_cfg.get("quality") or {}).get("screen_prompt") or "判断是否为国内发生的网络/信息安全事件报道"
@@ -54,8 +56,12 @@ def extract_prompts(profile_cfg: dict, dictionaries: dict, record_schema: dict,
         "8) 不得编造可核验字段:sources 的 url 必须用文中给出的真实链接(不确定就留空,禁止占位符如 XXXXX);"
         "法规依据只能引用正文出现过的法规名;机构缩写按原文(如 CNCERT)。sellable_mapping 仅当原文确有相关"
         "安全需求时才填,非安全内容留空。\n"
-        f"词表(枚举值必须取自词表):\n{json.dumps(dict_brief, ensure_ascii=False)[:4000]}\n"
-        f"JSON Schema:\n{json.dumps(record_schema, ensure_ascii=False)[:6000]}"
+        # Schema 必须完整给出:$defs 里定义了金额三态(MoneyTriState)、日期精度等结构,
+        # 此前硬截断到 6000 字(仅覆盖 48%)会把 $defs 整段切掉,模型看不到金额三态怎么写,
+        # 导致金额结构崩坏、schema 校验全部失败。
+        f"词表(枚举值必须取自词表):\n{json.dumps(dict_brief, ensure_ascii=False)[:settings.prompt_dict_chars]}\n"
+        f"JSON Schema(务必完整遵守,含 $defs 引用的结构):\n"
+        f"{json.dumps(record_schema, ensure_ascii=False)[:settings.prompt_schema_chars]}"
     )
     user = f"标题:{title}\n正文:\n{text[:12000]}"
     return system, user

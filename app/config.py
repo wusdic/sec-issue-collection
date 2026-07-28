@@ -38,6 +38,10 @@ class Settings:
     llm_max_tokens: int = int(os.getenv("LLM_MAX_TOKENS", "8192"))
     # 单次 LLM 请求超时(秒)。推理模型偶尔很慢,超时即放弃该篇(不重试,重试也会超时),避免卡住
     llm_timeout: float = float(os.getenv("LLM_TIMEOUT", "90"))
+    # 抽取提示词里 schema/词表 的最大字符数。schema 必须完整(含 $defs 的金额三态等结构定义),
+    # 截断会让模型看不到字段结构 → 抽取结构崩坏、校验全失败,故默认给足。
+    prompt_schema_chars: int = int(os.getenv("PROMPT_SCHEMA_CHARS", "40000"))
+    prompt_dict_chars: int = int(os.getenv("PROMPT_DICT_CHARS", "8000"))
 
     # 原文存档
     archive_root: str = os.getenv("ARCHIVE_ROOT", str(BASE_DIR / "data" / "archive"))

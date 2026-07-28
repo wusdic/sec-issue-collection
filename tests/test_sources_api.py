@@ -147,14 +147,17 @@ def test_batch_test_marks_and_auto_retires(db, admin, monkeypatch):
 
 
 def test_auto_trial_threshold_from_settings(db, need, monkeypatch):
-    """新源自动入库阈值取运行时设置:调低后单渠道候选也能自动建 trial 源。"""
+    """新源自动入库阈值取运行时设置:阈值调低 + 多通道证据 → 自动建 trial 源。
+
+    注:单通道孤证已加硬闸门不再自动入库(见 test_source_hygiene),故这里给两个通道。
+    """
     from app.config import settings
     from app.models import SourceDiscoveryEvidence
     from app.services import discovery
-    # 造一个只有单渠道证据的候选(评分约 2×1 通道 +新鲜度1 = 3)
-    db.add(SourceDiscoveryEvidence(identity_key="newsrc.auto.com", display_name="自动源",
-                                   kind_guess="website", channel="event_search",
-                                   evidence_url="https://newsrc.auto.com/x"))
+    for ch in ("event_search", "citation"):
+        db.add(SourceDiscoveryEvidence(identity_key="newsrc.auto.com", display_name="自动源",
+                                       kind_guess="website", channel=ch,
+                                       evidence_url="https://newsrc.auto.com/x"))
     db.flush()
     monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 2.0)
     res = discovery.evaluate_candidates(db, need.id)

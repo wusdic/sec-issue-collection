@@ -24,16 +24,19 @@ _DATE_LIKE = _re.compile(r"^\s*(?:\d{4}[-/年.]?\d{0,2}[-/月.]?\d{0,2}日?|\d{1
 
 
 def _valid_subject(name: str | None) -> bool:
+    """候选主体名是否可信。除纯日期/过短外,还要排除正文套话碎片与 URL(否则会把
+    「请注明出处」「于原作者或互联网共享平台」之类当成公众号写进源库)。"""
     if not name:
         return False
-    s = name.strip()
+    s = name.strip(" \t:：、,，。;；「」『』\"'()（）")
     if len(s) < 3:
         return False
     if _DATE_LIKE.match(s):
         return False
     if not _re.search(r"[一-鿿A-Za-z]", s):  # 至少含一个中英文字
         return False
-    return True
+    from app.services.pipeline import _is_subject_like
+    return _is_subject_like(s)
 
 
 def record_evidence(db: Session, url: str | None, channel: str,
@@ -116,7 +119,10 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
             continue  # 该站点已有源(任一栏目)→ 不重复建
         score = candidate_score(db, key, llm_scores.get(key, 0.0))
         item = {"identity_key": key, "score": score, "auto_trial": False}
-        if score >= threshold:
+        rows_all = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
+        # 硬闸门:单通道的孤证(常是正文里偶然出现的名字)不自动入库,需≥2 个发现通道或曾为同稿首发
+        multi = len({r.channel for r in rows_all}) >= 2 or any(r.was_cluster_primary for r in rows_all)
+        if score >= threshold and multi:
             rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
             display = next((r.display_name for r in rows if r.display_name), key)
             is_mp = key.startswith("mp:")
