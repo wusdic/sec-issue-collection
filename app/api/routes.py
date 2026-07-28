@@ -183,6 +183,44 @@ def delete_source(source_id: int, db: Session = Depends(get_session),
                 "note": "存在关联记录无法物理删除,已改为停用"}
 
 
+@api.post("/sources/{source_id}/restore")
+def restore_source(source_id: int, db: Session = Depends(get_session),
+                   _: AppUser = Depends(require_roles("analyst"))):
+    """恢复被(误)停用的源:重新启用并清零失败计数。
+
+    自动停用会有误判(临时网络问题、站点短暂改版),此前停用后页面上没有任何恢复入口。
+    """
+    from app.services import health
+    src = health.restore(db, source_id)
+    if not src:
+        raise HTTPException(404, "源不存在")
+    db.commit()
+    return {"id": src.id, "lifecycle": src.lifecycle, "fail_streak": src.fail_streak,
+            "name": src.name}
+
+
+@api.post("/sources/health-check")
+def start_health_check(need_id: str = "sec_events",
+                       _: AppUser = Depends(require_roles("analyst"))):
+    """启动"一键体检"后台任务(立即返回)。进度用 GET /sources/health-check 查询。"""
+    from app.services import health
+    return health.start(need_id)
+
+
+@api.get("/sources/health-check")
+def health_check_status(_: AppUser = Depends(current_user)):
+    """体检进度(切页/刷新都能查到)。"""
+    from app.services import health
+    return health.status()
+
+
+@api.post("/sources/health-check/cancel")
+def cancel_health_check(_: AppUser = Depends(require_roles("analyst"))):
+    from app.services import health
+    health.cancel()
+    return {"ok": True, "note": "已请求取消,当前源测完即停"}
+
+
 @api.get("/sources/duplicates")
 def source_duplicates(need_id: str | None = None, db: Session = Depends(get_session),
                       _: AppUser = Depends(current_user)):

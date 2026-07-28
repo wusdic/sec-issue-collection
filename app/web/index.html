@@ -170,6 +170,7 @@ function boot(){
 }
 function go(k){
   if(k!=="crawl" && typeof crawlStopPoll==="function") crawlStopPoll();  // 离开采集页停轮询(重进自动恢复)
+  if(k!=="sources" && typeof healthStopPoll==="function") healthStopPoll();  // 体检在服务端后台跑,离开只停轮询
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
   ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
     leads:vLeads,sources:vSources,crawl:vCrawl,digest:vDigest,settings:vSettings}[k])();
@@ -440,6 +441,7 @@ async function vSources(){
     <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
   loadSources();
+  if(canEditSrc()) pollHealth();   // 切回本页时自动接上正在跑的体检进度
 }
 async function loadSources(){
   try{
@@ -463,6 +465,7 @@ async function loadSources(){
         <td>${s.docs_total}</td>
         <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
         ${canEditSrc()?`<td style="white-space:nowrap">
+          ${retired?`<button class="ghost sm" title="误判停用时点这里恢复,并清零失败计数" onclick="restoreSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">恢复启用</button>`:''}
           ${retired?"":`<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>`}
           ${(s.kind==="page"&&isRootUrl(s.entry_url))?
             `<button class="ghost sm" title="根域源:预览自动识别到的相关栏目(采集时会自动按栏目抓)" onclick="previewCols(${s.id},'${esc(s.name).replace(/'/g,"")}')">栏目?</button>`:""}
@@ -496,30 +499,67 @@ async function delSource(id,name){
   if(!confirm(`删除数据源「${name}」?\n\n若该源已采过文档,将转为「停用」(不再采集、历史保留);无文档则直接删除。`)) return;
   try{
     const r=await api(`/sources/${id}`,{method:"DELETE"});
+    toast(r.action==="deleted"?`已删除「${name}」`:`「${name}」已有文档,转为停用`);
     loadSources();
+    // 扫描同站的结果框里也删了才不会"看着没反应":有内容就重扫一次
+    const box=document.getElementById("dupBox");
+    if(box && box.innerHTML.trim()) scanDup();
   }catch(e){ alert("删除失败:"+e.message); }
 }
+async function restoreSource(id,name){
+  if(!confirm(`恢复启用「${name}」?\n\n将重新参与采集,并清零连续失败计数(误判停用时用这个)。`)) return;
+  try{
+    await api(`/sources/${id}/restore`,{method:"POST"});
+    toast(`已恢复「${name}」`);
+    loadSources();
+    const box=document.getElementById("dupBox");
+    if(box && box.innerHTML.trim()) scanDup();
+  }catch(e){ alert("恢复失败:"+e.message); }
+}
+let HEALTH_POLL=null;
+function healthStopPoll(){ if(HEALTH_POLL){ clearInterval(HEALTH_POLL); HEALTH_POLL=null; } }
 async function testAllSources(){
-  const btn=document.getElementById("testAllBtn"), prog=document.getElementById("testAllProgress");
-  if(!confirm("逐个实时试抓所有生效源(不入库)。连续失败达到阈值的源会被自动停用。\n源较多时耗时可能较长,期间请勿离开本页。继续?")) return;
-  btn.disabled=true;
-  let rows;
-  try{ rows=await api(`/sources`); }catch(e){ prog.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; btn.disabled=false; return; }
-  const targets=rows.filter(s=>s.lifecycle!=="retired");
-  let ok=0,fail=0,retired=0,done=0;
-  for(const s of targets){
-    prog.innerHTML=`体检中… ${done}/${targets.length}｜正常 ${ok}｜异常 ${fail}｜自动停用 ${retired}｜当前:${esc(s.name)}`;
-    try{
-      const r=await api(`/sources/${s.id}/test-fetch?mark=true`,{method:"POST"});
-      if(r.ok&&r.count>0){ ok++; } else { fail++; }
-      if(r.retired) retired++;
-    }catch(e){ fail++; }
-    done++;
+  if(!confirm("后台逐个试抓所有生效源(不入库)。连续失败达阈值的源会被自动停用。\n体检在服务端后台跑,切页面/刷新都不会中断。继续?")) return;
+  try{
+    await api(`/sources/health-check?need_id=${NEED}`,{method:"POST"});
+    pollHealth();
+  }catch(e){ alert("启动体检失败:"+e.message); }
+}
+async function cancelHealth(){
+  try{ await api(`/sources/health-check/cancel`,{method:"POST"}); toast("已请求取消"); }catch(e){}
+}
+function renderHealth(h){
+  const prog=document.getElementById("testAllProgress"); if(!prog) return false;
+  if(!h || (!h.running && !h.finished_at)){ prog.innerHTML=""; return false; }
+  const total=h.total||0, done=h.done||0;
+  const pct= total? Math.round(done/total*100) : 0;
+  const bar=`<div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:4px 0">
+      <div style="height:100%;width:${pct}%;background:var(--brand);transition:width .3s"></div></div>`;
+  if(h.running){
+    prog.innerHTML=`<b>🩺 体检进行中</b> ${done}/${total}(${pct}%)｜能出数据 ${h.ok||0}｜抓不到 ${h.fail||0}｜自动停用 ${h.retired||0}
+      <button class="ghost sm" style="margin-left:8px" onclick="cancelHealth()">取消</button>${bar}
+      <span class="muted">当前:${esc(h.current||"")}</span>`;
+    return true;
   }
-  prog.innerHTML=`<span class="pill ok">体检完成</span> 共 ${targets.length} 个｜能出数据 ${ok}｜抓不到 ${fail}｜本轮自动停用 ${retired} 个。`
-    +(fail>retired?` <span class="muted">抓不到但未达停用阈值的会保留,多测几次连续失败才停用。</span>`:``);
-  btn.disabled=false;
-  loadSources();
+  const bad=(h.results||[]).filter(r=>!r.ok);
+  prog.innerHTML=`<span class="pill ok">体检完成</span> 共 ${total} 个｜能出数据 ${h.ok||0}｜抓不到 ${h.fail||0}｜本轮自动停用 ${h.retired||0}
+    ${h.canceled?'<span class="pill warn">已取消</span>':''}${bar}
+    ${bad.length?`<details style="margin-top:6px"><summary class="muted">抓不到的 ${bad.length} 个(点开看原因)</summary>
+      <ul style="margin:4px 0;padding-left:18px">${bad.slice(0,50).map(r=>
+        `<li>${esc(r.name)} <span class="muted">${esc(r.hint||"")}</span>${r.retired?' <span class="pill warn">已停用</span>':''}</li>`).join("")}</ul></details>`:''}`;
+  return false;
+}
+async function pollHealth(){
+  healthStopPoll();
+  const tick=async()=>{
+    try{
+      const h=await api(`/sources/health-check`);
+      const running=renderHealth(h);
+      if(!running){ healthStopPoll(); loadSources(); }
+    }catch(e){ healthStopPoll(); }
+  };
+  await tick();
+  HEALTH_POLL=setInterval(tick,2000);
 }
 function isRootUrl(u){
   if(!u||!u.startsWith("http")) return false;
@@ -556,7 +596,9 @@ async function scanDup(){
           <span class="pill ${s.lifecycle==='retired'?'':'ok'}">${esc(s.kind)}</span>
           ${esc(s.name)} <span class="muted mono">${esc(s.entry_url||s.identity_key||'')}</span>
           <span class="muted">· 文档${s.docs_total}</span>
-          ${canEditSrc()&&s.lifecycle!=='retired'?`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`:''}
+          ${canEditSrc()?(s.lifecycle!=='retired'
+            ?`<button class="ghost sm" onclick="delSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">删除</button>`
+            :`<button class="ghost sm" onclick="restoreSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">恢复启用</button>`):''}
         </div>`).join("")}
       </div>`).join("")}</div>`;
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
