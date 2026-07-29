@@ -49,8 +49,16 @@ def _looks_thin(html: str | None) -> bool:
     return _visible_len(html) < 200
 
 
+# 只带 UA 的请求很容易被判成脚本(搜索引擎/政务站常直接 403),补齐浏览器常规请求头
+_BASE_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
 def _httpx_fetch(url: str, referer: str | None, timeout: float | None) -> FetchResult:
-    headers = {"User-Agent": settings.fetch_user_agent}
+    headers = {"User-Agent": settings.fetch_user_agent, **_BASE_HEADERS}
     if referer:
         headers["Referer"] = referer
     try:

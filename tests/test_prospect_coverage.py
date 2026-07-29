@@ -211,3 +211,89 @@ def _clean_probes(db):
     yield
     db.query(SourceProbe).delete()
     db.flush()
+
+
+# ---------------- ⑤ "0 条"必须说得出为什么 ----------------
+
+class _BlockedEngine:
+    """被反爬挡住:search_page 返回 None(抓不到)。"""
+    def __init__(self, *_a, **_k): pass
+    def search_page(self, query, page, time_filter=None): return None
+
+
+class _RedirectEngine:
+    """结果全是搜索引擎自家跳转链(百度/必应的真实形态)。"""
+    def __init__(self, *_a, **_k): pass
+    def search_page(self, query, page, time_filter=None):
+        if page > 0:
+            return None
+        return [DiscoveredItem(url="https://www.baidu.com/link?url=abc123", title="某安全站"),
+                DiscoveredItem(url="https://www.baidu.com/link?url=def456", title="另一个站")]
+
+
+def test_blocked_engine_explains_itself(db, need, monkeypatch):
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _BlockedEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["安全周报 汇总 推荐"])
+    r = prospect.run_once(db, need.id)
+    assert r["hits"] == 0 and not r["new_keys"]
+    assert "抓不到" in r["note"] and "403" in r["note"]       # 不再是一排没头没脑的 0
+    assert r["stats"]["fetch_fail"] >= 1
+    assert r["engine_detail"][0]["errors"] >= 1
+
+
+def test_search_redirect_links_are_resolved(db, need, monkeypatch):
+    """百度结果是 baidu.com/link?url=… ,不还原就只能得到 baidu.com → 永远 0 个新候选。"""
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _RedirectEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["安全周报 汇总 推荐"])
+    seen = {}
+
+    def fake_resolve(url):
+        seen[url] = True
+        return "https://real-sec-site.cn/news/1.html"
+
+    monkeypatch.setattr(prospect, "_resolve_redirect", fake_resolve)
+    r = prospect.run_once(db, need.id)
+    assert len(seen) == 2 and r["stats"]["resolved"] == 2
+    assert "real-sec-site.cn" in r["new_keys"]
+
+
+def test_unresolvable_redirects_reported_not_silent(db, need, monkeypatch):
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _RedirectEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["安全周报 汇总 推荐"])
+    monkeypatch.setattr(prospect, "_resolve_redirect", lambda u: u)   # 还原失败
+    r = prospect.run_once(db, need.id)
+    assert not r["new_keys"] and r["stats"]["redirect"] == 2 and r["stats"]["resolved"] == 0
+    assert "跳转链" in r["note"] and "还原失败" in r["note"]
+
+
+def test_resolve_budget_is_capped(db, need, monkeypatch):
+    monkeypatch.setattr(settings, "prospect_resolve_max", 1)
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _RedirectEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["安全周报 汇总 推荐"])
+    calls = {"n": 0}
+
+    def fake_resolve(url):
+        calls["n"] += 1
+        return "https://capped-site.cn/a"
+
+    monkeypatch.setattr(prospect, "_resolve_redirect", fake_resolve)
+    prospect.run_once(db, need.id)
+    assert calls["n"] == 1      # 超配额不再逐条发请求
+
+
+def test_all_platform_results_explained(db, need, monkeypatch):
+    class _PlatformEngine:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, time_filter=None):
+            return None if page else [DiscoveredItem(url="https://zhihu.com/q/1", title="知乎")]
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _PlatformEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["安全周报 汇总 推荐"])
+    r = prospect.run_once(db, need.id)
+    assert not r["new_keys"] and r["stats"]["platform"] == 1
+    assert "通用大平台" in r["note"]
+
+
+def test_no_engine_configured_explained(db, need, monkeypatch):
+    monkeypatch.setattr(prospect, "_engines", lambda: [])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["x"])
+    assert "没有可用的搜索引擎" in prospect.run_once(db, need.id)["note"]

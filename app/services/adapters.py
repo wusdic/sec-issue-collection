@@ -223,8 +223,13 @@ class SearchEngineAdapter(BaseAdapter):
         return out
 
     def search_page(self, query: str, page: int, time_filter: str | None = None) -> list[DiscoveredItem] | None:
-        """抓取单页结果。返回该页 items;None 表示抓取失败/无更多页(供流水线逐页早停)。"""
-        fr = fetcher.fetch(self.build_url(query, page, time_filter))
+        """抓取单页结果。返回该页 items;None 表示抓取失败/无更多页(供流水线逐页早停)。
+
+        adapter_config.render 可设 "auto"/True:搜索引擎对纯 httpx 常直接 403/返回验证页,
+        开了浏览器渲染就能救回来(未开渲染时 auto 自动降级为 httpx,零成本)。
+        """
+        fr = fetcher.fetch(self.build_url(query, page, time_filter),
+                           render=self.config.get("render", False))
         if not fr.ok:
             return None
         return self.parse(fr.html) or []

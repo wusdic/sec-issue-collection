@@ -137,6 +137,8 @@ class Settings:
     prospect_engines: str = os.getenv("PROSPECT_ENGINES", "baidu_search,bing_search")
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
     prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "40"))       # 单轮最多跑多少条找源词
+    # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条
+    prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "60"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)
     # 候选源 LLM 相关度初评:抓候选站首页抽样标题,让模型判"是否持续产出国内安全事件内容"
     probe_llm_enabled: bool = os.getenv("PROBE_LLM_ENABLED", "true").lower() in ("1", "true", "yes", "on")

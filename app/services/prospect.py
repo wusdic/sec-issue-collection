@@ -78,7 +78,9 @@ class _Shim:
     """给适配器用的最小 source 替身:找源阶段还没有 Source 行。"""
 
     def __init__(self):
-        self.adapter_config = {}
+        # render=auto:搜索引擎对纯 httpx 常 403/返回验证页,开了浏览器渲染能救回来;
+        # 没开渲染时 auto 自动降级为 httpx,不产生任何额外开销。
+        self.adapter_config = {"render": "auto"}
         self.name = "prospect"
         self.entry_url = None
         self.kind = "query"
@@ -100,23 +102,47 @@ _SKIP_HOSTS = {"baidu.com", "bing.com", "sogou.com", "google.com", "so.com", "zh
                "163.com", "qq.com", "sina.com.cn", "sohu.com", "toutiao.com", "baijiahao.baidu.com"}
 
 
-def _candidate_key(url: str) -> str | None:
-    """搜索结果 URL → 候选源标识键;通用大平台/搜索引擎自身跳过。"""
+def _resolve_redirect(url: str) -> str:
+    """还原搜索引擎跳转链(C3)。
+
+    百度结果链接是 www.baidu.com/link?url=…、必应是 bing.com/ck/a?…,直接取域名只会得到
+    搜索引擎自己——这正是"搜索结果 0 条"的头号原因。跟一次跳转拿到真实站点。
+    """
+    try:
+        fr = fetcher.fetch(url, timeout=min(10.0, float(settings.fetch_timeout)))
+        return fr.final_url or url
+    except Exception:  # noqa: BLE001
+        return url
+
+
+def _candidate_key(url: str) -> tuple[str | None, str]:
+    """搜索结果 URL → (候选源标识键, 丢弃原因)。键为 None 时原因说明为什么没要它。"""
     if not url or not url.startswith("http"):
-        return None
+        return None, "bad_url"
     key = url_tools.identity_key_for(url)
-    if not key or key in _SKIP_HOSTS:
-        return None
-    return key
+    if not key:
+        return None, "bad_url"
+    if key in _SKIP_HOSTS:
+        return None, "platform"          # 知乎/CSDN/门户等通用大平台,不作为专业源
+    return key, ""
 
 
 def run_once(db, need_id: str, on_progress=None) -> dict:
-    """跑一轮主动找源。返回 {queries, hits, new_keys, engines}。"""
+    """跑一轮主动找源。
+
+    返回里带完整统计与人读结论:"0 条"必须说得出为什么(引擎被反爬 / 全是跳转链还原不了 /
+    全是大平台 / 全是已有源),否则页面上一排 0 等于什么都没说。
+    """
     engines = _engines()
     queries = build_queries(db, need_id)
     pages = max(1, int(getattr(settings, "prospect_pages_per_query", 1) or 1))
-    hits, new_keys = 0, set()
-    total = len(queries) * len(engines)
+    resolve_cap = int(getattr(settings, "prospect_resolve_max", 60) or 0)
+    st = {"pages": 0, "fetch_fail": 0, "raw_items": 0, "redirect": 0, "resolved": 0,
+          "platform": 0, "bad_url": 0, "known_or_blocked": 0}
+    edetail: dict[str, dict] = {e[0]: {"engine": e[0], "pages": 0, "items": 0, "errors": 0}
+                                for e in engines}
+    new_keys, resolved_used = set(), 0
+    total = max(1, len(queries) * max(1, len(engines)))
     done = 0
     for q in queries:
         for ename, eng in engines:
@@ -125,20 +151,41 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
             try:
                 for page in range(pages):
                     items = eng.search_page(q, page)
+                    if items is None:
+                        st["fetch_fail"] += 1
+                        edetail[ename]["errors"] += 1
+                        break               # 抓不到(403/反爬/网络)
+                    st["pages"] += 1
+                    edetail[ename]["pages"] += 1
                     if not items:
                         break
+                    edetail[ename]["items"] += len(items)
                     for it in items:
-                        key = _candidate_key(it.url)
+                        st["raw_items"] += 1
+                        url = it.url
+                        if url_tools.is_search_redirect(url):
+                            st["redirect"] += 1
+                            if resolve_cap and resolved_used >= resolve_cap:
+                                continue     # 还原有配额,超了就跳过(否则一轮几百次请求)
+                            resolved_used += 1
+                            url = _resolve_redirect(url)
+                            if url_tools.is_search_redirect(url):
+                                continue     # 还原失败(JS 跳转/需登录)
+                            st["resolved"] += 1
+                        key, why = _candidate_key(url)
                         if not key:
+                            st[why if why in st else "bad_url"] += 1
                             continue
-                        hits += 1
                         # 复用统一入口:黑名单/已注册/主体名校验/去重全都走同一套规则
-                        k = discovery.record_evidence(db, it.url, "source_search",
+                        k = discovery.record_evidence(db, url, "source_search",
                                                       display_name=(it.title or "")[:80])
                         if k:
                             new_keys.add(k)
-            except Exception:  # noqa: BLE001 单条词失败不影响整轮
-                pass
+                        else:
+                            st["known_or_blocked"] += 1
+            except Exception as e:  # noqa: BLE001 单条词失败不影响整轮
+                edetail[ename]["errors"] += 1
+                edetail[ename].setdefault("last_error", f"{type(e).__name__}: {e}"[:160])
             done += 1
             if on_progress:
                 on_progress(done, total, f"{ename} · {q}")
@@ -146,8 +193,37 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
             db.commit()
         except Exception:  # noqa: BLE001
             db.rollback()
-    return {"queries": len(queries), "engines": [e[0] for e in engines],
-            "hits": hits, "new_keys": sorted(new_keys)}
+    out = {"queries": len(queries), "engines": [e[0] for e in engines],
+           "hits": st["raw_items"], "new_keys": sorted(new_keys),
+           "stats": st, "engine_detail": list(edetail.values())}
+    out["note"] = explain(out)
+    return out
+
+
+def explain(r: dict) -> str:
+    """把统计翻译成一句人读结论——尤其是"为什么是 0"。"""
+    st, q = r.get("stats") or {}, r.get("queries", 0)
+    if not r.get("engines"):
+        return "没有可用的搜索引擎:设置页「主动找源:用哪些搜索引擎」填的名字不在适配器列表里"
+    if not q:
+        return "本轮没有找源词:检查 config/discovery.yaml 的 source_search_queries 是否为空"
+    if st.get("pages", 0) == 0:
+        return (f"所有搜索引擎都抓不到内容({st.get('fetch_fail', 0)} 次失败,通常是 403/反爬/"
+                "网络不通)。可在设置页换搜索引擎、或开启浏览器渲染后重试")
+    if st.get("raw_items", 0) == 0:
+        return "搜索页抓到了但一条结果都没解析出来:多半是返回了验证页,或该引擎改版导致选择器失效"
+    if not r.get("new_keys"):
+        parts = []
+        if st.get("redirect", 0) and not st.get("resolved", 0):
+            parts.append(f"{st['redirect']} 条是搜索引擎跳转链且还原失败")
+        if st.get("platform"):
+            parts.append(f"{st['platform']} 条落在通用大平台(知乎/CSDN/门户等,不作专业源)")
+        if st.get("known_or_blocked"):
+            parts.append(f"{st['known_or_blocked']} 条已是现有源或已拉黑")
+        why = ";".join(parts) or "全部被去重/校验规则挡下"
+        return f"抓到 {st.get('raw_items', 0)} 条结果,但没有新渠道:{why}"
+    return (f"抓到 {st.get('raw_items', 0)} 条结果,还原跳转链 {st.get('resolved', 0)} 条,"
+            f"新增候选渠道 {len(r['new_keys'])} 个")
 
 
 # ---------------- 候选源 LLM 相关度初评 ----------------
@@ -281,7 +357,20 @@ def _run(need_id: str):
             _set(phase="主动找源(搜索引擎捞新渠道)")
             r = run_once(db, need_id,
                          on_progress=lambda d, t, c: _set(done=d, total=t, current=c))
-            _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"])
+            _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"],
+                 note=r.get("note", ""), stats=r.get("stats", {}),
+                 engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0))
+            if not r["new_keys"]:
+                # 一无所获必须留痕:否则"主动找源"会长期静默空转,没人知道它其实一直没用
+                from app.services import actions
+                actions.record(db, "source.prospect_empty",
+                               f"主动找源本轮没有发现新渠道:{r.get('note', '')}",
+                               need_id=need_id, detail={"stats": r.get("stats"),
+                                                        "engines": r.get("engine_detail")})
+                try:
+                    db.commit()
+                except Exception:  # noqa: BLE001
+                    db.rollback()
 
             if not _cancel.is_set():
                 _set(phase="候选源相关度初评(LLM)", done=0, total=0, current="")

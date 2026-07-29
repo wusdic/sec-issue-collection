@@ -63,6 +63,10 @@ CATALOG: dict[str, Spec] = {
     "source.auto_columns": Spec(
         "sources", NOTICE, "根域源自动定位到栏目", 0, "数据源页删除不想要的子栏目"),
     "source.manual_grade": Spec("sources", NOTICE, "人工定级", 0, ""),
+    "source.prospect_empty": Spec(
+        "sources", HIGH, "主动找源一无所获", 0,
+        "看结论里的原因:引擎被反爬就在设置页换搜索引擎/开浏览器渲染;"
+        "全是大平台就补充更精准的找源词(config/discovery.yaml 的 source_search_queries)"),
 
     # ---- 采集 ----
     "crawl.job_failed": Spec("crawl", CRITICAL, "采集任务整批失败", 0,

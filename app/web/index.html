@@ -885,10 +885,18 @@ function renderProspect(h){
       <span class="muted">当前:${esc(h.current||"")}</span>`;
     return true;
   }
-  box.innerHTML=`<span class="pill ${h.error?'warn':'ok'}">找源完成</span>
-    搜索结果 ${h.hits||0} 条｜新候选渠道 ${h.new_candidates||0} 个｜LLM 初评 ${h.probed||0} 个｜
-    达标自动入库 <b>${h.auto_trial||0}</b> 个${h.canceled?' <span class="pill warn">已取消</span>':''}
+  const st=h.stats||{}, empty=!(h.new_candidates>0);
+  box.innerHTML=`<span class="pill ${h.error?'bad':(empty?'warn':'ok')}">找源完成</span>
+    找源词 ${h.queries||0} 条｜搜索结果 ${h.hits||0} 条｜新候选渠道 ${h.new_candidates||0} 个｜
+    LLM 初评 ${h.probed||0} 个｜达标自动入库 <b>${h.auto_trial||0}</b> 个${h.canceled?' <span class="pill warn">已取消</span>':''}
+    ${h.note?`<div class="${empty?'pill warn':'sub'}" style="margin-top:4px;display:block;white-space:pre-wrap">${empty?'为什么没结果:':''}${esc(h.note)}</div>`:''}
     ${h.error?`<div class="pill bad" style="margin-top:4px;display:block;white-space:pre-wrap">${esc(h.error)}</div>`:''}
+    ${(h.engine_detail&&h.engine_detail.length)?`<details style="margin-top:4px"><summary class="muted">各引擎明细 / 结果去向</summary>
+      <div class="sub" style="margin-top:4px">${h.engine_detail.map(e=>
+        `<span class="pill ${e.errors&&!e.pages?'bad':''}">${esc(e.engine)}:成功 ${e.pages} 页、结果 ${e.items} 条、失败 ${e.errors} 次${e.last_error?" · "+esc(e.last_error):""}</span>`).join(" ")}</div>
+      <div class="sub" style="margin-top:4px">结果去向:跳转链 ${st.redirect||0}(还原成功 ${st.resolved||0})｜
+        通用大平台丢弃 ${st.platform||0}｜已是现有源/已拉黑 ${st.known_or_blocked||0}｜链接不可用 ${st.bad_url||0}</div>
+      </details>`:''}
     ${(h.trial_names&&h.trial_names.length)?`<div class="sub" style="margin-top:4px">本轮入库(S4 试运行,待人工定级):
       ${h.trial_names.map(n=>`<span class="pill info">${esc(n)}</span>`).join(" ")}</div>`:''}`;
   return false;
