@@ -397,6 +397,29 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
+class ActionLog(Base):
+    """动作台账:系统(或人)执行过的每一个有后果的动作,按模块分类、按影响分级。
+
+    自动化程度越高,越需要"系统到底动了什么"一目了然。高级别动作(碰发布红线、影响面大、
+    不易逆转的)在相应模块顶部优先提示并要求确认,低级别的只记账不打扰。
+    """
+    __tablename__ = "action_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    module: Mapped[str] = mapped_column(String(16), index=True)   # sources/crawl/events/review/config
+    action: Mapped[str] = mapped_column(String(48), index=True)   # 动作键,见 services/actions.CATALOG
+    level: Mapped[int] = mapped_column(Integer, default=1, index=True)  # 1一般 2关注 3重要 4紧急
+    title: Mapped[str] = mapped_column(Text)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    target: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)        # 影响面(条数),用于升级判定
+    actor: Mapped[str] = mapped_column(String(32), default="auto")  # auto / user:<id>
+    reversible: Mapped[str | None] = mapped_column(Text, nullable=True)  # 怎么撤销(给人看)
+    at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    ack_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ack_by: Mapped[int | None] = mapped_column(ForeignKey("app_user.id"), nullable=True)
+
+
 class AutoOpsRun(Base):
     """自动运维每一步的执行记录(源库自维护:查重/定位栏目/体检/找源/自动定级)。
 

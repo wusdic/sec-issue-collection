@@ -107,7 +107,7 @@ let ROLE = localStorage.getItem("role") || "";
 const TABS = [
   ["dashboard","仪表盘"],["events","事件"],["review","复核台"],
   ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],
-  ["digest","日报"],["settings","设置"],
+  ["actions","系统动作"],["digest","日报"],["settings","设置"],
 ];
 let PENDING = {};   // 下钻时携带的预设筛选,由目标页读取后清空
 function drill(tab, filter){ PENDING = filter || {}; go(tab); }
@@ -175,7 +175,47 @@ function go(k){
   if(k!=="sources" && typeof prosStopPoll==="function") prosStopPoll();
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
   ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
-    leads:vLeads,sources:vSources,crawl:vCrawl,digest:vDigest,settings:vSettings}[k])();
+    leads:vLeads,sources:vSources,crawl:vCrawl,actions:vActions,
+    digest:vDigest,settings:vSettings}[k])();
+  refreshActionBadge();
+}
+
+/* ---------- 系统动作:导航角标 + 各模块顶部优先提示 ---------- */
+let ACT_SUMMARY = null;
+async function refreshActionBadge(){
+  try{
+    const sum = await api(`/actions/summary?need_id=${NEED}`);
+    ACT_SUMMARY = sum;
+    const a = document.querySelector('#nav a[data-k="actions"]');
+    if(a){
+      const n = sum.total||0;
+      a.innerHTML = "系统动作" + (n?` <span class="pill ${sum.critical?'bad':'warn'}" style="margin-left:2px">${n}</span>`:"");
+    }
+  }catch(e){}
+}
+async function moduleAlert(elId, module){
+  /* 在某个模块页顶部显示"该模块的高级别未确认动作";没有就完全不打扰 */
+  const box=document.getElementById(elId); if(!box) return;
+  try{
+    const a=await api(`/actions/alerts?need_id=${NEED}&module=${module}`);
+    if(!a.count){ box.innerHTML=""; return; }
+    box.innerHTML=`<div class="card" style="padding:10px;margin:8px 0;border-left:4px solid var(--${a.critical?'bad':'warn'})">
+      <b>${a.critical?"🚨":"⚠️"} 系统在本模块执行了 ${a.count} 项${a.critical?"紧急/":""}重要动作,待你确认</b>
+      <a onclick="go('actions')" style="margin-left:8px">去「系统动作」查看全部 ›</a>
+      <ul style="margin:6px 0 0;padding-left:18px">${a.items.slice(0,4).map(i=>
+        `<li style="margin:2px 0"><span class="pill ${i.level>=4?'bad':'warn'}">${esc(i.level_name)}</span>
+         ${esc(i.title)}</li>`).join("")}</ul>
+      <button class="ghost sm" style="margin-top:6px" onclick="ackModule('${module}')">我知道了(确认这 ${a.count} 项)</button>
+    </div>`;
+  }catch(e){ box.innerHTML=""; }
+}
+async function ackModule(module){
+  try{
+    await api(`/actions/ack`,{method:"POST",body:JSON.stringify({all:true,module,need_id:NEED})});
+    toast("已确认"); refreshActionBadge();
+    if(typeof vActions==="function" && document.getElementById("actList")) vActions();
+    ["srcAlert","crawlAlert","evAlert"].forEach(id=>{const e=document.getElementById(id); if(e) e.innerHTML="";});
+  }catch(e){ alert(e.message); }
 }
 
 /* ---------- 仪表盘 ---------- */
@@ -183,10 +223,12 @@ async function vDashboard(){
   const v=document.getElementById("view");
   v.innerHTML=`<h2>仪表盘</h2>
     <p class="sub">国内行业安全事件库(sec_events)· 每个卡片是一个关键指标,鼠标悬停有说明,点击卡片直接进对应明细页。数据流:采集文档 → 抽取成事件 → 待复核 → 发布 → 生成线索/回访。</p>
+    <div id="dashAlert"></div>
     <div id="seedBanner" class="banner">第一次使用、库里还没数据?先点
       <button class="sm" onclick="seedDemo()">一键载入演示数据</button>
       &nbsp;即可在各页面看到事件、线索、复核任务的样子(纯本地样例,不联网)。</div>
     <div class="cards" id="cards">加载中…</div>`;
+  moduleAlert("dashAlert", "");        // 不限模块:仪表盘看全局
   try{
     const d=await api(`/kpi/dashboard?need_id=${NEED}`);
     window.__trace = d.traceability;
@@ -319,6 +361,7 @@ async function vReview(){
   const v=document.getElementById("view");
   const canReview = ["reviewer","admin"].includes(ROLE);
   v.innerHTML=`<h2>复核台</h2><p class="sub">抽取后的事件需复核后才能发布;含已确认金额的需双人复核</p>
+    <div id="evAlert"></div>
     <div class="toolbar">
       <select id="rStage" onchange="loadReview()">
         <option value="pending">待复核(全部)</option>
@@ -327,6 +370,7 @@ async function vReview(){
       ${canReview?"":'<span class="pill warn">当前角色无复核权限,仅查看</span>'}
     </div><div id="rvTable">加载中…</div>`;
   loadReview();
+  moduleAlert("evAlert", "events");
 }
 async function loadReview(){
   const stage=document.getElementById("rStage").value;
@@ -409,12 +453,112 @@ async function vLeads(){
   }catch(e){ document.getElementById("ldTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
 }
 
+/* ---------- 系统动作(独立模块:高级别动作一眼可见) ---------- */
+let ACT_FILTER = {module:"", min_level:3, unacked:"true", days:30};
+async function vActions(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<h2>系统动作</h2>
+    <p class="sub">系统自己执行过的每一个有后果的动作,按模块分类、按影响分级。
+      <b>紧急/重要且未确认的钉在最上面</b>——碰发布红线的(如自动定级 S1、生成"已确认"金额)、
+      影响面大的(一次停用多个源、整批采集失败)优先提示;一般动作只记账不打扰。</p>
+    <div id="actTop"></div>
+    <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin:8px 0">
+      <select id="afMod"></select>
+      <select id="afLvl">
+        <option value="4">只看紧急</option>
+        <option value="3" selected>重要及以上(默认)</option>
+        <option value="2">关注及以上</option>
+        <option value="1">全部动作</option></select>
+      <select id="afAck">
+        <option value="true" selected>未确认</option>
+        <option value="">全部</option>
+        <option value="false">已确认</option></select>
+      <select id="afDays">
+        <option value="7">近7天</option><option value="30" selected>近30天</option>
+        <option value="90">近90天</option></select>
+      <button class="ghost" onclick="applyActFilter()">筛选</button>
+      ${canEditSrc()?`<button class="ghost" onclick="ackModule('')">全部标为已确认</button>`:''}
+    </div>
+    <div id="actList">加载中…</div>`;
+  const mod=document.getElementById("afMod");
+  try{
+    const meta=await api(`/actions?limit=1`);
+    mod.innerHTML=`<option value="">全部模块</option>`+
+      Object.entries(meta.modules).map(([k,n])=>`<option value="${k}">${esc(n)}</option>`).join("");
+  }catch(e){ mod.innerHTML=`<option value="">全部模块</option>`; }
+  mod.value=ACT_FILTER.module; document.getElementById("afLvl").value=String(ACT_FILTER.min_level);
+  document.getElementById("afAck").value=ACT_FILTER.unacked; document.getElementById("afDays").value=String(ACT_FILTER.days);
+  loadActions();
+}
+function applyActFilter(){
+  ACT_FILTER={module:document.getElementById("afMod").value,
+              min_level:parseInt(document.getElementById("afLvl").value),
+              unacked:document.getElementById("afAck").value,
+              days:parseInt(document.getElementById("afDays").value)};
+  loadActions();
+}
+function actCard(i,big){
+  const color=i.level>=4?"var(--bad)":(i.level===3?"var(--warn)":"var(--muted)");
+  return `<div class="card" style="padding:${big?12:10}px;margin:6px 0;border-left:4px solid ${color}
+      ${i.acked?';opacity:.55':''}">
+    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+      <span class="pill ${i.level>=4?'bad':(i.level===3?'warn':'')}">${esc(i.level_name)}</span>
+      <span class="pill info">${esc(i.module_name)}</span>
+      <b style="font-size:${big?15:14}px">${esc(i.label)}</b>
+      ${i.count>1?`<span class="pill warn" title="影响面越大级别越高">影响 ${i.count} 条</span>`:''}
+      <span class="muted" style="font-size:12px">${esc(i.at.replace("T"," ").slice(0,16))}
+        · ${i.actor==="auto"?"系统自动":"人工"}</span>
+      ${i.acked?'<span class="pill">已确认</span>':''}
+    </div>
+    <div style="margin:4px 0">${esc(i.title)}</div>
+    ${i.reversible?`<div class="sub">↩︎ 怎么撤销:${esc(i.reversible)}</div>`:''}
+    ${(i.target&&String(i.target).startsWith("http"))?`<div><a href="${esc(i.target)}" target="_blank" rel="noopener" class="mono" style="font-size:12px">${esc(i.target)}</a></div>`:''}
+    ${(!i.acked&&canEditSrc())?`<button class="ghost sm" style="margin-top:6px" onclick="ackOne(${i.id})">知道了</button>`:''}
+    ${i.module==="sources"?`<button class="ghost sm" style="margin-top:6px" onclick="go('sources')">去数据源</button>`:''}
+    ${i.module==="events"?`<button class="ghost sm" style="margin-top:6px" onclick="go('review')">去复核台</button>`:''}
+    ${i.module==="crawl"?`<button class="ghost sm" style="margin-top:6px" onclick="go('crawl')">去采集</button>`:''}
+  </div>`;
+}
+async function loadActions(){
+  const list=document.getElementById("actList"), top=document.getElementById("actTop");
+  if(!list) return;
+  list.innerHTML=`<p class="muted">加载中…</p>`;
+  try{
+    const sum=await api(`/actions/summary?need_id=${NEED}`);
+    top.innerHTML = sum.total
+      ? `<div class="card" style="padding:12px;border-left:6px solid var(--${sum.critical?'bad':'warn'})">
+          <div style="font-size:16px"><b>${sum.critical?"🚨":"⚠️"} ${sum.total} 项重要动作待确认</b>
+            ${sum.critical?`<span class="pill bad">其中紧急 ${sum.critical}</span>`:''}</div>
+          <div class="sub" style="margin-top:4px">按模块:${sum.by_module.map(m=>
+            `<a onclick="document.getElementById('afMod').value='${m.module}';applyActFilter()">${esc(m.module_name)} ${m.count}</a>`).join(" ｜ ")}</div>
+          <div style="margin-top:8px">${sum.top.map(i=>actCard(i,true)).join("")}</div></div>`
+      : `<div class="card" style="padding:12px;border-left:6px solid var(--ok)">
+          <b>✅ 没有待确认的重要动作</b>
+          <span class="muted">系统近期的自动操作都在可接受范围内;下面是完整流水。</span></div>`;
+    const qs=`need_id=${NEED}&min_level=${ACT_FILTER.min_level}&days=${ACT_FILTER.days}`
+      +(ACT_FILTER.module?`&module=${ACT_FILTER.module}`:"")
+      +(ACT_FILTER.unacked!==""?`&unacked=${ACT_FILTER.unacked}`:"");
+    const r=await api(`/actions?${qs}&limit=200`);
+    list.innerHTML = r.items.length
+      ? `<p class="sub">共 ${r.items.length} 条(按级别、时间排序)</p>`+r.items.map(i=>actCard(i,false)).join("")
+      : `<p class="muted">该筛选下没有记录。系统每做一个有后果的动作都会记在这里。</p>`;
+    refreshActionBadge();
+  }catch(e){ list.innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
+}
+async function ackOne(id){
+  try{
+    await api(`/actions/ack`,{method:"POST",body:JSON.stringify({ids:[id]})});
+    loadActions();
+  }catch(e){ alert(e.message); }
+}
+
 /* ---------- 数据源 ---------- */
 const canEditSrc=()=>["analyst","editor","admin"].includes(ROLE);
 async function vSources(){
   const v=document.getElementById("view");
   v.innerHTML=`<h2>数据源</h2>
     <p class="sub">种子源 + 自动发现的候选源。点入口链接可打开原站人工验证;不需要的源可删除/停用。</p>
+    <div id="srcAlert"></div>
     <div id="autoBox"></div>
     ${canEditSrc()?`<div class="card" style="margin:10px 0;padding:14px">
       <h3 style="margin:0 0 10px;font-size:15px">➕ 手动添加数据源</h3>
@@ -452,6 +596,7 @@ async function vSources(){
     <div id="srcTable">加载中…</div>`;
   loadSources();
   loadAutopilot();
+  moduleAlert("srcAlert", "sources");
   if(canEditSrc()){ pollHealth(); pollLocate(); pollProspect(); }   // 切回本页时自动接上正在跑的后台任务进度
 }
 async function loadSources(){
@@ -972,6 +1117,7 @@ async function vCrawl(){
   const canRun=["analyst","editor","admin"].includes(ROLE);
   v.innerHTML=`<h2>采集</h2>
     <p class="sub">后台采集任务:点击后立即返回,进度实时更新,切换页面/刷新回来仍能看到运行状态。</p>
+    <div id="crawlAlert"></div>
     <div class="banner">⚠️ 采集会真实访问网站。部分源有反爬/需登录,失败属正常,详情见下方日志。正式运行由后台定时自动跑;这里是手动试跑。<br>
       ♻️ 增量采集:列表/公众号按时间倒序,逐页逐条抓,连续遇到已采过的条目就判定“新的抓全了”自动停止翻页,不必跑完整站再去重(可在设置页调“翻页早停条数”;个别页面不变但持续更新的可标记不早停)。日志显示“新增 X、已采过跳过 Y”。</div>
     <div class="toolbar">
@@ -994,6 +1140,7 @@ async function vCrawl(){
     <div id="logBox"><span class="muted">运行/选中一个采集任务后显示日志</span></div>`;
   refreshJob();
   loadDocs();
+  moduleAlert("crawlAlert", "crawl");
 }
 function crawlStopPoll(){ if(CRAWL_POLL){ clearInterval(CRAWL_POLL); CRAWL_POLL=null; } }
 async function refreshJob(){

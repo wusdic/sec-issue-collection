@@ -245,6 +245,7 @@ def _run(job_id: int):
 
         # 并行抓取:多源同时抓,单源失败不影响其他
         canceled = False
+        results: list[dict] = []      # 本轮各源结果,用于收尾判断"是不是大面积失败"
         # 手动管理线程池:取消时用 shutdown(wait=False) 立即返回;若用 with,退出时会再
         # shutdown(wait=True) 等已在跑的源跑完(最长 source_time_budget_seconds),表现为"点了取消没反应"。
         ex = ThreadPoolExecutor(max_workers=cc)
@@ -273,6 +274,7 @@ def _run(job_id: int):
                              f"该源已运行 {f['elapsed']:.0f}s 仍未完成,可能卡住(超出单源上限 {slow_th}s)")
                         job = _tick(db, job_id) or job
                 res = fut.result()
+                results.append(res)
                 lvl = "info" if res["status"] == "ok" else "error"
                 if res.get("elapsed", 0) >= max(30, int(getattr(settings, "source_time_budget_seconds", 180) or 180)):
                     lvl = "warn"      # 明显超时的源单独标出来,便于定位"拖慢整批"的元凶
@@ -381,6 +383,16 @@ def _run(job_id: int):
         job.status = "done"
         job.phase = "完成"
         job.finished_at = datetime.utcnow()
+        # 大面积抓不到多半是网络/代理出问题,不是这些源同时坏了 —— 单独升级提示
+        _bad = [r for r in results if r.get("status") != "ok"]
+        if _bad and len(_bad) >= max(3, len(results) // 2):
+            from app.services import actions
+            actions.record(db, "crawl.mass_failure",
+                           f"本轮 {len(results)} 个源里有 {len(_bad)} 个抓取失败,"
+                           "占比过半,多半是网络/代理问题而非源本身",
+                           need_id=need.id, count=len(_bad),
+                           detail={"job_id": job_id,
+                                   "failed": [r.get("name") for r in _bad[:30]]})
         _log(db, job_id, "info", None,
              f"采集完成:新入库 {job.new_docs} 篇,相关 {job.kept_docs} 篇,过滤 {job.dropped_docs} 篇,"
              f"生成事件 {job.new_events} 条")
@@ -400,6 +412,10 @@ def _run(job_id: int):
                 job.status = "failed"
                 job.finished_at = datetime.utcnow()
                 job.error = head        # 页面只显示这一行,必须是"真正的原因",不能是栈头
+                from app.services import actions
+                actions.record(db, "crawl.job_failed", f"采集任务 #{job_id} 整批失败:{head}",
+                               need_id=job.need_id, target=f"job:{job_id}",
+                               detail={"job_id": job_id, "error": head})
             _log(db, job_id, "error", None, f"任务失败:{head}\n\n完整栈:\n{tb[-2500:]}")
             db.commit()
         except Exception:  # noqa: BLE001 最后兜底:换新会话也要把任务标记成失败,绝不留僵尸 running

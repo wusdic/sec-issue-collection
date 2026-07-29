@@ -159,6 +159,14 @@ def create_draft(db: Session, need_id: str, payload: dict, doc=None,
                            supports_fields=["*"]))
     needs_double = bool(confirmed_fields(payload))
     db.add(ReviewTask(event_id=ev.event_id, stage="extracted", needs_double=needs_double))
+    if needs_double:
+        # 含"已确认"金额 = 碰发布红线,必须显眼:发布前需 S1/S2 来源支撑且双人复核
+        from app.services import actions
+        actions.record(db, "event.money_confirmed",
+                       f"生成含『已确认』金额的事件 {ev.event_id}:{payload.get('title', '')}",
+                       need_id=need_id, target=ev.event_id,
+                       detail={"event_id": ev.event_id, "fields": confirmed_fields(payload),
+                               "source_credibility": source_credibility})
     db.flush()
     return ev
 

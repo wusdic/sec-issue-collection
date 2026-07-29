@@ -109,7 +109,9 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
     阈值优先取运行时设置 settings.discovery_auto_trial_threshold(设置页可调),
     留空/0 才回退 discovery.yaml 的 auto_trial_threshold。调低→自动入库更激进。
     """
+    from app.services import actions
     llm_scores = llm_scores or {}
+    auto_added: list[str] = []
     threshold = float(getattr(settings, "discovery_auto_trial_threshold", 0)
                       or _load_scoring().get("auto_trial_threshold", 8.0))
     keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
@@ -143,8 +145,13 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
             ))
             item["auto_trial"] = True
             item["name"] = display
+            auto_added.append(display)
         results.append(item)
     db.flush()
+    if auto_added:
+        actions.record(db, "source.auto_trial",
+                       f"新源自动入库试运行 {len(auto_added)} 个(S4 待定级):" + "、".join(auto_added[:10]),
+                       need_id=need_id, count=len(auto_added), detail={"names": auto_added[:50]})
     return sorted(results, key=lambda x: -x["score"])
 
 
@@ -190,6 +197,11 @@ def recompute_keys(db: Session) -> dict:
                     s.note = ((s.note or "") + tag)[:250]
             merged += 1
     db.flush()
+    if merged:
+        from app.services import actions
+        actions.record(db, "source.auto_merge",
+                       f"查重整理:{merged} 个重复源自动并入同采集目标的源(被并方转停用,可恢复)",
+                       count=merged, detail={"updated": len(srcs), "merged": merged})
     return {"updated": len(srcs), "merged": merged}
 
 

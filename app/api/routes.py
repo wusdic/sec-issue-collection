@@ -319,6 +319,55 @@ def coverage_summary(need_id: str = "sec_events", days: int | None = None,
     return coverage.summary(db, need_id, days)
 
 
+# ---------- 系统动作日志(分类分级 + 高级别优先提示) ----------
+
+@api.get("/actions")
+def list_actions(need_id: str | None = None, module: str | None = None,
+                 min_level: int = 1, unacked: bool | None = None, days: int = 30,
+                 limit: int = 100, db: Session = Depends(get_session),
+                 _: AppUser = Depends(current_user)):
+    """系统动作日志:每一个有后果的动作,按模块分类、按影响分级(1一般/2关注/3重要/4紧急)。"""
+    from app.services import actions
+    return {"levels": actions.LEVEL_NAME, "modules": actions.MODULE_NAME,
+            "notify_level": actions.NOTIFY_LEVEL,
+            "items": actions.feed(db, need_id, module, min_level, unacked, days, limit)}
+
+
+@api.get("/actions/summary")
+def actions_summary(need_id: str | None = None, days: int = 7,
+                    db: Session = Depends(get_session),
+                    _: AppUser = Depends(current_user)):
+    """高级别未确认动作汇总:导航角标与各模块顶部提示都用这一份。"""
+    from app.services import actions
+    return actions.summary(db, need_id, days)
+
+
+@api.get("/actions/alerts")
+def actions_alerts(need_id: str | None = None, module: str | None = None,
+                   db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """某个模块的优先提示(高级别 + 未确认)。没有就返回空,完全不打扰。"""
+    from app.services import actions
+    return actions.alerts(db, need_id, module)
+
+
+class AckIn(BaseModel):
+    ids: list[int] | None = None
+    module: str | None = None
+    all: bool = False
+    need_id: str | None = None
+
+
+@api.post("/actions/ack")
+def ack_actions(body: AckIn, db: Session = Depends(get_session),
+                user: AppUser = Depends(require_roles("analyst"))):
+    """确认已读:高级别动作看过就不再顶在页面上(日志仍完整保留)。"""
+    from app.services import actions
+    n = (actions.ack_all(db, body.need_id, body.module, user.id) if body.all
+         else actions.ack(db, body.ids or [], user.id))
+    db.commit()
+    return {"acked": n}
+
+
 @api.get("/autopilot")
 def autopilot_state(need_id: str = "sec_events", db: Session = Depends(get_session),
                     _: AppUser = Depends(current_user)):

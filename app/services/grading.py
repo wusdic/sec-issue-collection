@@ -20,7 +20,7 @@ import yaml
 
 from app.config import settings
 from app.models import RawDocument, Source, SourceProbe
-from app.services import url_tools
+from app.services import actions, url_tools
 
 # 政务/军队域名后缀:域名本身即可证明是官方来源
 _OFFICIAL_SUFFIXES = (".gov.cn", ".mil.cn")
@@ -129,12 +129,22 @@ def auto_grade(db, need_id: str, dry_run: bool = False) -> dict:
         if not dry_run:
             if act == "promote":
                 discovery.promote(db, s.id, d["credibility"])
+                actions.record(
+                    db,
+                    "source.auto_promote_s1" if d["credibility"] == "S1" else "source.auto_promote",
+                    f"「{s.name}」自动转正为 {d['credibility']}:{d['reason']}",
+                    need_id=need_id, target=s.entry_url or s.name,
+                    detail={"source_id": s.id, "credibility": d["credibility"], **d["metrics"]})
             elif act == "retire":
                 s.lifecycle = "retired"
                 cfg = dict(s.adapter_config or {})
                 cfg["auto_retired_at"] = datetime.utcnow().isoformat(timespec="seconds")
                 cfg["auto_graded_out"] = True
                 s.adapter_config = cfg
+                actions.record(db, "source.auto_graded_out",
+                               f"「{s.name}」相关率过低被自动淘汰:{d['reason']}",
+                               need_id=need_id, target=s.entry_url or s.name,
+                               detail={"source_id": s.id, **d["metrics"]})
             elif act == "suggest":
                 cfg = dict(s.adapter_config or {})
                 cfg["suggest_credibility"] = d["credibility"]

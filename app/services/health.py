@@ -79,6 +79,12 @@ def register_failure(db, src: Source, reason: str = "") -> dict:
     cfg["auto_retired_at"] = datetime.utcnow().isoformat(timespec="seconds")
     cfg.pop("watch_since", None)
     src.adapter_config = cfg
+    from app.services import actions
+    actions.record(db, "source.auto_retire",
+                   f"「{src.name}」连续 {src.fail_streak} 轮无产出且已 {quiet} 天没成功,自动停用",
+                   need_id=(src.serves_needs or [None])[0], target=src.entry_url or src.name,
+                   detail={"source_id": src.id, "fail_streak": src.fail_streak,
+                           "quiet_days": quiet, "reason": reason[:200]})
     out.update(retired=True,
                note=f"连续 {src.fail_streak} 轮无产出且已 {quiet} 天没有成功产出,自动停用"
                     f"({int(getattr(settings, 'retired_recheck_days', 0) or 0)} 天后会自动复检)")
@@ -162,6 +168,12 @@ def check_one(db, s: Source) -> dict:
     r = test_fetch_source(s.id, q=None, mark=True, db=db, _=None)
     good = bool(r.get("ok")) and int(r.get("count") or 0) > 0
     revived = good and was_retired and s.lifecycle != "retired"
+    if revived:
+        from app.services import actions
+        actions.record(db, "source.auto_revive",
+                       f"「{s.name}」复检能出数据,自动恢复启用(此前被自动停用)",
+                       need_id=(s.serves_needs or [None])[0], target=s.entry_url or s.name,
+                       detail={"source_id": s.id, "count": r.get("count", 0)})
     return {"id": s.id, "name": s.name, "ok": good, "count": r.get("count", 0),
             "retired": bool(r.get("retired")), "revived": revived,
             "watching": bool(r.get("watching")),

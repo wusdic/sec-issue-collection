@@ -315,6 +315,14 @@ def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tu
         result.append(child)
     cfg["columns_discovered_at"] = datetime.utcnow().isoformat()
     source.adapter_config = cfg
+    new_cols = [c for c, _v in validated]
+    if new_cols:
+        from app.services import actions
+        actions.record(db, "source.auto_columns",
+                       f"「{source.name}」自动定位到 {len(new_cols)} 个相关栏目,之后按栏目采集",
+                       need_id=(source.serves_needs or [None])[0], target=source.entry_url,
+                       detail={"source_id": source.id,
+                               "columns": [{"name": c["anchor"], "url": c["url"]} for c in new_cols]})
     db.flush()
     try:
         db.commit()          # 立即释放写锁,避免后续抓取期间继续占用
