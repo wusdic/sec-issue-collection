@@ -123,6 +123,21 @@ class SourceDiscoveryEvidence(Base):
     hit_count: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class SourceProbe(Base):
+    """候选源 LLM 相关度初评结果(抓其首页抽样标题让模型打 0-1 分)。
+
+    候选评分公式里 LLM 相关度权重最高之一,此前从没有人算过、恒为 0,等于候选排序
+    只看"被提到几次"不看"提的是不是这行的内容"。这张表把初评结果落地并按 TTL 复用。
+    """
+    __tablename__ = "source_probe"
+    identity_key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    relevance: Mapped[float] = mapped_column(Float, default=0.0)      # 0-1
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_titles: Mapped[list] = mapped_column(JSON, default=list)
+    probed_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True)           # False=抓不到/评不了
+
+
 class SourceBlacklist(Base):
     __tablename__ = "source_blacklist"
     identity_key: Mapped[str] = mapped_column(String(256), primary_key=True)

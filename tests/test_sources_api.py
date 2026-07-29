@@ -107,11 +107,16 @@ def test_batch_test_marks_and_auto_retires(db, admin, monkeypatch):
     from app.services import adapters
     from app.services.adapters import DiscoveredItem
     monkeypatch.setattr(settings, "source_auto_retire_fail_streak", 3)
+    monkeypatch.setattr(settings, "source_quiet_tolerance_days", 30)
 
     # 各源用不同注册域(identity_key 按 eTLD+1 归并,同域会合并)
     r = create_source(SourceIn(name="时好时坏源", entry_url="https://flakysrc.net/",
                                kind="page"), db, admin)
     sid = r["id"]
+    # 建源已久且从未成功 → 超出容忍期,连续失败才真会停用(新建的源只会转"观察中")
+    from datetime import datetime as _dt, timedelta as _td
+    db.get(Source, sid).created_at = _dt.utcnow() - _td(days=90)
+    db.flush()
 
     class _Empty:
         kind = "page"

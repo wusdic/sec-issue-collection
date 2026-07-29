@@ -171,6 +171,8 @@ function boot(){
 function go(k){
   if(k!=="crawl" && typeof crawlStopPoll==="function") crawlStopPoll();  // 离开采集页停轮询(重进自动恢复)
   if(k!=="sources" && typeof healthStopPoll==="function") healthStopPoll();  // 体检在服务端后台跑,离开只停轮询
+  if(k!=="sources" && typeof locStopPoll==="function") locStopPoll();
+  if(k!=="sources" && typeof prosStopPoll==="function") prosStopPoll();
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.dataset.k===k));
   ({dashboard:vDashboard,events:vEvents,review:vReview,followups:vFollowups,
     leads:vLeads,sources:vSources,crawl:vCrawl,digest:vDigest,settings:vSettings}[k])();
@@ -433,18 +435,22 @@ async function vSources(){
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
     </div>
     <div class="toolbar" style="margin:4px 0 10px">
+      <button class="ghost" onclick="prospectAll()" id="prosBtn">🧭 主动找源(搜新渠道)</button>
+      <button class="ghost" onclick="showCoverage()" id="covBtn">📊 覆盖度盘点</button>
       <button class="ghost" onclick="locateAll(false)" id="locBtn">🎯 精准定位栏目(未定位的源)</button>
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
       <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
       <button class="ghost" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
-      <span class="sub">定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
+      <span class="sub">主动找源:用「找源专用检索词」+ 覆盖空白方向去搜索引擎捞新渠道(不必等已采文章引用),再用大模型给候选打相关度分、达标自动入库试运行。覆盖度盘点:看哪些行业近期一条事件都没有,那就是该补源的方向。定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
     </div>
+    <div id="prosProgress" class="sub" style="margin-bottom:8px"></div>
+    <div id="covBox" style="margin-bottom:8px"></div>
     <div id="locProgress" class="sub" style="margin-bottom:8px"></div>
     <div id="dupBox" style="margin-bottom:8px"></div>
     <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
   loadSources();
-  if(canEditSrc()){ pollHealth(); pollLocate(); }   // 切回本页时自动接上正在跑的后台任务进度
+  if(canEditSrc()){ pollHealth(); pollLocate(); pollProspect(); }   // 切回本页时自动接上正在跑的后台任务进度
 }
 async function loadSources(){
   try{
@@ -463,10 +469,11 @@ async function loadSources(){
           : `<span class="muted">${s.kind==="query"?"检索型无固定入口":"—"}</span>`;
         const retired=s.lifecycle==="retired";
         const fail=s.fail_streak>=3?`<span class="pill warn" title="连续失败 ${s.fail_streak} 次,可能已失效">连败${s.fail_streak}</span>`:"";
+        const watch=s.watching&&!retired?`<span class="pill warn" title="连续几轮没新内容,但还在容忍期内(或是受保护的官方源),仍照常采集,只是盯着">观察中</span>`:"";
         const sub=s.parent_site_id?`<span class="pill info" title="由所属站点自动识别出来的栏目,随该站一起采集">子栏目</span>`:"";
         const prec=`<span class="pill ${s.precise?'ok':'warn'}" title="${esc(s.precision_hint||"")}">${esc(s.precision_label||"")}</span>`;
         return `<tr style="${retired?'opacity:.5':''}">
-        <td>${esc(s.name)} ${fail} ${sub}</td><td>${link}</td>
+        <td>${esc(s.name)} ${fail} ${watch} ${sub}</td><td>${link}</td>
         <td>${prec}</td>
         <td>${s.kind==="query"?"检索型":"页面型"}</td>
         <td><span class="pill ${s.credibility==="S1"?"ok":s.credibility==="S4"?"warn":"info"}">${s.credibility}</span></td>
@@ -474,7 +481,7 @@ async function loadSources(){
         <td>${s.docs_total}</td>
         <td class="muted">${s.last_crawled?esc(s.last_crawled.replace("T"," ").slice(0,16)):"从未"}</td>
         ${canEditSrc()?`<td style="white-space:nowrap">
-          ${retired?`<button class="ghost sm" title="误判停用时点这里恢复,并清零失败计数" onclick="restoreSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">恢复启用</button>`:''}
+          ${retired?`<button class="ghost sm" title="${s.auto_retired?"系统自动停用的,到期体检会自动复检恢复;也可点这里立刻恢复":"误判停用时点这里恢复"},并清零失败计数" onclick="restoreSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">恢复启用</button>`:''}
           ${retired?"":`<button class="ghost sm" onclick="testSource(${s.id},'${esc(s.name).replace(/'/g,"")}')">测试</button>`}
           ${(!retired&&s.kind==="page"&&isRootUrl(s.entry_url))?
             `<button class="ghost sm" title="抓根页识别出相关栏目并落库,之后只抓这些栏目(不再抓首页)" onclick="locateCols(${s.id},'${esc(s.name).replace(/'/g,"")}')">定位栏目</button>
@@ -548,13 +555,13 @@ function renderHealth(h){
   const bar=`<div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:4px 0">
       <div style="height:100%;width:${pct}%;background:var(--brand);transition:width .3s"></div></div>`;
   if(h.running){
-    prog.innerHTML=`<b>🩺 体检进行中</b> ${done}/${total}(${pct}%)｜能出数据 ${h.ok||0}｜抓不到 ${h.fail||0}｜自动停用 ${h.retired||0}
+    prog.innerHTML=`<b>🩺 体检进行中</b> ${done}/${total}(${pct}%)${h.rechecking?`(含 ${h.rechecking} 个停用源复检)`:""}｜能出数据 ${h.ok||0}｜抓不到 ${h.fail||0}｜自动停用 ${h.retired||0}
       <button class="ghost sm" style="margin-left:8px" onclick="cancelHealth()">取消</button>${bar}
       <span class="muted">当前:${esc(h.current||"")}</span>`;
     return true;
   }
   const bad=(h.results||[]).filter(r=>!r.ok);
-  prog.innerHTML=`<span class="pill ok">体检完成</span> 共 ${total} 个｜能出数据 ${h.ok||0}｜抓不到 ${h.fail||0}｜本轮自动停用 ${h.retired||0}
+  prog.innerHTML=`<span class="pill ok">体检完成</span> 共 ${total} 个｜能出数据 ${h.ok||0}｜抓不到 ${h.fail||0}｜本轮自动停用 ${h.retired||0}｜转观察中 ${h.watching||0}｜复检恢复 ${h.revived||0}
     ${h.canceled?'<span class="pill warn">已取消</span>':''}${bar}
     ${bad.length?`<details style="margin-top:6px"><summary class="muted">抓不到的 ${bad.length} 个(点开看原因)</summary>
       <ul style="margin:4px 0;padding-left:18px">${bad.slice(0,50).map(r=>
@@ -610,6 +617,84 @@ async function locateCols(id,name){
     loadSources();
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }
+/* ---- 主动找源(D5:去搜索引擎捞新渠道 + LLM 相关度初评 + 评分自动入库) ---- */
+let PROS_POLL=null;
+function prosStopPoll(){ if(PROS_POLL){ clearInterval(PROS_POLL); PROS_POLL=null; } }
+async function prospectAll(){
+  let q={base:[],from_coverage:[],total:0};
+  try{ q=await api(`/sources/prospect/queries?need_id=${NEED}`); }catch(e){}
+  if(!confirm(`主动去搜索引擎找新渠道:本轮 ${q.total} 条找源词`
+    +`(人工维护 ${q.base.length} 条 + 覆盖空白自动生成 ${q.from_coverage.length} 条)。\n`
+    +`结果域名进候选池,再用大模型给每个候选打相关度分,达标的自动建为 S4 试运行源(仍需人工定级转正)。\n`
+    +`任务在服务端后台跑,切页面/刷新都不会中断。继续?`)) return;
+  try{
+    await api(`/sources/prospect?need_id=${NEED}`,{method:"POST"});
+    pollProspect();
+  }catch(e){ alert("启动找源失败:"+e.message); }
+}
+async function cancelProspect(){
+  try{ await api(`/sources/prospect/cancel`,{method:"POST"}); toast("已请求取消"); }catch(e){}
+}
+function renderProspect(h){
+  const box=document.getElementById("prosProgress"); if(!box) return false;
+  if(!h || (!h.running && !h.finished_at)){ box.innerHTML=""; return false; }
+  const total=h.total||0, done=h.done||0, pct= total? Math.round(done/total*100):0;
+  const bar=`<div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:4px 0">
+      <div style="height:100%;width:${pct}%;background:var(--brand);transition:width .3s"></div></div>`;
+  if(h.running){
+    box.innerHTML=`<b>🧭 主动找源中</b> ${esc(h.phase||"")} ${total?`${done}/${total}(${pct}%)`:""}
+      <button class="ghost sm" style="margin-left:8px" onclick="cancelProspect()">取消</button>${bar}
+      <span class="muted">当前:${esc(h.current||"")}</span>`;
+    return true;
+  }
+  box.innerHTML=`<span class="pill ${h.error?'warn':'ok'}">找源完成</span>
+    搜索结果 ${h.hits||0} 条｜新候选渠道 ${h.new_candidates||0} 个｜LLM 初评 ${h.probed||0} 个｜
+    达标自动入库 <b>${h.auto_trial||0}</b> 个${h.canceled?' <span class="pill warn">已取消</span>':''}
+    ${h.error?`<div class="pill bad" style="margin-top:4px;display:block;white-space:pre-wrap">${esc(h.error)}</div>`:''}
+    ${(h.trial_names&&h.trial_names.length)?`<div class="sub" style="margin-top:4px">本轮入库(S4 试运行,待人工定级):
+      ${h.trial_names.map(n=>`<span class="pill info">${esc(n)}</span>`).join(" ")}</div>`:''}`;
+  return false;
+}
+async function pollProspect(){
+  prosStopPoll();
+  const tick=async()=>{
+    try{
+      const h=await api(`/sources/prospect`);
+      if(!renderProspect(h)){ prosStopPoll(); loadSources(); }
+    }catch(e){ prosStopPoll(); }
+  };
+  await tick();
+  PROS_POLL=setInterval(tick,2000);
+}
+
+/* ---- 覆盖度盘点:缺哪个行业 = 该补哪块源 ---- */
+async function showCoverage(){
+  const box=document.getElementById("covBox");
+  box.innerHTML=`<span class="muted">统计中…</span>`;
+  try{
+    const c=await api(`/coverage?need_id=${NEED}`);
+    const rows=c.industries.map(i=>`<tr>
+      <td>${esc(i.industry)}</td>
+      <td style="text-align:right">${i.events}</td>
+      <td><span class="pill ${i.level==="空白"?"bad":(i.level==="偏少"?"warn":"ok")}">${esc(i.level)}</span></td>
+      <td class="muted" style="font-size:12px">${esc((i.sub||[]).slice(0,6).join("、"))}</td></tr>`).join("");
+    box.innerHTML=`<div class="card" style="padding:12px">
+      <b>📊 覆盖度盘点</b> <span class="muted">近 ${c.window_days} 天,低于 ${c.min_events} 条即判为空白</span>
+      <div style="margin:6px 0">源 ${c.sources_total} 个(生效 ${c.sources_active},其中近期真正出过内容 <b>${c.sources_producing}</b>)
+        ｜覆盖空白行业 <b>${c.gap_count}</b> 个</div>
+      <div style="max-height:320px;overflow:auto"><table><thead><tr>
+        <th>行业</th><th style="text-align:right">近期事件</th><th>覆盖</th><th>二级分类</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+      ${c.prospect_queries.length?`<details style="margin-top:8px"><summary class="muted">
+        据此自动生成的找源方向词 ${c.prospect_queries.length} 条(点「🧭 主动找源」时会一起跑)</summary>
+        <div class="sub" style="margin-top:4px">${c.prospect_queries.map(q=>`<span class="pill">${esc(q)}</span>`).join(" ")}</div></details>`:''}
+      ${c.sources_silent.length?`<details style="margin-top:6px"><summary class="muted">
+        近 ${c.window_days} 天一条都没产出的源 ${c.sources_silent.length} 个(不代表坏,可能只是低频)</summary>
+        <div class="sub" style="margin-top:4px">${c.sources_silent.map(n=>`<span class="pill">${esc(n)}</span>`).join(" ")}</div></details>`:''}
+    </div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+
 let LOC_POLL=null;
 function locStopPoll(){ if(LOC_POLL){ clearInterval(LOC_POLL); LOC_POLL=null; } }
 async function locateAll(force){

@@ -79,10 +79,13 @@ def test_pick_sources_limit_zero_means_all(db, need):
 # ---------------- 日常采集也自动停用坏源 ----------------
 
 def test_crawl_failure_auto_retires_source(db, need, monkeypatch):
+    """长期没产出的坏源仍会自动停用——但要"连续失败"与"很久没成功"两个条件都成立。"""
     monkeypatch.setattr(settings, "source_auto_retire_fail_streak", 2)
+    monkeypatch.setattr(settings, "source_quiet_tolerance_days", 30)
+    old_success = datetime.utcnow() - timedelta(days=90)     # 已 90 天没成功过 → 超出容忍
     src = Source(name="坏源", kind="page", adapter="generic_rss", credibility="S3", tier="B",
                  lifecycle="active", serves_needs=[need.id], entry_url="https://bad.example.com/col",
-                 fail_streak=1)
+                 fail_streak=1, last_success_at=old_success)
     db.add(src); db.flush()
 
     class _Boom:

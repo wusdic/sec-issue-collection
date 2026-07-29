@@ -13,7 +13,9 @@ from app.config import settings
 from app.models import (
     CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
-from app.services import archive, columns, dedup, diagnostics, discovery, fetcher, reputation, url_tools
+from app.services import (
+    archive, columns, dedup, diagnostics, discovery, fetcher, health, reputation, url_tools,
+)
 from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
 from app.services.errors import error_headline
 from app.services.events import create_draft
@@ -612,17 +614,15 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                     max_pages, early_enabled, stop_th, do_archive, stats, deadline, neg)
         run.status = "ok"
         if found > 0:
-            source.last_success_at = datetime.utcnow()
-            source.fail_streak = 0
+            health.register_success(db, source)
         else:
-            # 解析出 0 条不是"成功":此前无条件置 ok 并清零 fail_streak,导致选择器失效/被反爬的源
-            # 永远不会被自动停用,还因 last_success_at 被刷新而排到轮转末尾,长期静默占用采集名额。
-            source.fail_streak = (source.fail_streak or 0) + 1
+            # 解析出 0 条不是"成功"(选择器失效/被反爬也长这样),计入源健康;
+            # 但判死留足冗余度:见 health.register_failure —— 还要距上次成功超过容忍天数,
+            # 且 S1/S2 官方源永不自动停用,否则低频权威源会被"连续 3 天没新稿"误杀。
+            v = health.register_failure(db, source, "本轮解析出 0 条")
             run.error = (run.error or "") + "[本轮解析出 0 条,计入源健康]"
-            th = int(getattr(settings, "source_auto_retire_fail_streak", 0) or 0)
-            if th > 0 and source.fail_streak >= th and source.lifecycle in ("active", "trial"):
-                source.lifecycle = "retired"
-                run.error += f"[连续 {source.fail_streak} 轮无产出,已自动停用]" 
+            if v["note"]:
+                run.error += f"[{v['note']}]"
     except Exception as e:  # noqa: BLE001 单源失败不拖垮批次
         err = error_headline(e, 500)
         # 先回滚:失败可能来自 flush(唯一约束/锁超时),会话已中毒,不回滚则后续写全部抛
@@ -635,12 +635,9 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
         source = db.get(Source, source_id) or source
         run.status = "failed"
         run.error = err
-        source.fail_streak = (source.fail_streak or 0) + 1
-        # 日常采集也应用"连续失败自动停用"(此前只有手动体检才生效,坏源会一直重试)
-        th = int(getattr(settings, "source_auto_retire_fail_streak", 0) or 0)
-        if th > 0 and source.fail_streak >= th and source.lifecycle in ("active", "trial"):
-            source.lifecycle = "retired"
-            run.error = (err + f" [连续失败{source.fail_streak}次,已自动停用]")[:500]
+        v = health.register_failure(db, source, err)   # 同一套带冗余度的判定,不轻易判死
+        if v["note"]:
+            run.error = (err + f" [{v['note']}]")[:500]
     run.urls_found = found
     run.urls_new = stats["new"]
     run.urls_skipped = stats["skipped"]

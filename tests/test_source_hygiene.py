@@ -70,9 +70,12 @@ def test_multi_channel_candidate_can_register(db, need, monkeypatch):
 def test_zero_yield_counts_as_unhealthy(db, need, monkeypatch):
     """解析出 0 条不再算成功:此前无条件 ok 并清零 fail_streak,坏源永不停用。"""
     monkeypatch.setattr(settings, "source_auto_retire_fail_streak", 2)
+    monkeypatch.setattr(settings, "source_quiet_tolerance_days", 30)
+    from datetime import datetime as _dt, timedelta as _td
     src = Source(name="空产出源", kind="page", adapter="generic_list", credibility="S3", tier="B",
                  lifecycle="active", serves_needs=[need.id], entry_url="https://empty.example.com/c",
-                 fail_streak=1, last_success_at=None)
+                 fail_streak=1, last_success_at=None,
+                 created_at=_dt.utcnow() - _td(days=90))   # 建源已久且从未成功 → 超出容忍期
     db.add(src); db.flush()
 
     class _Empty:

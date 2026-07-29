@@ -19,6 +19,7 @@ from app.services import leads as leads_svc
 from app.services import review as review_svc
 from app.services import url_tools
 from app.services import wechat
+from app.services.errors import error_headline
 from app.services.events import PublishError, log_change, update_payload
 from app.services.extraction import load_record_schema
 from app.services.profiles import get_active_profile
@@ -83,6 +84,8 @@ def list_sources(lifecycle: str | None = None, db: Session = Depends(get_session
                     "manual_assist": s.manual_assist, "docs_total": s.stat_docs_total,
                     "fail_streak": s.fail_streak, "discovered_from": s.discovered_from,
                     "parent_site_id": (s.adapter_config or {}).get("parent_site_id"),
+                    "watching": bool((s.adapter_config or {}).get("watch_since")),
+                    "auto_retired": bool((s.adapter_config or {}).get("auto_retired_at")),
                     "precision": p["level"], "precise": p["precise"],
                     "precision_label": p["label"], "precision_hint": p["hint"],
                     "last_crawled": s.last_success_at.isoformat() if s.last_success_at else None})
@@ -273,6 +276,49 @@ def cancel_locate_columns(_: AppUser = Depends(require_roles("analyst"))):
     return {"ok": True, "note": "已请求取消,当前源定位完即停"}
 
 
+@api.post("/sources/prospect")
+def start_prospect(need_id: str = "sec_events",
+                   _: AppUser = Depends(require_roles("analyst"))):
+    """启动"主动找源"后台任务:用找源专用检索词去搜索引擎捞新渠道 → LLM 相关度初评 → 评分自动入库。
+
+    与被动发现(顺着已采文章的引用)互补:没被任何文章引用过的好渠道也能被找到。
+    """
+    from app.services import prospect
+    return prospect.start(need_id)
+
+
+@api.get("/sources/prospect")
+def prospect_status(_: AppUser = Depends(current_user)):
+    from app.services import prospect
+    return prospect.status()
+
+
+@api.post("/sources/prospect/cancel")
+def cancel_prospect(_: AppUser = Depends(require_roles("analyst"))):
+    from app.services import prospect
+    prospect.cancel()
+    return {"ok": True, "note": "已请求取消,当前检索词跑完即停"}
+
+
+@api.get("/sources/prospect/queries")
+def prospect_queries(need_id: str = "sec_events", db: Session = Depends(get_session),
+                     _: AppUser = Depends(current_user)):
+    """本轮会用的找源检索词 = 人工维护的基础词 + 覆盖空白自动生成的方向词。"""
+    from app.services import coverage, prospect
+    base = prospect.base_queries()
+    auto = coverage.prospect_queries(db, need_id)
+    return {"base": base, "from_coverage": auto, "total": len(prospect.build_queries(db, need_id))}
+
+
+@api.get("/coverage")
+def coverage_summary(need_id: str = "sec_events", days: int | None = None,
+                     db: Session = Depends(get_session),
+                     _: AppUser = Depends(current_user)):
+    """覆盖度盘点:哪些行业近 N 天一条事件都没有(=该去找源的方向)、哪些源在空跑。"""
+    from app.services import coverage
+    return coverage.summary(db, need_id, days)
+
+
 @api.get("/sources/duplicates")
 def source_duplicates(need_id: str | None = None, db: Session = Depends(get_session),
                       _: AppUser = Depends(current_user)):
@@ -418,23 +464,24 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
     if not src:
         raise HTTPException(404, "源不存在")
 
+    _health: dict = {}          # 本次健康判定明细(观察中/停用原因),回传给页面
+
     def _record(ok_data: bool):
-        """把成败计入源健康,返回是否因连续失败被自动停用。"""
+        """把成败计入源健康(带冗余度:见 health.register_failure),返回是否被自动停用。"""
         if not mark:
             return False
+        from app.services import health as health_svc
         if ok_data:
-            src.fail_streak = 0
-            src.last_success_at = _dt.utcnow()
+            # 复检成功的自动停用源直接恢复:误杀能自愈
+            if src.lifecycle == "retired" and not (src.adapter_config or {}).get("manually_retired"):
+                src.lifecycle = "active"
+            health_svc.register_success(db, src)
             db.commit()
             return False
-        src.fail_streak = (src.fail_streak or 0) + 1
-        retired = False
-        if src.lifecycle in ("active", "trial") and \
-                src.fail_streak >= settings.source_auto_retire_fail_streak:
-            src.lifecycle = "retired"
-            retired = True
+        v = health_svc.register_failure(db, src, "试抓无结果")
+        _health.update(v)
         db.commit()
-        return retired
+        return v["retired"]
 
     adapter = get_adapter(src)
     t0 = _time.time()
@@ -456,9 +503,10 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
             items = adapter.discover_page(0) or []
     except Exception as e:  # noqa: BLE001
         retired = _record(False)
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300],
+        return {"ok": False, "error": error_headline(e, 300),
                 "adapter": src.adapter, "kind": src.kind,
-                "fail_streak": src.fail_streak, "retired": retired}
+                "fail_streak": src.fail_streak, "retired": retired,
+                "watching": bool(_health.get("watching")), "health_note": _health.get("note", "")}
     elapsed = round(_time.time() - t0, 1)
     retired = _record(bool(items))          # 抓到 0 条也算一次失败(计入健康)
     sample = [{"url": i.url, "title": i.title,
@@ -466,6 +514,7 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
     return {"ok": True, "count": len(items), "adapter": src.adapter, "kind": src.kind,
             "query": used_q, "elapsed": elapsed, "items": sample,
             "fail_streak": src.fail_streak, "retired": retired,
+            "watching": bool(_health.get("watching")), "health_note": _health.get("note", ""),
             "hint": ("能抓到内容,可放心保留" if items else
                      "没抓到条目:该站可能需浏览器渲染/登录、反爬、或入口链接/适配器不匹配,"
                      "建议改用 RSS 地址或换源")}
@@ -476,15 +525,21 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
 @api.get("/source-candidates")
 def source_candidates(min_score: float = 0, db: Session = Depends(get_session),
                       _: AppUser = Depends(current_user)):
+    from app.models import SourceProbe
     keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
     out = []
     for key in keys:
-        score = discovery_svc.candidate_score(db, key)
+        probe = db.get(SourceProbe, key)
+        rel = float(probe.relevance) if (probe and probe.ok) else 0.0
+        score = discovery_svc.candidate_score(db, key, rel)   # 含 LLM 内容相关度,不再恒为 0
         if score >= min_score:
             evs = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
             out.append({"identity_key": key, "score": score,
                         "channels": sorted({e.channel for e in evs}),
-                        "hits": sum(e.hit_count for e in evs)})
+                        "hits": sum(e.hit_count for e in evs),
+                        "llm_relevance": rel if probe else None,
+                        "llm_reason": (probe.reason if probe else None),
+                        "probed": bool(probe)})
     return sorted(out, key=lambda x: -x["score"])
 
 

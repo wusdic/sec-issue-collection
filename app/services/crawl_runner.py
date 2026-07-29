@@ -349,7 +349,9 @@ def _run(job_id: int):
         job.phase = "收尾(候选源自动入库/线索刷新)"
         db.commit()
         try:
-            cands = discovery.evaluate_candidates(db, need.id)
+            from app.services import prospect as prospect_svc
+            # 带上候选源 LLM 相关度(评分公式里权重最高之一,此前从没人算过恒为 0)
+            cands = discovery.evaluate_candidates(db, need.id, prospect_svc.llm_scores(db))
             auto = [c for c in cands if c.get("auto_trial")]
             if auto:
                 names = "、".join(c.get("name") or c["identity_key"] for c in auto[:10])

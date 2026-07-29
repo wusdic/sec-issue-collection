@@ -91,8 +91,10 @@ class Settings:
     sqlite_busy_timeout_ms: int = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "30000"))
     # 根域页面型源自动发现相关栏目:每站最多注册/抓取的栏目数
     auto_column_max: int = int(os.getenv("AUTO_COLUMN_MAX", "8"))
-    # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库
-    column_min_articles: int = int(os.getenv("COLUMN_MIN_ARTICLES", "5"))
+    # 栏目验证:候选栏目页需≥这么多篇文章且一致性达标才确认为有效栏目并入库。
+    # 默认 3(不是 5):低频栏目(如一年发几条的执法通报)整页也就三五条,卡太严会把
+    # 最该采的权威栏目挡在门外,宁可多收几个再靠内容相关度筛。
+    column_min_articles: int = int(os.getenv("COLUMN_MIN_ARTICLES", "3"))
     column_consistency_min: float = float(os.getenv("COLUMN_CONSISTENCY_MIN", "0.5"))
     # 栏目内容相关度下限:栏目里文章标题命中安全相关词的比例。结构一致只能说明"是个栏目",
     # 还必须内容相关才算"能精准定位到相关内容的栏目",否则会把"要闻/领导活动"当栏目抓进来。
@@ -122,6 +124,29 @@ class Settings:
 
     # 源健康:连续失败(采集异常/试抓抓不到)达到此次数即自动标记停用(不再采集)。默认 3
     source_auto_retire_fail_streak: int = int(os.getenv("SOURCE_AUTO_RETIRE_FAIL_STREAK", "3"))
+    # 冗余度:没有哪个站天天出稿,"连续 N 次没产出"不等于源坏了。自动停用还需同时满足
+    # "距上次成功产出已超过这么多天";未达天数只标『观察中』不停用。默认 30 天
+    source_quiet_tolerance_days: int = int(os.getenv("SOURCE_QUIET_TOLERANCE_DAYS", "30"))
+    # 这些可信度等级的源永不自动停用(官方权威源低频但不可替代,误杀代价远大于留着)
+    auto_retire_protect_credibility: str = os.getenv("AUTO_RETIRE_PROTECT_CREDIBILITY", "S1,S2")
+    # 自动停用的源隔这么多天自动复检一次,能出数据就自动恢复(误杀自愈)。0=不复检
+    retired_recheck_days: int = int(os.getenv("RETIRED_RECHECK_DAYS", "14"))
+
+    # 主动找源(D5):用"找源专用检索词"定期去搜索引擎捞新渠道,而不是只等已采内容引用
+    prospect_enabled: bool = os.getenv("PROSPECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "baidu_search,bing_search")
+    prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
+    prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "40"))       # 单轮最多跑多少条找源词
+    prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)
+    # 候选源 LLM 相关度初评:抓候选站首页抽样标题,让模型判"是否持续产出国内安全事件内容"
+    probe_llm_enabled: bool = os.getenv("PROBE_LLM_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    probe_sample_titles: int = int(os.getenv("PROBE_SAMPLE_TITLES", "12"))
+    probe_ttl_days: int = int(os.getenv("PROBE_TTL_DAYS", "30"))               # 初评结果多久重评一次
+    probe_max_per_round: int = int(os.getenv("PROBE_MAX_PER_ROUND", "20"))     # 单轮最多评多少个候选
+
+    # 覆盖度盘点:按行业统计近 N 天事件数,低于下限即判为"覆盖空白",据此生成找源方向
+    coverage_window_days: int = int(os.getenv("COVERAGE_WINDOW_DAYS", "90"))
+    coverage_min_events: int = int(os.getenv("COVERAGE_MIN_EVENTS", "3"))
 
     # 浏览器渲染内存保护:同一浏览器实例连续渲染这么多页后回收重启,防长跑内存膨胀。0=不回收
     render_recycle_after: int = int(os.getenv("RENDER_RECYCLE_AFTER", "300"))

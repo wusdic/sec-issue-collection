@@ -39,6 +39,25 @@ def _tick():
         db.close()
     from app.services import crawl_runner
     crawl_runner.start_job(need_id, settings.daily_auto_limit_sources, user_id=None)
+    _weekly_prospect(need_id, now)
+
+
+def _weekly_prospect(need_id: str, now: datetime):
+    """每周一次主动找源:用找源专用检索词 + 覆盖空白方向去搜索引擎捞新渠道。
+
+    源库要"越来越全",光靠被动引用发现不够——没被任何已采文章引用过的渠道永远发现不了。
+    与采集同一时点触发,各跑各的后台线程,互不阻塞。
+    """
+    if not getattr(settings, "prospect_enabled", True):
+        return
+    if now.weekday() != int(getattr(settings, "prospect_weekday", 0) or 0):
+        return
+    try:
+        from app.services import prospect
+        if not prospect.status().get("running"):
+            prospect.start(need_id)
+    except Exception:  # noqa: BLE001 找源失败不影响当天采集
+        pass
 
 
 def _loop():

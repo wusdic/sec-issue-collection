@@ -4,7 +4,7 @@
 改为后台线程执行,进度存在进程内(切页/刷新都能查),可取消。
 """
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.config import settings
 from app.db import SessionLocal
@@ -13,6 +13,101 @@ from app.models import Source
 _lock = threading.Lock()
 _state: dict = {"running": False}
 _cancel = threading.Event()
+
+
+# ---------------- 源健康判定(带冗余度,不轻易判死) ----------------
+
+def _protected(src: Source) -> bool:
+    """这些可信度等级的源永不自动停用:官方权威源本来就低频,误杀代价远大于留着空跑。"""
+    keep = {c.strip() for c in str(getattr(settings, "auto_retire_protect_credibility", "")).split(",")}
+    return bool(src.credibility and src.credibility in keep)
+
+
+def _quiet_days(src: Source) -> int:
+    """距上次成功产出多少天(从未成功过则按建源时间算)。"""
+    ref = src.last_success_at or src.created_at
+    if not ref:
+        return 10 ** 6
+    return max(0, (datetime.utcnow() - ref).days)
+
+
+def register_success(db, src: Source):
+    """本轮出数据了:清零失败计数并撤销"观察中"。"""
+    src.fail_streak = 0
+    src.last_success_at = datetime.utcnow()
+    cfg = dict(src.adapter_config or {})
+    if cfg.pop("watch_since", None) is not None or cfg.pop("auto_retired_at", None) is not None:
+        src.adapter_config = cfg
+    db.flush()
+
+
+def register_failure(db, src: Source, reason: str = "") -> dict:
+    """本轮没出数据:累加失败计数,但**不轻易停用**。
+
+    冗余度:没有哪个站天天出稿,"连续 N 次没产出"不等于源坏了。只有同时满足
+    ① 连续失败达 source_auto_retire_fail_streak,且
+    ② 距上次成功产出已超过 source_quiet_tolerance_days(默认 30 天)
+    才自动停用;S1/S2 官方源无论如何都不自动停用。未达标的只标『观察中』,照常参与采集。
+    返回 {retired, watching, fail_streak, quiet_days, note}。
+    """
+    src.fail_streak = (src.fail_streak or 0) + 1
+    th = int(getattr(settings, "source_auto_retire_fail_streak", 0) or 0)
+    tol = int(getattr(settings, "source_quiet_tolerance_days", 0) or 0)
+    quiet = _quiet_days(src)
+    cfg = dict(src.adapter_config or {})
+    out = {"retired": False, "watching": False, "fail_streak": src.fail_streak,
+           "quiet_days": quiet, "note": ""}
+    if src.lifecycle not in ("active", "trial") or th <= 0 or src.fail_streak < th:
+        db.flush()
+        return out
+    if _protected(src):
+        cfg.setdefault("watch_since", datetime.utcnow().isoformat(timespec="seconds"))
+        src.adapter_config = cfg
+        out.update(watching=True,
+                   note=f"连续 {src.fail_streak} 轮无产出,但 {src.credibility} 官方源不自动停用,转『观察中』")
+        db.flush()
+        return out
+    if quiet < tol:
+        cfg.setdefault("watch_since", datetime.utcnow().isoformat(timespec="seconds"))
+        src.adapter_config = cfg
+        out.update(watching=True,
+                   note=f"连续 {src.fail_streak} 轮无产出,但距上次成功仅 {quiet} 天"
+                        f"(容忍 {tol} 天),转『观察中』继续采,暂不停用")
+        db.flush()
+        return out
+    src.lifecycle = "retired"
+    cfg["auto_retired_at"] = datetime.utcnow().isoformat(timespec="seconds")
+    cfg.pop("watch_since", None)
+    src.adapter_config = cfg
+    out.update(retired=True,
+               note=f"连续 {src.fail_streak} 轮无产出且已 {quiet} 天没有成功产出,自动停用"
+                    f"({int(getattr(settings, 'retired_recheck_days', 0) or 0)} 天后会自动复检)")
+    db.flush()
+    return out
+
+
+def recheck_due(db, need_id: str) -> list[Source]:
+    """到期该复检的自动停用源:误杀能自愈——隔 retired_recheck_days 天再试一次,能出数据就恢复。"""
+    days = int(getattr(settings, "retired_recheck_days", 0) or 0)
+    if days <= 0:
+        return []
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    out = []
+    for s in db.query(Source).filter(Source.lifecycle == "retired").all():
+        if need_id not in (s.serves_needs or []):
+            continue
+        cfg = s.adapter_config or {}
+        if cfg.get("manually_retired"):
+            continue                       # 人工停的尊重人工,不自动复活
+        ts = cfg.get("auto_retired_at")
+        if not ts:
+            continue                       # 不是自动停的(或老数据没记时间),不动
+        try:
+            if datetime.fromisoformat(ts) <= cutoff:
+                out.append(s)
+        except ValueError:
+            continue
+    return out
 
 
 def status() -> dict:
@@ -49,7 +144,10 @@ def _run(need_id: str):
     try:
         srcs = [s for s in db.query(Source).filter(Source.lifecycle.in_(["active", "trial"])).all()
                 if need_id in (s.serves_needs or [])]
-        _set(total=len(srcs))
+        # 误杀自愈:到期的自动停用源一并复检,能出数据就自动恢复(见 _record 的 ok 分支)
+        due = recheck_due(db, need_id)
+        srcs += due
+        _set(total=len(srcs), rechecking=len(due))
         from app.api.routes import test_fetch_source
         for s in srcs:
             if _cancel.is_set():
@@ -57,16 +155,24 @@ def _run(need_id: str):
                 break
             _set(current=s.name)
             try:
+                was_retired = s.lifecycle == "retired"
                 r = test_fetch_source(s.id, q=None, mark=True, db=db, _=None)
                 good = bool(r.get("ok")) and int(r.get("count") or 0) > 0
+                revived = good and was_retired and s.lifecycle != "retired"
                 with _lock:
                     _state["ok" if good else "fail"] += 1
                     if r.get("retired"):
                         _state["retired"] += 1
+                    if revived:
+                        _state["revived"] = _state.get("revived", 0) + 1
+                    if r.get("watching"):
+                        _state["watching"] = _state.get("watching", 0) + 1
                     _state["results"].append({
                         "id": s.id, "name": s.name, "ok": good,
                         "count": r.get("count", 0), "retired": bool(r.get("retired")),
-                        "hint": r.get("hint") or r.get("error") or ""})
+                        "revived": revived, "watching": bool(r.get("watching")),
+                        "hint": (r.get("health_note") or r.get("hint")
+                                 or r.get("error") or ("复检通过,已自动恢复" if revived else ""))})
             except Exception as e:  # noqa: BLE001 单源异常不终止体检
                 with _lock:
                     _state["fail"] += 1

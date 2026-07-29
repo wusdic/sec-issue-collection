@@ -31,7 +31,9 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 | `app/services/review.py` | 复核状态机 + 金额双签 |
 | `app/services/followup.py` | 生命周期回访 T+N + 一键检索包 |
 | `app/services/leads.py` | 四维产品映射 + 线索评分 + 采购窗口三阶段 |
-| `app/services/discovery.py` | 源发现引擎:证据登记/评分/自动 trial/黑名单 |
+| `app/services/discovery.py` | 源发现引擎(被动):采集伴生的证据登记/评分/自动 trial/黑名单 |
+| `app/services/prospect.py` | **主动找源(D5)**:找源专用检索词捞新渠道 + 候选源 LLM 相关度初评 |
+| `app/services/coverage.py` | **覆盖度盘点**:哪些行业近期零事件 → 自动生成该方向的找源词 |
 | `app/services/columns.py` | **采集源精准化**:根域站点自动识别相关栏目 + 三重验证(篇数/结构一致性/内容相关度)+ 落库复用 |
 | `app/services/locate.py` | 批量「精准定位栏目」后台任务(可查进度/可取消) |
 | `app/services/health.py` | 源体检:后台批量试抓、连续失败自动停用、误判恢复 |
@@ -68,6 +70,38 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
    页面上标红"还没精准到栏目"的源,可单个「定位栏目」或批量「🎯 精准定位栏目」。
 
 `pytest tests/test_precise_sources.py` 覆盖上述全部行为。
+
+## 源库怎么做到"越来越全、越来越准"
+
+**越来越全 —— 被动 + 主动两路进候选池**
+
+1. 被动(伴生):每篇入库文档顺手登记 3 类线索——搜索结果域名 `event_search`、正文
+   「来源/转载自」`citation`、署名公众号 `wechat_reference`(`pipeline.ingest_item`);
+2. 主动(D5):每周用「找源专用检索词」去搜索引擎捞渠道(`prospect.run_once`)。词表 =
+   `config/discovery.yaml` 人工维护的基础词 **+ 覆盖空白自动生成的方向词**;
+3. 覆盖度闭环:`coverage.industry_coverage` 按词表行业统计近 90 天事件数,低于下限判为
+   空白 → `coverage.prospect_queries` 翻译成该行业的找源词喂回第 2 步,"缺哪块找哪块";
+4. 一站裂变多栏目(`columns.discover_and_persist`)、直连抓不到转站内检索兜底。
+
+**越来越准 —— 四道闸门,但都留了冗余**
+
+1. 多通道硬闸门:单通道孤证不自动入库,需 ≥2 个发现通道或曾为同稿首发;
+2. **LLM 相关度初评**(`prospect.probe_one`):抓候选站首页抽样标题,让模型判"是否持续
+   产出国内安全事件内容"(0-1),结果落 `source_probe` 表并按 TTL 复用,计入候选评分
+   ——此前这一项权重最高却从没人算过、恒为 0,排序只看被提及次数;
+3. 栏目三重验证:篇数 + URL 结构一致性 + 标题内容相关度(`columns.validate_column`);
+4. 人工定级:候选一律 S4 试运行,`discovery.promote` 是唯一转正入口,不自动升级。
+
+**冗余度:不轻易判死一个源**(`health.register_failure`)
+
+没有哪个站天天出稿,"连续几轮没产出"不等于源坏了。自动停用要**同时**满足:
+连续失败 ≥ `source_auto_retire_fail_streak` **且** 距上次成功产出 >
+`source_quiet_tolerance_days`(默认 30 天);未达标的只标『观察中』,照常参与采集。
+`auto_retire_protect_credibility`(默认 S1,S2)里的官方权威源**永不**自动停用。
+自动停用的源隔 `retired_recheck_days`(默认 14 天)在体检时自动复检,能出数据就自动恢复
+——误杀可自愈。栏目篇数门槛也从 5 降到 3,免得一年发几条的执法通报栏目被挡在门外。
+
+`pytest tests/test_prospect_coverage.py` 覆盖上述全部行为(15 例)。
 
 ## 框架泛化的落地证据
 
