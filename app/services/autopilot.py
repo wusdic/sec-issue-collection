@@ -24,6 +24,7 @@ TASKS = [
     ("health", "源体检 + 停用源复检恢复", "autopilot_health_days", 3),
     ("prospect", "主动找源 + 候选相关度初评", "autopilot_prospect_days", 7),
     ("grade", "试运行源自动定级/淘汰", "autopilot_grade_days", 1),
+    ("candidates", "候选池:补初评 + 达标入库 + 清理无关", "autopilot_candidates_days", 1),
 ]
 
 
@@ -123,8 +124,25 @@ def _do_grade(db, need_id: str) -> dict:
     return r
 
 
+def _do_candidates(db, need_id: str) -> dict:
+    """候选池日常自动处理:给没初评的补初评 → 重新评分、达标的自动入库 → 清理明确无关的。
+
+    没有这一步,候选池就只有每周找源时才会被碰一次;而采集途中(引文/公众号署名)发现的
+    候选要等一周才被初评,单通道又过不了闸门,等于一直躺着没人管——自动化就没做完。
+    """
+    from app.services import discovery, fetcher, prospect
+    with fetcher.render_session():
+        p = prospect.probe_pending(db, need_id)
+    cands = discovery.evaluate_candidates(db, need_id, prospect.llm_scores(db))
+    auto = [c for c in cands if c.get("auto_trial")]
+    pruned = discovery.prune_candidates(db, need_id)
+    return {"probed": p.get("probed", 0), "candidates": len(cands),
+            "auto_trial": len(auto), "pruned": pruned.get("pruned", 0),
+            "trial_names": [c.get("name") or c["identity_key"] for c in auto[:20]]}
+
+
 _ACTIONS = {"dedup": _do_dedup, "locate": _do_locate, "health": _do_health,
-            "prospect": _do_prospect, "grade": _do_grade}
+            "prospect": _do_prospect, "grade": _do_grade, "candidates": _do_candidates}
 
 
 # ---------------- 调度 ----------------

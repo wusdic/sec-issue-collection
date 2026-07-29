@@ -182,6 +182,42 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
     return sorted(results, key=lambda x: -x["score"])
 
 
+def prune_candidates(db: Session, need_id: str) -> dict:
+    """自动清理候选池:已初评且明确不相关、又很久没再出现的候选,直接清掉。
+
+    候选池不清理就会无限膨胀,人一看几百条就更不想看了——那自动化等于没做完。
+    只清"已初评 + 相关度明确偏低 + 长期没新证据"这三条同时成立的,拿不准的一律留着。
+    """
+    rel_floor = float(getattr(settings, "candidate_prune_relevance", 0) or 0)
+    stale_days = int(getattr(settings, "candidate_prune_days", 0) or 0)
+    if rel_floor <= 0 or stale_days <= 0:
+        return {"pruned": 0, "skipped": "已关闭候选自动清理"}
+    from app.models import SourceProbe
+    cutoff = datetime.utcnow() - timedelta(days=stale_days)
+    pruned = []
+    keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
+    for key in keys:
+        if db.query(Source).filter_by(site_key=key).first():
+            continue                                   # 已建成源的不动
+        probe = db.get(SourceProbe, key)
+        if not probe or not probe.ok or probe.relevance >= rel_floor:
+            continue                                   # 没初评 / 初评失败 / 分不低 → 留着
+        rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
+        if any(r.last_seen > cutoff for r in rows):
+            continue                                   # 最近还在出现 → 留着再看看
+        for r in rows:
+            db.delete(r)
+        pruned.append(key)
+    if pruned:
+        from app.services import actions
+        actions.record(db, "source.candidates_pruned",
+                       f"候选池自动清理 {len(pruned)} 个:已初评判定不相关(<{rel_floor})"
+                       f"且超过 {stale_days} 天没再出现",
+                       need_id=need_id, count=len(pruned), detail={"keys": pruned[:50]})
+    db.flush()
+    return {"pruned": len(pruned), "keys": pruned[:50]}
+
+
 def recompute_keys(db: Session) -> dict:
     """回填/校正所有源的 site_key 与 identity_key,并自动查重:目标键(identity_key)相同的多个源
     即同一采集目标(真重复),自动合并——保留文档最多者,其余转停用并并入其服务需求。

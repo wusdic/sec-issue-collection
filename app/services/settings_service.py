@@ -93,6 +93,12 @@ EDITABLE = [
     ("autopilot_locate_max", "自动定位:每轮最多几个站", "自动运维", "int", False, "默认 10"),
     ("autopilot_prospect_days", "自动找源周期(天)", "自动运维", "int", False, "默认 7"),
     ("autopilot_dedup_days", "自动查重整理周期(天)", "自动运维", "int", False, "默认 7"),
+    ("autopilot_candidates_days", "候选池自动处理周期(天)", "自动运维", "int", False,
+     "多久跑一次「补初评 + 达标入库 + 清理无关候选」。默认 1(每天),候选池不需要人去点"),
+    ("candidate_prune_relevance", "候选清理:相关度低于多少算无关", "找源与覆盖", "float", False,
+     "已初评且相关度低于此值、又长期没再出现的候选自动清掉,免得池子无限膨胀。默认 0.2;0=不清理"),
+    ("candidate_prune_days", "候选清理:多久没出现算过期", "找源与覆盖", "int", False,
+     "候选超过这么多天没有新证据才允许被清理(拿不准的一律留着)。默认 30;0=不清理"),
 
     ("prospect_enabled", "启用主动找源", "找源与覆盖", "bool", False,
      "开启后每周用『找源专用检索词』去搜索引擎捞新渠道,而不是只等已采文章引用。默认开"),

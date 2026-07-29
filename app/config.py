@@ -124,6 +124,10 @@ class Settings:
     # 主动找源命中的渠道:LLM 初评相关度≥此值即视为"第二重证据",可单通道自动入库试运行。
     # 否则主动找源找到的渠道永远卡在候选池(单通道过不了多通道闸门)。0=关闭这条通路
     discovery_probe_pass: float = float(os.getenv("DISCOVERY_PROBE_PASS", "0.7"))
+    # 候选池自动清理:已初评且相关度低于此值、且超过 N 天没再出现的候选自动清掉,
+    # 免得池子无限膨胀最后没人看。任一项设 0 = 不清理
+    candidate_prune_relevance: float = float(os.getenv("CANDIDATE_PRUNE_RELEVANCE", "0.2"))
+    candidate_prune_days: int = int(os.getenv("CANDIDATE_PRUNE_DAYS", "30"))
 
     # 源健康:连续失败(采集异常/试抓抓不到)达到此次数即自动标记停用(不再采集)。默认 3
     source_auto_retire_fail_streak: int = int(os.getenv("SOURCE_AUTO_RETIRE_FAIL_STREAK", "3"))
@@ -168,6 +172,7 @@ class Settings:
     autopilot_health_max: int = int(os.getenv("AUTOPILOT_HEALTH_MAX", "25"))    # 每轮最多体检几个源
     autopilot_prospect_days: int = int(os.getenv("AUTOPILOT_PROSPECT_DAYS", "7"))
     autopilot_grade_days: int = int(os.getenv("AUTOPILOT_GRADE_DAYS", "1"))
+    autopilot_candidates_days: int = int(os.getenv("AUTOPILOT_CANDIDATES_DAYS", "1"))
 
     # 浏览器渲染内存保护:同一浏览器实例连续渲染这么多页后回收重启,防长跑内存膨胀。0=不回收
     render_recycle_after: int = int(os.getenv("RENDER_RECYCLE_AFTER", "300"))

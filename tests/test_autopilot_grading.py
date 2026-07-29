@@ -195,3 +195,59 @@ def _clean(db):
     yield
     db.query(SourceProbe).delete()
     db.flush()
+
+
+# ---------------- 候选池也必须自动处理(不是等人来点) ----------------
+
+def test_candidates_task_is_daily(db, need, monkeypatch):
+    monkeypatch.setattr(settings, "autopilot_candidates_days", 1)
+    assert "candidates" in [t[0] for t in autopilot.due_tasks(db, need.id)]
+    row = [p for p in autopilot.plan(db, need.id) if p["task"] == "candidates"][0]
+    assert row["every_days"] == 1
+
+
+def test_candidates_task_admits_and_prunes(db, need, monkeypatch):
+    """补初评 → 达标自动入库 → 清掉明确无关的,全程不需要人点。"""
+    from app.models import SourceDiscoveryEvidence
+    from app.services import discovery, prospect
+    monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 0.1)
+    monkeypatch.setattr(settings, "discovery_probe_pass", 0.7)
+    monkeypatch.setattr(settings, "candidate_prune_relevance", 0.2)
+    monkeypatch.setattr(settings, "candidate_prune_days", 30)
+    monkeypatch.setattr(prospect, "probe_pending", lambda *a, **k: {"probed": 2})
+
+    discovery.record_evidence(db, "https://auto-good.cn/a", "source_search")
+    discovery.record_evidence(db, "https://auto-bad.cn/a", "source_search")
+    db.add(SourceProbe(identity_key="auto-good.cn", relevance=0.9, ok=True))
+    db.add(SourceProbe(identity_key="auto-bad.cn", relevance=0.05, ok=True))
+    db.flush()
+    # 差的那个很久没再出现 → 该被清理
+    for e in db.query(SourceDiscoveryEvidence).filter_by(identity_key="auto-bad.cn").all():
+        e.last_seen = datetime.utcnow() - timedelta(days=90)
+    db.flush()
+
+    r = autopilot._do_candidates(db, need.id)
+    assert r["auto_trial"] >= 1 and r["pruned"] >= 1
+    assert db.query(Source).filter_by(site_key="auto-good.cn").first() is not None
+    assert db.query(SourceDiscoveryEvidence).filter_by(identity_key="auto-bad.cn").first() is None
+
+
+def test_prune_keeps_unprobed_and_recent(db, need, monkeypatch):
+    """拿不准的一律留着:没初评的、最近还在出现的,都不清。"""
+    from app.models import SourceDiscoveryEvidence
+    from app.services import discovery
+    monkeypatch.setattr(settings, "candidate_prune_relevance", 0.2)
+    monkeypatch.setattr(settings, "candidate_prune_days", 30)
+    discovery.record_evidence(db, "https://keep-unprobed.cn/a", "citation")   # 没初评
+    discovery.record_evidence(db, "https://keep-recent.cn/a", "citation")     # 初评低但最近还在出现
+    db.add(SourceProbe(identity_key="keep-recent.cn", relevance=0.05, ok=True))
+    db.flush()
+    discovery.prune_candidates(db, need.id)
+    left = {e.identity_key for e in db.query(SourceDiscoveryEvidence).all()}
+    assert "keep-unprobed.cn" in left and "keep-recent.cn" in left
+
+
+def test_prune_disabled_by_config(db, need, monkeypatch):
+    from app.services import discovery
+    monkeypatch.setattr(settings, "candidate_prune_relevance", 0)
+    assert discovery.prune_candidates(db, need.id)["pruned"] == 0

@@ -814,8 +814,10 @@ async function loadAutopilot(){
 function summarize(s){
   if(!s||typeof s!=="object") return "";
   const keep=["updated","merged","located","columns","no_column","ok","fail","retired","revived",
-              "new_candidates","probed","auto_trial","promoted","suggested","extended","queries","hits"];
+              "new_candidates","candidates","probed","auto_trial","pruned",
+              "promoted","suggested","extended","queries","hits"];
   const zh={updated:"整理",merged:"合并",located:"定位站",columns:"栏目",no_column:"未识别",
+            pruned:"清理候选",candidates:"候选",
             ok:"能出数据",fail:"抓不到",retired:"停用",revived:"复活",new_candidates:"新候选",
             probed:"初评",auto_trial:"自动入库",promoted:"转正",suggested:"待人工",extended:"继续观察",
             queries:"检索词",hits:"结果"};
@@ -944,8 +946,9 @@ async function showCandidates(){
       <span class="muted">点「🧭 主动找源」去搜新渠道,或等采集时从文章引用里自动发现</span>`; return; }
     box.innerHTML=`<div class="card" style="padding:12px">
       <b>🧺 候选池 ${rows.length} 个</b>
-      <span class="muted">发现到但还没建成源的渠道。分数够且证据够就会自动入库试运行;
-        没自动入库的下面写了卡在哪,你可以直接「收下」</span>
+      <span class="muted">发现到但还没建成源的渠道。<b>这里不需要你日常来点</b>——系统每天会自动
+        补初评、把达标的入库试运行、清掉明确无关的(见「🤖 源库自动运维」的"候选池"一项)。
+        这个面板是给你看和兜底用的:想提前收下、或想拉黑,才动手。</span>
       <div style="max-height:420px;overflow:auto;margin-top:8px"><table><thead><tr>
         <th>渠道</th><th>类型</th><th style="text-align:right">分数</th><th>内容相关度</th>
         <th>发现通道</th><th>状态 / 卡在哪</th>${canEditSrc()?"<th>操作</th>":""}</tr></thead><tbody>`+
