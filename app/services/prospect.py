@@ -519,7 +519,9 @@ def selftest(db, query: str = "网警 处罚") -> dict:
                 items = eng.parse(fr.html) or []
                 row["items"] = len(items)
                 if not items:
-                    row["hint"] = "页面正常但一条没解析出来:该引擎结构可能已变,建议换引擎"
+                    row["hint"] = ("页面正常但一条结果都没解析出来:结果块多半由 JS 注入"
+                                   "(必应网页版就是这样)。开「启用浏览器渲染/截图」,"
+                                   "或改用 bing_rss —— 纯 XML 口,不依赖 JS 也不随改版失配")
                 else:
                     for it in items[:5]:
                         u = it.url
@@ -550,13 +552,38 @@ def selftest(db, query: str = "网警 处罚") -> dict:
 
 
 def all_engine_names() -> list[str]:
-    """候选引擎池:自动调优时会把池子里每个都测一遍(掉线的踢掉、恢复的加回来)。"""
+    """候选引擎池:自动调优时会把池子里每个都测一遍(掉线的踢掉、恢复的加回来)。
+
+    池子取"配置值 ∪ 本版本内置的默认池":用户库里存过一次 prospect_engines_all 之后,
+    升级新加的引擎(如 bing_rss)就再也进不了池子、永远测不到——那等于新引擎白加。
+    """
+    from app import config
     raw = str(getattr(settings, "prospect_engines_all", "") or "")
     names = [x.strip() for x in raw.split(",") if x.strip()]
     if not names:
         names = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",")
                  if x.strip()]
-    return names
+    shipped = [x.strip() for x in config.SHIPPED_ENGINES.split(",") if x.strip()]
+    return names + [n for n in shipped if n not in names]
+
+
+def sync_new_engines(db) -> dict:
+    """把"本版本新加、且从没被自检评价过"的引擎补进在用列表。
+
+    自动调优只在既有列表上做加减,升级新加的引擎不会自己进来;而直接把整池都加进去
+    又会把之前测出来不可用、已被踢掉的引擎重新塞回去。所以按"是否评价过"来分:
+    评价过的听自检的,没评价过的先给一次机会——不行的话本轮熔断 + 下次自检自然会踢掉。
+    """
+    from app.services import settings_service
+    pool = all_engine_names()
+    tuned = {x.strip() for x in str(getattr(settings, "prospect_engines_tuned", "") or "").split(",")
+             if x.strip()}
+    cur = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",") if x.strip()]
+    fresh = [n for n in pool if n not in tuned and n not in cur]
+    if not fresh:
+        return {"added": [], "engines": cur}
+    settings_service.save(db, {"prospect_engines": ",".join(cur + fresh)})
+    return {"added": fresh, "engines": cur + fresh}
 
 
 def autotune_engines(db, query: str = "网警 处罚") -> dict:
@@ -580,6 +607,9 @@ def autotune_engines(db, query: str = "网警 处罚") -> dict:
     detail = {e["engine"]: ("可用" if e["ok"] else ("验证页/反爬" if e["blocked"] else e["hint"][:60]))
               for e in r["engines"]}
     out = {"tested": pool, "usable": usable, "before": prev, "detail": detail, "changed": False}
+    # 记下"评价过哪些引擎":升级新加的引擎据此判定为"从没测过",才敢先给它一次机会,
+    # 而不会把测出来不可用、已被踢掉的老引擎重新塞回去
+    settings_service.save(db, {"prospect_engines_tuned": ",".join(sorted(pool))})
     if not usable:
         out["note"] = "所有引擎都不可用,保持原配置不动(下轮再测);建议开启浏览器渲染"
         return out
@@ -610,6 +640,16 @@ def _diagnose_empty(eng, query: str, page: int, ed: dict, st: dict):
             ed["blocked"] = ed.get("blocked", 0) + 1
             ed.setdefault("sample", "疑似验证页/反爬拦截")
             return
+        # 页面正常、但一条外链都抽不出来 = 结果块是 JS 注入的(必应网页版就是这样)。
+        # 这一类既不是验证页也不是"结构变了",提示得说清楚,否则人只会反复去改选择器。
+        from bs4 import BeautifulSoup as _BS
+        soup = _BS(fr.html or "", "lxml")
+        externals = [a["href"] for a in soup.find_all("a", href=True)
+                     if a["href"].startswith("http")
+                     and not getattr(eng, "_is_footer_link", lambda _u: False)(a["href"])]
+        if not externals:
+            ed.setdefault("hint", "页面正常但没有任何结果链接:结果块多半由 JS 注入,"
+                                  "需开启浏览器渲染;必应可改用 bing_rss(纯 XML,不依赖 JS)")
         text = fetcher._ANYTAG_RE.sub(" ", fetcher._TAG_RE.sub(" ", fr.html or ""))
         ed.setdefault("sample", " ".join(text.split())[:180] or "(页面无可见文本)")
     except Exception:  # noqa: BLE001 诊断本身失败不影响主流程

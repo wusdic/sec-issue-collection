@@ -309,7 +309,8 @@ def test_autotune_never_empties_engine_list(db, monkeypatch):
         "query": q, "usable": [], "advice": "",
         "engines": [{"engine": "bing_search", "ok": False, "blocked": True, "hint": "验证页"}]})
     monkeypatch.setattr("app.services.settings_service.save",
-                        lambda _db, upd: pytest.fail("全不可用时不该改配置"))
+                        lambda _db, upd: pytest.fail("全不可用时不该动引擎列表")
+                        if "prospect_engines" in upd else None)
     r = prospect.autotune_engines(db)
     assert r["changed"] is False and "保持原配置" in r["note"]
     assert settings.prospect_engines == "bing_search,baidu_search"   # 未被改动
@@ -324,3 +325,49 @@ def test_seeds_task_is_idempotent(db, need):
     # 清单本身要够宽(内置源不能只有几十个),且库里已覆盖清单里的全部源
     assert r1["in_file"] >= 80, r1
     assert r1["total"] >= r1["in_file"], r1
+
+
+def test_new_shipped_engine_is_added(db, monkeypatch):
+    """升级新加的引擎(如 bing_rss)必须自己进在用列表——否则新引擎白加。"""
+    from app import config
+    from app.services import prospect
+    monkeypatch.setattr(config, "SHIPPED_ENGINES", "bing_rss,bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines", "bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_rss,bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines_tuned", "bing_search,baidu_search")
+    r = prospect.sync_new_engines(db)
+    assert r["added"] == ["bing_rss"]
+    assert settings.prospect_engines == "bing_search,baidu_search,bing_rss"
+
+
+def test_engine_removed_by_autotune_is_not_readded(db, monkeypatch):
+    """自检测出不可用、已被踢掉的引擎,不能被"补新引擎"这一步重新塞回来。"""
+    from app import config
+    from app.services import prospect
+    monkeypatch.setattr(config, "SHIPPED_ENGINES", "bing_rss,bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines", "bing_rss")
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_rss,bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines_tuned", "baidu_search,bing_rss,bing_search")
+    r = prospect.sync_new_engines(db)
+    assert r["added"] == [] and settings.prospect_engines == "bing_rss"
+
+
+def test_engine_pool_unions_shipped_defaults(monkeypatch):
+    """用户库里存过一次候选池后,升级新加的引擎也得能进池子被测到。"""
+    from app.services import prospect
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,baidu_search")
+    assert "bing_rss" not in settings.prospect_engines_all
+    assert "bing_rss" in prospect.all_engine_names()
+
+
+def test_autotune_records_tested_pool(db, monkeypatch):
+    """自检要记下"评价过哪些引擎",补新引擎那一步才分得清新老。"""
+    from app.services import prospect
+    monkeypatch.setattr(settings, "prospect_engines", "bing_rss")
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_rss,baidu_search")
+    monkeypatch.setattr(prospect, "selftest",
+                        lambda db, q="x": {"usable": ["bing_rss"], "engines": [
+                            {"engine": "bing_rss", "ok": True, "blocked": False, "hint": "可用"},
+                            {"engine": "baidu_search", "ok": False, "blocked": True, "hint": "验证页"}]})
+    prospect.autotune_engines(db)
+    assert set(settings.prospect_engines_tuned.split(",")) >= {"bing_rss", "baidu_search"}

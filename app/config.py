@@ -4,6 +4,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# 本版本内置的找源引擎池。用户库里存过一次 prospect_engines_all 之后就再也不会更新,
+# 所以实际池子取"存的值 ∪ 这里",升级新加的引擎才一定会被自检测到。
+SHIPPED_ENGINES = "bing_rss,bing_search,sogou_wechat,baidu_search"
+
 
 def _load_dotenv(path: Path):
     """轻量 .env 加载:CLI 与 API 都自动读取项目根目录 .env;已存在的环境变量优先。"""
@@ -142,12 +146,16 @@ class Settings:
     # 主动找源(D5):用"找源专用检索词"定期去搜索引擎捞新渠道,而不是只等已采内容引用
     prospect_enabled: bool = os.getenv("PROSPECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     # 默认带上搜狗微信:用户要的执法通报(网警/网信办)大多发在公众号里,只搜网页会漏掉一大类
-    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "bing_search,sogou_wechat,baidu_search")
+    # bing_rss 排在最前:必应网页版结果由 JS 注入,不渲染时抓回来的 HTML 里没有结果链接,
+    # RSS 口是纯 XML、不依赖 JS、也不随网页版改版失配
+    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "bing_rss,sogou_wechat,baidu_search")
     # 候选引擎池:自动调优每轮把池子里每个都测一遍——掉线的踢出、恢复的加回来,
     # 不必人工先点自检再去改上面的列表
-    prospect_engines_all: str = os.getenv("PROSPECT_ENGINES_ALL",
-                                          "bing_search,sogou_wechat,baidu_search")
+    prospect_engines_all: str = os.getenv("PROSPECT_ENGINES_ALL", SHIPPED_ENGINES)
     prospect_autotune: bool = os.getenv("PROSPECT_AUTOTUNE", "true").lower() in ("1", "true", "yes", "on")
+    # 自检评价过哪些引擎(自动维护,不用手填):据此判断某引擎是"升级新加、从没测过"
+    # 还是"测过不可用被踢掉的",前者补进在用列表,后者不再塞回去
+    prospect_engines_tuned: str = os.getenv("PROSPECT_ENGINES_TUNED", "")
     # 公众号文章要抓一次才知道属于哪个号,单轮最多解析这么多条(每条一次网络请求)
     prospect_wechat_resolve_max: int = int(os.getenv("PROSPECT_WECHAT_RESOLVE_MAX", "30"))
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))

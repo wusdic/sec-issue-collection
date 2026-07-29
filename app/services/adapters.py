@@ -243,13 +243,27 @@ class SearchEngineAdapter(BaseAdapter):
             return out
         return self._parse_generic(soup)
 
+    # 页脚模板链:ICP 备案、增值电信业务许可证、公安网备、违法信息举报。
+    # 搜索引擎自己的页面底部就有这一串,通用抽链一旦把它们当结果,就会出现
+    # "300 页全部成功、900 条结果"而其实一条真结果都没有——实测必应正是如此。
+    _FOOTER_HOSTS = ("beian.miit.gov.cn", "dxzhgl.miit.gov.cn", "beian.gov.cn",
+                     "beian.cac.gov.cn", "jubao.cac.gov.cn", "12377.cn", "12321.cn",
+                     "12318.gov.cn", "miitbeian.gov.cn")
+
+    @classmethod
+    def _is_footer_link(cls, href: str) -> bool:
+        host = urlparse(href).netloc.lower().removeprefix("www.")
+        return any(host == h or host.endswith("." + h) for h in cls._FOOTER_HOSTS)
+
     def _parse_generic(self, soup) -> list[DiscoveredItem]:
-        """通用抽链兜底:整页取外链 + 本引擎的跳转链,滤掉导航/短文本。"""
+        """通用抽链兜底:整页取外链 + 本引擎的跳转链,滤掉导航/页脚/短文本。"""
         out, seen = [], set()
         for a in soup.find_all("a", href=True):
             href = a["href"].strip()
             if not href.startswith("http") or href in seen:
                 continue
+            if self._is_footer_link(href):
+                continue                       # 备案/许可证:页脚模板,不是结果
             host = urlparse(href).netloc.lower()
             is_own = any(host == h or host.endswith("." + h) for h in self.own_hosts)
             if is_own and not url_tools.is_search_redirect(href):
@@ -306,6 +320,32 @@ class BingSearchAdapter(SearchEngineAdapter):
     base_tpl = "https://cn.bing.com/search?q={q}&first={page}1"
     result_selector = "li.b_algo h2 a"
     own_hosts = ("bing.com", "microsoft.com", "msn.com")
+
+
+class BingRSSAdapter(SearchEngineAdapter):
+    """必应的 RSS 结果口。
+
+    必应网页版的结果块由 JS 注入,不开浏览器渲染时抓回来的 HTML 里根本没有结果链接
+    ——实测 300 页"全部成功、900 条结果",样本却全是必应自己的页脚备案链。
+    RSS 口是纯 XML、不依赖 JS、也不随网页版改版失配,作为找源主力比 HTML 版可靠得多。
+    """
+    name = "bing_rss"
+    base_tpl = "https://cn.bing.com/search?q={q}&format=rss&first={page}1"
+    own_hosts = ("bing.com", "microsoft.com", "msn.com")
+
+    def parse(self, html: str) -> list[DiscoveredItem]:
+        soup = BeautifulSoup(html or "", "xml")
+        out, seen = [], set()
+        for it in soup.find_all("item"):
+            link = it.find("link")
+            href = (link.get_text(strip=True) if link else "") or ""
+            if not href.startswith("http") or href in seen or self._is_footer_link(href):
+                continue
+            seen.add(href)
+            title = it.find("title")
+            out.append(DiscoveredItem(url=href,
+                                      title=(title.get_text(" ", strip=True) if title else "")[:200]))
+        return out
 
 
 class SogouWechatAdapter(SearchEngineAdapter):
@@ -393,7 +433,8 @@ class RansomwareLiveAdapter(BaseAdapter):
 _REGISTRY: dict[str, type[BaseAdapter]] = {
     a.name: a for a in [
         GenericRSSAdapter, GenericListAdapter,
-        BaiduSearchAdapter, BingSearchAdapter, SogouWechatAdapter, WeiboSearchAdapter,
+        BaiduSearchAdapter, BingSearchAdapter, BingRSSAdapter, SogouWechatAdapter,
+        WeiboSearchAdapter,
         RansomwareLiveAdapter,
     ]
 }

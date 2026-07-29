@@ -102,7 +102,11 @@ EDITABLE = [
      "关掉则完全按你手填的列表跑。默认开"),
     ("prospect_engines_all", "找源引擎候选池", "找源与覆盖", "str", False,
      "自动调优每轮把这个池子里每个引擎都测一遍;可用的写进上面的『用哪些搜索引擎』。"
-     "默认 bing_search,sogou_wechat,baidu_search"),
+     "实际池子 = 这里填的 ∪ 本版本内置的默认池,升级新加的引擎一定会被测到。"
+     "默认 bing_rss,bing_search,sogou_wechat,baidu_search"),
+    ("prospect_engines_tuned", "找源引擎:已自检评价过的", "找源与覆盖", "str", False,
+     "系统自动维护,不用手填。用来分清某个引擎是「升级新加、从没测过」(补进在用列表给一次机会),"
+     "还是「测过不可用被踢掉的」(不再塞回去)"),
     ("autopilot_candidates_days", "候选池自动处理周期(天)", "自动运维", "int", False,
      "多久跑一次「补初评 + 达标入库 + 清理无关候选」。默认 1(每天),候选池不需要人去点"),
     ("candidate_prune_relevance", "候选清理:相关度低于多少算无关", "找源与覆盖", "float", False,
@@ -115,8 +119,10 @@ EDITABLE = [
     ("prospect_weekday", "主动找源:周几跑", "找源与覆盖", "int", False,
      "每日自动化里周几触发一次主动找源。0=周一 … 6=周日。默认 0"),
     ("prospect_engines", "主动找源:用哪些搜索引擎", "找源与覆盖", "str", False,
-     "逗号分隔的适配器名。默认 bing_search,sogou_wechat,baidu_search —— 执法通报(网警/网信办)"
-     "大多发在公众号里,只搜网页会漏掉一大类;百度反爬较狠,常返回验证页,可视情况去掉"),
+     "逗号分隔的适配器名。默认 bing_rss,sogou_wechat,baidu_search。bing_rss 是必应的 XML 结果口:"
+     "网页版 bing_search 的结果块由 JS 注入,不开渲染时抓回来的页面里根本没有结果链接。"
+     "搜狗微信必须留着——执法通报(网警/网信办)大多发在公众号里;百度反爬较狠,可视情况去掉。"
+     "这一项由「引擎自检并自动只留可用的」每 3 天自动维护,一般不用手改"),
     ("prospect_wechat_resolve_max", "主动找源:单轮解析几个公众号", "找源与覆盖", "int", False,
      "搜到的公众号文章要抓一次才知道属于哪个号,每条一次网络请求,按此值封顶。默认 30"),
     ("prospect_pages_per_query", "主动找源:每词翻几页", "找源与覆盖", "int", False, "默认 2"),

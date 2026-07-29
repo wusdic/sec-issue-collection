@@ -1034,3 +1034,67 @@ def test_pace_disabled_by_zero(monkeypatch):
     monkeypatch.setattr(prospect._time, "sleep",
                         lambda *_: pytest.fail("设为 0 时不该 sleep"))
     prospect._pace("bing_search", 5)
+
+
+# ---------------- ⑨ 必应:页脚模板链 ≠ 结果,RSS 口才可靠 ----------------
+
+_BING_FOOTER_ONLY = """<html><body><ol id="b_results"></ol>
+  <div id="b_footer">
+    <a href="https://beian.miit.gov.cn">京ICP备10036305号-7</a>
+    <a href="https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=caf0">
+      增值电信业务经营许可证:合字B2-20090007</a>
+  </div></body></html>"""
+
+
+def test_footer_links_are_not_results():
+    """必应实测:300 页"全部成功、900 条结果",样本全是它自己的页脚备案链。
+    页脚链绝不能当结果,否则统计上看是丰收、实际召回为零。"""
+    from app.services.adapters import BingSearchAdapter
+    items = BingSearchAdapter(prospect._Shim()).parse(_BING_FOOTER_ONLY)
+    assert items == []
+
+
+def test_footer_only_page_counts_as_empty_not_success(db, need, monkeypatch):
+    """页脚链被滤掉后,这一页必须诚实地记成"0 条",从而触发诊断与熔断。"""
+    class _E:
+        cfg = {}
+        def __init__(self, *_a, **_k): pass
+        def build_url(self, q, page, tf): return "https://cn.bing.com/search?q=x"
+        def parse(self, html):
+            from app.services.adapters import BingSearchAdapter
+            return BingSearchAdapter(prospect._Shim()).parse(html)
+        def search_page(self, q, page, tf=None):
+            return None if page else self.parse(_BING_FOOTER_ONLY)
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_diagnose_empty", lambda *a, **k: None)
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["raw_items"] == 0 and r["stats"]["empty_pages"] == 1
+    assert not r["new_keys"]
+
+
+def test_bing_rss_parses_items():
+    """RSS 口是纯 XML:不依赖 JS,也不随网页版改版失配。"""
+    from app.services.adapters import BingRSSAdapter
+    xml = """<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>某地网警通报三起案件</title><link>https://rss-a.gov.cn/n/1.html</link></item>
+      <item><title>备案</title><link>https://beian.miit.gov.cn</link></item>
+      <item><title>网信办处罚决定</title><link>https://rss-b.gov.cn/n/2.html</link></item>
+    </channel></rss>"""
+    items = BingRSSAdapter(prospect._Shim()).parse(xml)
+    assert [i.url for i in items] == ["https://rss-a.gov.cn/n/1.html",
+                                      "https://rss-b.gov.cn/n/2.html"]
+    assert items[0].title == "某地网警通报三起案件"
+
+
+def test_bing_rss_url_uses_rss_format():
+    from app.services.adapters import BingRSSAdapter
+    u = BingRSSAdapter(prospect._Shim()).build_url("网警 处罚", 1, None)
+    assert "format=rss" in u and u.startswith("https://cn.bing.com/search?")
+
+
+def test_bing_rss_registered_and_in_default_pool():
+    from app.services.adapters import _REGISTRY
+    assert "bing_rss" in _REGISTRY
+    assert "bing_rss" in settings.prospect_engines_all

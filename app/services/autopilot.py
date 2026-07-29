@@ -169,9 +169,12 @@ def _do_engines(db, need_id: str) -> dict:
     from app.services import fetcher, prospect
     if not getattr(settings, "prospect_autotune", True):
         return {"skipped": "引擎自动调优已关闭"}
+    fresh = prospect.sync_new_engines(db)      # 升级新加的引擎先补进来,再一起测
     with fetcher.render_session():
         r = prospect.autotune_engines(db)
     db.commit()
+    if fresh.get("added"):
+        r["newly_shipped"] = fresh["added"]
     return r
 
 

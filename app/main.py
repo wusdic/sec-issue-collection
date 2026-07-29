@@ -33,6 +33,14 @@ def _startup():
                 db.commit()
         except Exception:  # noqa: BLE001 种子载入失败不阻断启动
             db.rollback()
+        # 升级新加的找源引擎补进在用列表(只补"从没被自检评价过"的,
+        # 不会把测出来不可用、已被踢掉的老引擎塞回去)
+        try:
+            from app.services import prospect
+            prospect.sync_new_engines(db)
+            db.commit()
+        except Exception:  # noqa: BLE001 引擎同步失败不阻断启动
+            db.rollback()
         # 启动即自动校正源键并查重合并(同采集目标的重复源自动并一),无需人工扫描
         from app.services import discovery
         try:
