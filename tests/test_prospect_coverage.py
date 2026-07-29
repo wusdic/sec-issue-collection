@@ -297,3 +297,59 @@ def test_no_engine_configured_explained(db, need, monkeypatch):
     monkeypatch.setattr(prospect, "_engines", lambda: [])
     monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["x"])
     assert "没有可用的搜索引擎" in prospect.run_once(db, need.id)["note"]
+
+
+# ---------------- ⑥ 引擎选择器失配不该静默 0 条 ----------------
+
+_BAIDU_LIKE = """<html><body>
+  <div class="result"><div class="c-title-new"><a href="http://www.baidu.com/link?url=AAA">
+    某安全媒体 - 数据泄露事件盘点</a></div></div>
+  <div class="result"><div class="c-title-new"><a href="http://www.baidu.com/link?url=BBB">
+    另一个渠道 - 勒索攻击追踪</a></div></div>
+  <a href="https://www.baidu.com/">百度首页</a>
+  <a href="https://www.baidu.com/s?wd=x&pn=10">下一页</a>
+</body></html>"""
+
+
+def test_generic_fallback_when_selector_misses():
+    """百度改版后 h3 a 取不到 → 通用抽链兜底,不再静默返回 0 条。"""
+    from app.services.adapters import BaiduSearchAdapter
+    a = BaiduSearchAdapter(prospect._Shim())
+    assert a.parse('<div><h3><a href="https://x.cn/1">标题够长的结果一</a></h3></div>')   # 选择器命中时照旧
+    items = a.parse(_BAIDU_LIKE)
+    urls = [i.url for i in items]
+    assert len(items) == 2                                   # 两条结果都抽到了
+    assert all("link?url=" in u for u in urls)                # 保留跳转链(后续会还原)
+    assert "https://www.baidu.com/" not in urls               # 引擎自身导航被滤掉
+
+
+def test_generic_fallback_keeps_external_links():
+    from app.services.adapters import BingSearchAdapter
+    a = BingSearchAdapter(prospect._Shim())
+    html = ('<div><a href="https://real-site.cn/a">某站的一篇很长的标题</a></div>'
+            '<a href="https://cn.bing.com/search?q=x">下一页</a><a href="https://y.cn/b">短</a>')
+    urls = [i.url for i in a.parse(html)]
+    assert urls == ["https://real-site.cn/a"]                # 外链留下,引擎导航与超短文本滤掉
+
+
+def test_blocked_page_detected():
+    from app.services.adapters import BaiduSearchAdapter
+    a = BaiduSearchAdapter(prospect._Shim())
+    assert a.looks_blocked("<html><title>百度安全验证</title>请完成安全验证</html>") is True
+    assert a.looks_blocked(_BAIDU_LIKE) is False
+
+
+def test_empty_page_reports_blocked_reason(db, need, monkeypatch):
+    class _EmptyEngine:
+        config = {"render": False}
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None): return [] if page == 0 else None
+        def build_url(self, q, page, tf): return "https://engine.example/s"
+        def looks_blocked(self, html): return True
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _EmptyEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["找源词"])
+    monkeypatch.setattr(prospect.fetcher, "fetch",
+                        lambda *a, **k: prospect.fetcher.FetchResult("u", "u", 200, "百度安全验证"))
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["blocked_pages"] >= 1
+    assert "验证页" in r["note"] and "浏览器渲染" in r["note"]

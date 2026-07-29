@@ -8,7 +8,7 @@
 """
 import time
 from dataclasses import dataclass
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 try:
     import feedparser
@@ -17,7 +17,7 @@ except ImportError:  # feedparser 依赖 sgmllib3k 编译失败时降级:RSS 探
 from bs4 import BeautifulSoup
 
 from app.config import settings
-from app.services import fetcher
+from app.services import fetcher, url_tools
 from app.services.llm import get_llm
 from app.services.prompts import list_template_prompts
 
@@ -212,14 +212,53 @@ class SearchEngineAdapter(BaseAdapter):
     def build_url(self, query: str, page: int, time_filter: str | None) -> str:
         return self.base_tpl.format(q=quote(self._augment(query)), page=page)
 
+    # 搜索引擎自身的域名(结果里指向自己的链接除跳转链外都是导航,不算结果)
+    own_hosts: tuple[str, ...] = ()
+    # 反爬/验证页特征:命中即判定"这一页不是结果页",避免把验证页当成"0 条结果"
+    _BLOCK_MARKERS = ("百度安全验证", "网络不给力", "请输入验证码", "安全验证", "滑动验证",
+                      "unusual traffic", "verify you are human", "captcha", "拒绝访问",
+                      "访问被拒绝", "请开启JavaScript", "为了您的账号安全")
+
+    def looks_blocked(self, html: str | None) -> bool:
+        head = (html or "")[:8000]
+        return any(m in head for m in self._BLOCK_MARKERS)
+
     def parse(self, html: str) -> list[DiscoveredItem]:
-        soup = BeautifulSoup(html, "lxml")
-        out = []
+        """解析结果页。专用选择器优先,取不到就退回"通用抽链"。
+
+        搜索引擎改版很勤(百度结果块已多次换类名、部分结果还由 JS 注入),写死选择器一旦
+        失配就是静默返回 0 条——检索型源看起来在跑,实际什么都没采到。找源/检索只需要拿到
+        结果链接,不依赖结果块结构,所以退回通用抽链完全够用,且改版免疫。
+        """
+        soup = BeautifulSoup(html or "", "lxml")
+        out, seen = [], set()
         for a in soup.select(self.result_selector):
-            href = a.get("href")
-            title = a.get_text(" ", strip=True)
-            if href and title and href.startswith("http"):
+            href, title = a.get("href"), a.get_text(" ", strip=True)
+            if href and title and href.startswith("http") and href not in seen:
+                seen.add(href)
                 out.append(DiscoveredItem(url=href, title=title[:200]))
+        if out:
+            return out
+        return self._parse_generic(soup)
+
+    def _parse_generic(self, soup) -> list[DiscoveredItem]:
+        """通用抽链兜底:整页取外链 + 本引擎的跳转链,滤掉导航/短文本。"""
+        out, seen = [], set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href.startswith("http") or href in seen:
+                continue
+            host = urlparse(href).netloc.lower()
+            is_own = any(host == h or host.endswith("." + h) for h in self.own_hosts)
+            if is_own and not url_tools.is_search_redirect(href):
+                continue                       # 指向引擎自己的导航链,不是结果
+            title = a.get_text(" ", strip=True)
+            if len(title) < 6:
+                continue                       # "下一页""登录"这类导航
+            seen.add(href)
+            out.append(DiscoveredItem(url=href, title=title[:200]))
+            if len(out) >= settings.list_max_items:
+                break
         return out
 
     def search_page(self, query: str, page: int, time_filter: str | None = None) -> list[DiscoveredItem] | None:
@@ -253,18 +292,21 @@ class BaiduSearchAdapter(SearchEngineAdapter):
     name = "baidu_search"
     base_tpl = "https://www.baidu.com/s?wd={q}&pn={page}0"
     result_selector = "h3 a"
+    own_hosts = ("baidu.com",)
 
 
 class BingSearchAdapter(SearchEngineAdapter):
     name = "bing_search"
     base_tpl = "https://cn.bing.com/search?q={q}&first={page}1"
     result_selector = "li.b_algo h2 a"
+    own_hosts = ("bing.com", "microsoft.com", "msn.com")
 
 
 class SogouWechatAdapter(SearchEngineAdapter):
     name = "sogou_wechat"
     base_tpl = "https://weixin.sogou.com/weixin?type=2&query={q}&page={page}"
     result_selector = "ul.news-list h3 a"
+    own_hosts = ("sogou.com",)
 
     def _augment(self, query: str) -> str:
         """配了 account 就把检索限定到该公众号(此前 account 完全没被使用,
@@ -298,6 +340,7 @@ class WeiboSearchAdapter(SearchEngineAdapter):
     name = "weibo_search"
     base_tpl = "https://s.weibo.com/weibo?q={q}&page={page}"
     result_selector = "div.card-wrap p.txt a"
+    own_hosts = ("weibo.com", "weibo.cn", "sina.com.cn")
 
 
 class RansomwareLiveAdapter(BaseAdapter):

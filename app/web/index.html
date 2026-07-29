@@ -893,7 +893,10 @@ function renderProspect(h){
     ${h.error?`<div class="pill bad" style="margin-top:4px;display:block;white-space:pre-wrap">${esc(h.error)}</div>`:''}
     ${(h.engine_detail&&h.engine_detail.length)?`<details style="margin-top:4px"><summary class="muted">各引擎明细 / 结果去向</summary>
       <div class="sub" style="margin-top:4px">${h.engine_detail.map(e=>
-        `<span class="pill ${e.errors&&!e.pages?'bad':''}">${esc(e.engine)}:成功 ${e.pages} 页、结果 ${e.items} 条、失败 ${e.errors} 次${e.last_error?" · "+esc(e.last_error):""}</span>`).join(" ")}</div>
+        `<div style="margin:3px 0"><span class="pill ${e.errors&&!e.pages?'bad':(e.blocked?'warn':'')}">${esc(e.engine)}</span>
+           成功 ${e.pages} 页、结果 ${e.items} 条、失败 ${e.errors} 次${e.blocked?`、验证页 ${e.blocked} 次`:""}
+           ${e.last_error?`<span class="muted">· ${esc(e.last_error)}</span>`:""}
+           ${e.sample?`<div class="muted mono" style="font-size:11px;margin-left:8px">返回内容样本:${esc(e.sample)}</div>`:""}</div>`).join("")}</div>
       <div class="sub" style="margin-top:4px">结果去向:跳转链 ${st.redirect||0}(还原成功 ${st.resolved||0})｜
         通用大平台丢弃 ${st.platform||0}｜已是现有源/已拉黑 ${st.known_or_blocked||0}｜链接不可用 ${st.bad_url||0}</div>
       </details>`:''}

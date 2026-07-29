@@ -138,7 +138,8 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     pages = max(1, int(getattr(settings, "prospect_pages_per_query", 1) or 1))
     resolve_cap = int(getattr(settings, "prospect_resolve_max", 60) or 0)
     st = {"pages": 0, "fetch_fail": 0, "raw_items": 0, "redirect": 0, "resolved": 0,
-          "platform": 0, "bad_url": 0, "known_or_blocked": 0}
+          "platform": 0, "bad_url": 0, "known_or_blocked": 0,
+          "empty_pages": 0, "blocked_pages": 0}
     edetail: dict[str, dict] = {e[0]: {"engine": e[0], "pages": 0, "items": 0, "errors": 0}
                                 for e in engines}
     new_keys, resolved_used = set(), 0
@@ -158,6 +159,10 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                     st["pages"] += 1
                     edetail[ename]["pages"] += 1
                     if not items:
+                        # 抓到页面却一条没解析出来:分清"验证页/反爬"与"页面正常但没结果",
+                        # 并留一段可见文本样本,便于定位到底返回了什么
+                        st["empty_pages"] += 1
+                        _diagnose_empty(eng, q, page, edetail[ename], st)
                         break
                     edetail[ename]["items"] += len(items)
                     for it in items:
@@ -200,6 +205,24 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     return out
 
 
+def _diagnose_empty(eng, query: str, page: int, ed: dict, st: dict):
+    """页面抓到了但 0 条结果:重抓一次看它到底返回了什么(验证页?还是结构变了?)。"""
+    try:
+        fr = fetcher.fetch(eng.build_url(query, page, None),
+                           render=eng.config.get("render", False))
+        if not fr.ok:
+            return
+        if hasattr(eng, "looks_blocked") and eng.looks_blocked(fr.html):
+            st["blocked_pages"] += 1
+            ed["blocked"] = ed.get("blocked", 0) + 1
+            ed.setdefault("sample", "疑似验证页/反爬拦截")
+            return
+        text = fetcher._ANYTAG_RE.sub(" ", fetcher._TAG_RE.sub(" ", fr.html or ""))
+        ed.setdefault("sample", " ".join(text.split())[:180] or "(页面无可见文本)")
+    except Exception:  # noqa: BLE001 诊断本身失败不影响主流程
+        pass
+
+
 def explain(r: dict) -> str:
     """把统计翻译成一句人读结论——尤其是"为什么是 0"。"""
     st, q = r.get("stats") or {}, r.get("queries", 0)
@@ -211,7 +234,12 @@ def explain(r: dict) -> str:
         return (f"所有搜索引擎都抓不到内容({st.get('fetch_fail', 0)} 次失败,通常是 403/反爬/"
                 "网络不通)。可在设置页换搜索引擎、或开启浏览器渲染后重试")
     if st.get("raw_items", 0) == 0:
-        return "搜索页抓到了但一条结果都没解析出来:多半是返回了验证页,或该引擎改版导致选择器失效"
+        if st.get("blocked_pages"):
+            return (f"搜索引擎返回的是验证页/反爬拦截({st['blocked_pages']} 页)。"
+                    "开启设置页的「启用浏览器渲染/截图」通常可解决;或换用别的搜索引擎")
+        return ("搜索页抓到了但一条结果都没解析出来。展开「各引擎明细」看返回内容样本:"
+                "若是验证页请开浏览器渲染;若是正常页面则该引擎结构已变,"
+                "可在设置页把「主动找源:用哪些搜索引擎」换成 bing_search 或 sogou_wechat 试试")
     if not r.get("new_keys"):
         parts = []
         if st.get("redirect", 0) and not st.get("resolved", 0):
