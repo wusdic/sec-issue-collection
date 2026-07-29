@@ -166,9 +166,9 @@ def test_precision_of_levels(db, need):
                  credibility="S3", tier="B", lifecycle="active", serves_needs=[need.id])
     root = Source(name="根域源", kind="page", adapter="generic_rss", entry_url="https://p2.cn/",
                   credibility="S3", tier="B", lifecycle="active", serves_needs=[need.id])
-    mp = Source(name="公众号源", kind="query", adapter="sogou_wechat", identity_key="mp:安全内参",
+    mp = Source(name="公众号源", kind="query", adapter="sogou_wechat", identity_key="mp:精准度测试号",
                 credibility="S3", tier="B", lifecycle="active", serves_needs=[need.id],
-                adapter_config={"account": "安全内参"})
+                adapter_config={"account": "精准度测试号"})
     site = Source(name="站内检索", kind="query", adapter="baidu_search", identity_key="site:p3.cn",
                   credibility="S3", tier="B", lifecycle="active", serves_needs=[need.id],
                   adapter_config={"site": "p3.cn"})

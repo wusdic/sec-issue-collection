@@ -126,7 +126,8 @@ def test_coverage_summary_lists_silent_sources(db, need):
     db.add(s); db.flush()
     out = coverage.summary(db, need.id)
     assert out["sources_active"] >= 1
-    assert "从没产出的源" in out["sources_silent"]
+    # sources_silent 只取前 50 条展示,种子源多时未必落在里面;这里直接验计数口径
+    assert out["sources_producing"] < out["sources_active"]
     assert out["gap_count"] >= 1 and out["prospect_queries"]
 
 
@@ -475,7 +476,7 @@ class _SogouLike:
         return [DiscoveredItem(url="https://weixin.sogou.com/link?url=AAA", title="网警通报",
                                wechat_account="平安北京"),
                 DiscoveredItem(url="https://weixin.sogou.com/link?url=BBB", title="处罚案例",
-                               wechat_account="网信中国")]
+                               wechat_account="测试网信号")]
 
 
 def test_sogou_account_used_without_resolving(db, need, monkeypatch):
@@ -487,7 +488,7 @@ def test_sogou_account_used_without_resolving(db, need, monkeypatch):
     monkeypatch.setattr(prospect, "_wechat_account",
                         lambda u: pytest.fail("自带号名时不该再抓文章解析"))
     r = prospect.run_once(db, need.id)
-    assert set(r["new_keys"]) == {"mp:平安北京", "mp:网信中国"}
+    assert set(r["new_keys"]) == {"mp:平安北京", "mp:测试网信号"}
     assert r["stats"]["new_wechat"] == 2 and r["stats"]["redirect"] == 0
 
 
@@ -604,14 +605,14 @@ def test_admit_candidate_creates_trial_source(db, need):
     from app.models import AppUser
     from app.services import discovery
     user = db.query(AppUser).filter_by(role="admin").first()
-    discovery.record_evidence(db, None, "source_search", display_name="网信中国",
-                              wechat_account="网信中国")
+    discovery.record_evidence(db, None, "source_search", display_name="测试收下号",
+                              wechat_account="测试收下号")
     db.flush()
-    out = admit_candidate("mp:网信中国", need_id=need.id, db=db, user=user)
+    out = admit_candidate("mp:测试收下号", need_id=need.id, db=db, user=user)
     src = db.get(Source, out["id"])
     assert src.lifecycle == "trial" and src.credibility == "S4"
     assert src.kind == "query" and src.adapter == "sogou_wechat"
-    assert (src.adapter_config or {}).get("account") == "网信中国"
+    assert (src.adapter_config or {}).get("account") == "测试收下号"
 
 
 def test_admit_baijiahao_candidate_gets_usable_entry(db, need):
@@ -705,3 +706,71 @@ def test_wechat_candidate_can_be_probed(db, monkeypatch):
     monkeypatch.setattr("app.services.llm.get_screen_llm", lambda: _LLM())
     row = prospect.probe_one(db, "mp:平安北京", force=True)
     assert row.ok and row.relevance == 0.88
+
+
+# ---------------- ⑫ 先验证路径再铺词 / 废词不要组 / 种子源要够 ----------------
+
+def test_selftest_reports_per_engine(db, monkeypatch):
+    """先自检再铺关键词:每个引擎只跑 1 条词,直接告诉你这条路通不通。"""
+    class _Good:
+        config = {"render": False}
+        def __init__(self, *_a, **_k): pass
+        def build_url(self, q, page, tf): return "https://good.engine/s"
+        def looks_blocked(self, html): return False
+        def parse(self, html): return [DiscoveredItem(url="https://real-sec.cn/a", title="某通报")]
+
+    class _Blocked(_Good):
+        def build_url(self, q, page, tf): return "https://blocked.engine/s"
+        def looks_blocked(self, html): return True
+
+    monkeypatch.setattr(prospect, "_engines",
+                        lambda: [("good", _Good()), ("blocked", _Blocked())])
+    monkeypatch.setattr(prospect.fetcher, "fetch",
+                        lambda *a, **k: prospect.fetcher.FetchResult("u", "u", 200, "<html>x</html>"))
+    r = prospect.selftest(db)
+    by = {e["engine"]: e for e in r["engines"]}
+    assert by["good"]["ok"] is True and by["good"]["samples"][0]["key"] == "real-sec.cn"
+    assert by["blocked"]["blocked"] is True and by["blocked"]["ok"] is False
+    assert r["usable"] == ["good"] and "good" in r["advice"]
+
+
+def test_selftest_all_dead_gives_actionable_advice(db, monkeypatch):
+    monkeypatch.setattr(prospect, "_engines", lambda: [])
+    r = prospect.selftest(db)
+    assert not r["usable"] and "铺再多关键词也没用" in r["advice"]
+
+
+def test_placeholder_industry_never_becomes_query(db, need, monkeypatch):
+    """"其他"是词表的兜底桶不是行业,「其他 网络安全」是废词,不能拿去搜。"""
+    monkeypatch.setattr(settings, "coverage_min_events", 3)
+    qs = coverage.prospect_queries(db, need.id)
+    assert not any(q.startswith(("其他", "其它", "未分类")) for q in qs), qs
+
+
+def test_seed_sources_are_broad_and_unique():
+    """源本身要尽量全:种子清单够多、无重名、公众号/站内检索源都有各自唯一的目标键。"""
+    import yaml
+    from app.services import url_tools as ut
+    data = yaml.safe_load(open("config/seed_sources.yaml", encoding="utf-8"))
+    ss = data["sources"]
+    assert len(ss) >= 80, f"种子源只有 {len(ss)} 个,太少"
+    assert len({s["name"] for s in ss}) == len(ss), "种子源有重名"
+    idents = [ut.source_keys(s["kind"], s.get("entry_url"), s.get("adapter_config", {}))[1]
+              for s in ss]
+    real = [i for i in idents if i]
+    assert len(set(real)) == len(real), "种子源的采集目标键有冲突,会互相顶掉"
+    kinds = {s["adapter"] for s in ss}
+    assert "sogou_wechat" in kinds, "缺公众号源"
+    assert sum(1 for s in ss if s["adapter"] == "sogou_wechat") >= 15
+
+
+def test_subdomain_sites_are_distinct_sources():
+    """各省通信管理局是 miit.gov.cn 的子域,但各自是独立发布主体,不能共用一个目标键。"""
+    from app.services.url_tools import source_keys
+    a = source_keys("page", "https://gdca.miit.gov.cn/")
+    b = source_keys("page", "https://zjca.miit.gov.cn/")
+    c = source_keys("page", "https://www.miit.gov.cn/")
+    assert a[1] != b[1] != c[1] and a[1] != c[1]
+    # www 与非 www 仍然合并
+    assert source_keys("page", "https://www.cac.gov.cn/")[1] == \
+           source_keys("page", "https://cac.gov.cn/")[1]

@@ -126,11 +126,17 @@ def source_keys(kind: str, entry_url: str | None, adapter_config: dict | None = 
         dom = str(cfg["site"]).strip()
         return dom, f"site:{dom}"
     if entry_url and entry_url.startswith("http"):
-        dom = registered_domain(urlparse(entry_url).netloc)
-        path = urlparse(entry_url).path or "/"
-        # 根目录(无栏目路径):www/非www 都算"整站",目标键=站点键,避免把根当成不同栏目
+        p = urlparse(entry_url)
+        host = (p.netloc or "").lower().split(":")[0]
+        bare = host[4:] if host.startswith("www.") else host
+        dom = registered_domain(host)
+        path = p.path or "/"
+        # 根目录(无栏目路径):www/非www 算同一个站;但 gdca.miit.gov.cn 这类**真子域**是
+        # 各自独立的发布主体(各省通信管理局 ≠ 工信部),不能都并到 miit.gov.cn——
+        # 那会让它们共用 identity_key 而互相顶掉,只剩一个能入库。
         if path in ("", "/"):
-            return dom, dom
+            key = bare if bare != dom else dom
+            return key, key
         return dom, normalize_url(entry_url)
     return None, None
 

@@ -65,16 +65,17 @@ def _ok_fetch(*a, **k):
 
 def test_paste_article_url_creates_account_source(db, admin, monkeypatch):
     """粘一条公众号文章链接 → 建成"该公众号"的持续源,而不是只存这一篇。"""
+    # 用种子里没有的号名:种子已内置一批公众号源,撞名会走"合并"分支而不是新建
     monkeypatch.setattr(wechat, "resolve_account",
-                        lambda url, fetch=None: {"account": "安全内参", "title": "某银行遭勒索攻击事件复盘",
+                        lambda url, fetch=None: {"account": "某新安全号", "title": "某银行遭勒索攻击事件复盘",
                                                  "ok": True, "error": None})
     r = create_source(SourceIn(name="", entry_url=ARTICLE), db, admin)
-    assert r["account"] == "安全内参"
+    assert r["account"] == "某新安全号"
     src = db.get(Source, r["id"])
     assert src.kind == "query" and src.adapter == "sogou_wechat"
-    assert src.adapter_config["account"] == "安全内参"
-    assert src.identity_key == "mp:安全内参" and src.site_key == "mp:安全内参"
-    assert src.name == "安全内参"      # 未填名称时用识别出的号名
+    assert src.adapter_config["account"] == "某新安全号"
+    assert src.identity_key == "mp:某新安全号" and src.site_key == "mp:某新安全号"
+    assert src.name == "某新安全号"      # 未填名称时用识别出的号名
 
 
 def test_same_account_merges_not_duplicated(db, admin, monkeypatch):

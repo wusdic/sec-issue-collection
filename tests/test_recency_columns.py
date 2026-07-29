@@ -97,7 +97,7 @@ def test_candidate_rejects_date_like(db, need):
                                      display_name="2026-07-22", wechat_account="2026-07-22") is None
     # 正常主体名 → 登记
     assert discovery.record_evidence(db, None, "wechat_reference",
-                                     display_name="安全内参", wechat_account="安全内参") == "mp:安全内参"
+                                     display_name="测试安全号", wechat_account="测试安全号") == "mp:测试安全号"
 
 
 def test_valid_subject_helper():

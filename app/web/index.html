@@ -580,6 +580,7 @@ async function vSources(){
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
     </div>
     <div class="toolbar" style="margin:4px 0 10px">
+      <button class="ghost" onclick="prospectSelftest()" id="pstBtn">🔎 找源路径自检</button>
       <button class="ghost" onclick="prospectAll()" id="prosBtn">🧭 主动找源(搜新渠道)</button>
       <button class="ghost" onclick="showCandidates()" id="candBtn">🧺 候选池</button>
       <button class="ghost" onclick="showCoverage()" id="covBtn">📊 覆盖度盘点</button>
@@ -587,7 +588,7 @@ async function vSources(){
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
       <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
       <button class="ghost" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
-      <span class="sub">候选池:已发现但还没建成源的渠道,可看分数/相关度并一键收下。主动找源:用「找源专用检索词」+ 覆盖空白方向去搜索引擎捞新渠道(不必等已采文章引用),再用大模型给候选打相关度分、达标自动入库试运行。覆盖度盘点:看哪些行业近期一条事件都没有,那就是该补源的方向。定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
+      <span class="sub">找源路径自检:每个引擎只跑 1 条词,十几秒告诉你这条路通不通、结果能不能落到具体渠道——<b>先自检再铺关键词</b>,不然铺几百个词也是白跑。候选池:已发现但还没建成源的渠道,可看分数/相关度并一键收下。主动找源:用「找源专用检索词」+ 覆盖空白方向去搜索引擎捞新渠道(不必等已采文章引用),再用大模型给候选打相关度分、达标自动入库试运行。覆盖度盘点:看哪些行业近期一条事件都没有,那就是该补源的方向。定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
     </div>
     <div id="prosProgress" class="sub" style="margin-bottom:8px"></div>
     <div id="candBox" style="margin-bottom:8px"></div>
@@ -884,7 +885,9 @@ function renderProspect(h){
   const bar=`<div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:4px 0">
       <div style="height:100%;width:${pct}%;background:var(--brand);transition:width .3s"></div></div>`;
   if(h.running){
-    box.innerHTML=`<b>🧭 主动找源中</b> ${esc(h.phase||"")} ${total?`${done}/${total}(${pct}%)`:""}
+    const unit = (h.queries&&h.engines)
+      ? `<span class="muted" title="进度分母 = 找源词 ${h.queries} 条 × 引擎 ${h.engines} 个">(${h.queries} 词 × ${h.engines} 引擎)</span>` : "";
+    box.innerHTML=`<b>🧭 主动找源中</b> ${esc(h.phase||"")} ${total?`${done}/${total}(${pct}%)${unit}`:""}
       <button class="ghost sm" style="margin-left:8px" onclick="cancelProspect()">取消</button>${bar}
       <span class="muted">当前:${esc(h.current||"")}</span>`;
     return true;
@@ -982,6 +985,26 @@ async function banCand(key){
               {method:"POST",body:JSON.stringify({reason})});
     toast("已拉黑"); showCandidates();
   }catch(e){ alert("拉黑失败:"+e.message); }
+}
+
+/* ---- 找源路径自检:先确认这条路通不通,再决定要不要铺关键词 ---- */
+async function prospectSelftest(){
+  const box=document.getElementById("prosProgress");
+  box.innerHTML=`<span class="muted">自检中…(每个引擎只跑 1 条词,约十几秒)</span>`;
+  try{
+    const r=await api(`/sources/prospect/selftest?query=${encodeURIComponent("网警 处罚")}`,{method:"POST"});
+    box.innerHTML=`<div class="card" style="padding:12px">
+      <b>🔎 找源路径自检</b> <span class="muted">测试词「${esc(r.query)}」,每个引擎只跑 1 条</span>
+      <div style="margin:6px 0">${r.engines.map(e=>`<div style="margin:4px 0">
+        <span class="pill ${e.ok?'ok':(e.blocked?'warn':'bad')}">${esc(e.engine)}</span>
+        ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":"不可用")}
+        <span class="muted">· ${esc(e.hint)}</span>
+        ${(e.samples&&e.samples.length)?`<div class="muted" style="font-size:12px;margin-left:14px">
+          ${e.samples.map(x=>`${esc(x.title)} → <b>${esc(x.key||("丢弃:"+x.drop))}</b>`).join("<br>")}</div>`:""}
+      </div>`).join("")}</div>
+      <div class="${r.usable.length?'pill ok':'pill bad'}" style="display:block;white-space:pre-wrap">${esc(r.advice)}</div>
+    </div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }
 
 /* ---- 覆盖度盘点:缺哪个行业 = 该补哪块源 ---- */

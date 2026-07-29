@@ -300,6 +300,15 @@ def cancel_prospect(_: AppUser = Depends(require_roles("analyst"))):
     return {"ok": True, "note": "已请求取消,当前检索词跑完即停"}
 
 
+@api.post("/sources/prospect/selftest")
+def prospect_selftest(query: str = "网警 处罚", db: Session = Depends(get_session),
+                      _: AppUser = Depends(require_roles("analyst"))):
+    """找源路径可行性自检:每个引擎只跑一条词,快速判断这条路通不通(再决定要不要铺词)。"""
+    from app.services import fetcher, prospect
+    with fetcher.render_session():
+        return prospect.selftest(db, query)
+
+
 @api.get("/sources/prospect/queries")
 def prospect_queries(need_id: str = "sec_events", db: Session = Depends(get_session),
                      _: AppUser = Depends(current_user)):

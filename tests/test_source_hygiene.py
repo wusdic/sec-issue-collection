@@ -38,7 +38,7 @@ def test_boilerplate_rejected_at_evidence_layer(db, need):
     assert discovery.record_evidence(db, None, "wechat_reference",
                                      display_name="请注明出处", wechat_account="请注明出处") is None
     assert discovery.record_evidence(db, None, "wechat_reference",
-                                     display_name="安全内参", wechat_account="安全内参") == "mp:安全内参"
+                                     display_name="正常主体号", wechat_account="正常主体号") == "mp:正常主体号"
 
 
 def test_single_channel_candidate_not_auto_registered(db, need, monkeypatch):

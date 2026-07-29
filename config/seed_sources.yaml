@@ -219,3 +219,370 @@ sources:
     credibility: S4
     tier: B
     manual_assist: true
+
+  # ================= 扩充批次 v0.2:把"本身的源"先做全 =================
+  # 说明:公众号源用 kind=query + adapter=sogou_wechat + adapter_config.account(按号名检索),
+  # 号名写错或改名会采不到——不必人工核对,体检会标记、连续无产出且长期沉默才自动停用。
+  # 站点源尽量写到栏目;只给了根域的会由「精准定位栏目」自动定位。
+
+  # ---- S1 监管/执法/司法(官方口径,自动定级会给 S1) ----
+  - name: 中央网信办举报中心-违法和不良信息
+    entry_url: https://www.12377.cn/
+    kind: page
+    adapter: generic_list
+    credibility: S1
+    tier: B
+  - name: 国家网信办-网络执法
+    entry_url: https://www.cac.gov.cn/zwgk/index.htm
+    kind: page
+    adapter: generic_list
+    credibility: S1
+    tier: A
+  - name: 工信部-政务公开/通报
+    entry_url: https://www.miit.gov.cn/zwgk/index.html
+    kind: page
+    adapter: generic_list
+    credibility: S1
+    tier: A
+  - name: 工信部反诈-涉诈通报
+    entry_url: https://www.12381.cn/
+    kind: page
+    adapter: generic_list
+    credibility: S1
+    tier: B
+  - name: 国家市场监管总局-执法稽查
+    entry_url: https://www.samr.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 国家密码管理局
+    entry_url: https://www.sca.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: C
+  - name: 国家数据局
+    entry_url: https://www.nda.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 国家信息安全漏洞库 CNNVD
+    entry_url: https://www.cnnvd.org.cn/
+    kind: page
+    adapter: generic_list
+    credibility: S1
+    tier: B
+  - name: 国家计算机病毒应急处理中心
+    entry_url: https://www.cverc.org.cn/
+    kind: page
+    adapter: generic_list
+    credibility: S1
+    tier: B
+  - name: 北交所-上市公司公告
+    entry_url: https://www.bse.cn/disclosure/
+    kind: query
+    adapter: generic_list
+    credibility: S1
+    tier: B
+  - name: 公安部网络安全保卫局(网站备案/净网)
+    entry_url: https://beian.mps.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: C
+  - name: 中国互联网协会
+    entry_url: https://www.isc.org.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S2
+    tier: C
+  - name: 中国网络空间安全协会
+    entry_url: https://www.cybersac.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S2
+    tier: C
+
+  # ---- 各省通信管理局(违规 App/网站通报的主力,量大且稳定) ----
+  - name: 广东省通信管理局
+    entry_url: https://gdca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 浙江省通信管理局
+    entry_url: https://zjca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 江苏省通信管理局
+    entry_url: https://jsca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 北京市通信管理局
+    entry_url: https://bjca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 上海市通信管理局
+    entry_url: https://shca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: B
+  - name: 山东省通信管理局
+    entry_url: https://sdca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: C
+  - name: 四川省通信管理局
+    entry_url: https://scca.miit.gov.cn/
+    kind: page
+    adapter: generic_rss
+    credibility: S1
+    tier: C
+
+  # ---- 省级网信办(执法处罚/典型案例) ----
+  - name: 北京市互联网信息办公室
+    entry_url: https://www.beijing.gov.cn/
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: beijing.gov.cn, list_order: relevance}
+    credibility: S1
+    tier: C
+  - name: 广东省委网信办
+    entry_url: http://www.gd.gov.cn/
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: gd.gov.cn, list_order: relevance}
+    credibility: S1
+    tier: C
+  - name: 浙江省委网信办
+    entry_url: https://www.zj.gov.cn/
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: zj.gov.cn, list_order: relevance}
+    credibility: S1
+    tier: C
+
+  # ---- S3 安全媒体/社区(事件报道主力) ----
+  - name: 安全内参
+    entry_url: https://www.secrss.com/
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: A
+  - name: 安全内参-事件频道
+    entry_url: https://www.secrss.com/channel
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: A
+  - name: 雷峰网宅客频道
+    entry_url: https://www.leiphone.com/category/letstalk
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: C
+  - name: SecWiki 安全维基
+    entry_url: https://www.sec-wiki.com/news
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: B
+  - name: 腾讯玄武实验室每日安全动态
+    entry_url: https://sec.today/pulses/
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: B
+  - name: 奇安信 CERT
+    entry_url: https://cert.360.cn/
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: B
+  - name: 绿盟科技安全通告
+    entry_url: https://www.nsfocus.com.cn/html/2024/
+    kind: page
+    adapter: generic_list
+    credibility: S3
+    tier: C
+  - name: 深信服千里目安全技术中心
+    entry_url: https://www.sangfor.com.cn/
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: sangfor.com.cn, list_order: relevance}
+    credibility: S3
+    tier: C
+  - name: 天融信
+    entry_url: https://www.topsec.com.cn/
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: topsec.com.cn, list_order: relevance}
+    credibility: S3
+    tier: C
+  - name: 知道创宇 Seebug 漏洞社区
+    entry_url: https://paper.seebug.org/
+    kind: page
+    adapter: generic_rss
+    credibility: S3
+    tier: C
+
+  # ---- 公众号(执法通报与事件报道最集中的一类,按号名走搜狗检索) ----
+  - name: 公众号·网信中国
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 网信中国, list_order: relevance}
+    credibility: S1
+    tier: A
+  - name: 公众号·中国网信网
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 中国网信网, list_order: relevance}
+    credibility: S1
+    tier: B
+  - name: 公众号·网络安全应急技术国家工程研究中心
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 网络安全应急技术国家工程研究中心, list_order: relevance}
+    credibility: S1
+    tier: B
+  - name: 公众号·国家网络安全通报中心
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 国家网络安全通报中心, list_order: relevance}
+    credibility: S1
+    tier: A
+  - name: 公众号·公安部网安局
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 公安部网安局, list_order: relevance}
+    credibility: S1
+    tier: A
+  - name: 公众号·中国警察网
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 中国警察网, list_order: relevance}
+    credibility: S2
+    tier: C
+  - name: 公众号·安全内参
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 安全内参, list_order: relevance}
+    credibility: S3
+    tier: A
+  - name: 公众号·FreeBuf
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: FreeBuf, list_order: relevance}
+    credibility: S3
+    tier: B
+  - name: 公众号·安全牛
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 安全牛, list_order: relevance}
+    credibility: S3
+    tier: B
+  - name: 公众号·嘶吼专业版
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 嘶吼专业版, list_order: relevance}
+    credibility: S3
+    tier: B
+  - name: 公众号·安全客
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 安全客, list_order: relevance}
+    credibility: S3
+    tier: B
+  - name: 公众号·奇安信威胁情报中心
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 奇安信威胁情报中心, list_order: relevance}
+    credibility: S3
+    tier: B
+  - name: 公众号·微步在线研究响应中心
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 微步在线研究响应中心, list_order: relevance}
+    credibility: S3
+    tier: B
+  - name: 公众号·绿盟科技
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 绿盟科技, list_order: relevance}
+    credibility: S3
+    tier: C
+  - name: 公众号·数说安全
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 数说安全, list_order: relevance}
+    credibility: S3
+    tier: C
+  - name: 公众号·安在
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 安在, list_order: relevance}
+    credibility: S3
+    tier: C
+  - name: 公众号·网安寻路人
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 网安寻路人, list_order: relevance}
+    credibility: S3
+    tier: C
+  - name: 公众号·个人信息保护
+    kind: query
+    adapter: sogou_wechat
+    adapter_config: {account: 个人信息保护, list_order: relevance}
+    credibility: S3
+    tier: C
+
+  # ---- 境外(涉华事件常先由境外披露;仅采公开报道,不下载任何泄露样本) ----
+  - name: BleepingComputer
+    entry_url: https://www.bleepingcomputer.com/feed/
+    kind: page
+    adapter: generic_rss
+    credibility: S3
+    tier: B
+    note: 仅采涉华/通用勒索报道;泄露站相关内容只留元数据
+  - name: The Record
+    entry_url: https://therecord.media/feed
+    kind: page
+    adapter: generic_rss
+    credibility: S3
+    tier: C
+  - name: SecurityAffairs
+    entry_url: https://securityaffairs.com/feed
+    kind: page
+    adapter: generic_rss
+    credibility: S3
+    tier: C
+  - name: The Hacker News
+    entry_url: https://feeds.feedburner.com/TheHackersNews
+    kind: page
+    adapter: generic_rss
+    credibility: S3
+    tier: C
+
+  # ---- 站内检索兜底(直连常抓不到的权威站,用 site: 精准定位) ----
+  - name: 中国裁判文书网·站内检索
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: wenshu.court.gov.cn, list_order: relevance}
+    credibility: S1
+    tier: C
+  - name: 信用中国·站内检索
+    kind: query
+    adapter: baidu_search
+    adapter_config: {site: creditchina.gov.cn, list_order: relevance}
+    credibility: S1
+    tier: C

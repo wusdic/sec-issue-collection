@@ -310,7 +310,8 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                 edetail[ename].setdefault("last_error", f"{type(e).__name__}: {e}"[:160])
             done += 1
             if on_progress:
-                on_progress(done, total, f"{ename} · {q}")
+                on_progress(done, total, f"{ename} · {q}",
+                            {"queries": len(queries), "engines": len(engines)})
         try:
             db.commit()
         except Exception:  # noqa: BLE001
@@ -394,6 +395,58 @@ def _why_known(db, key: str) -> str | None:
     if db.query(Source).filter_by(site_key=key).first():
         return "already_source"
     return None
+
+
+def selftest(db, query: str = "网警 处罚") -> dict:
+    """找源路径可行性自检:每个引擎只跑一条词,报告这条路到底通不通。
+
+    先验证路径再铺关键词——否则铺了几百个词,发现引擎全被反爬,白跑几十分钟。
+    每个引擎给出:抓没抓到、是不是验证页、解析出几条、还原后落到哪些域名、可用与否 + 建议。
+    """
+    out = {"query": query, "engines": [], "usable": [], "advice": ""}
+    for name, eng in _engines():
+        row = {"engine": name, "ok": False, "blocked": False, "items": 0,
+               "samples": [], "hint": ""}
+        try:
+            fr = fetcher.fetch(eng.build_url(query, 0, None),
+                               render=eng.config.get("render", False))
+            if not fr.ok:
+                row["hint"] = f"抓不到:{fr.error or fr.status}(网络不通或直接被拒)"
+            elif eng.looks_blocked(fr.html):
+                row["blocked"] = True
+                row["hint"] = "返回验证页/反爬拦截。开设置页的「启用浏览器渲染/截图」多半能解决;否则把它从引擎列表去掉"
+            else:
+                items = eng.parse(fr.html) or []
+                row["items"] = len(items)
+                if not items:
+                    row["hint"] = "页面正常但一条没解析出来:该引擎结构可能已变,建议换引擎"
+                else:
+                    for it in items[:5]:
+                        u = it.url
+                        acct = (getattr(it, "wechat_account", None) or "").strip()
+                        if not acct and url_tools.is_search_redirect(u):
+                            u = _resolve_redirect(u)
+                        key, why, _x = _candidate(u, {"wechat": 10 ** 6})
+                        row["samples"].append(
+                            {"title": (it.title or "")[:60],
+                             "key": (f"mp:{acct}" if acct else (key or "")),
+                             "drop": "" if (acct or key) else why})
+                    row["ok"] = any(x["key"] for x in row["samples"])
+                    row["hint"] = ("可用:能解析出结果且能定位到具体渠道" if row["ok"] else
+                                   "解析出结果了,但都落不到有效渠道(可能全是大平台或跳转链还原失败)")
+        except Exception as e:  # noqa: BLE001
+            row["hint"] = f"{type(e).__name__}: {e}"[:160]
+        out["engines"].append(row)
+        if row["ok"]:
+            out["usable"].append(name)
+    if out["usable"]:
+        out["advice"] = (f"可用引擎:{'、'.join(out['usable'])}。建议把设置页的「主动找源:用哪些"
+                         f"搜索引擎」只保留这些,再放心铺关键词——不可用的引擎只会白耗请求。")
+    else:
+        out["advice"] = ("所有引擎都不可用,现在铺再多关键词也没用。先解决这一步:"
+                         "①开启「启用浏览器渲染/截图」(对验证页最有效);②或改用别的引擎;"
+                         "③或确认这台机器能正常访问搜索引擎。")
+    return out
 
 
 def _diagnose_empty(eng, query: str, page: int, ed: dict, st: dict):
@@ -560,6 +613,10 @@ def probe_one(db, key: str, force: bool = False) -> SourceProbe | None:
     return row
 
 
+def _noop_progress(*_a, **_k):
+    pass
+
+
 def probe_pending(db, need_id: str, on_progress=None) -> dict:
     """给还没初评(或初评过期)的候选域名补上 LLM 相关度分。"""
     if not getattr(settings, "probe_llm_enabled", True):
@@ -623,7 +680,8 @@ def _run(need_id: str):
         with fetcher.render_session():      # 整轮复用一个浏览器实例
             _set(phase="主动找源(搜索引擎捞新渠道)")
             r = run_once(db, need_id,
-                         on_progress=lambda d, t, c: _set(done=d, total=t, current=c))
+                         on_progress=lambda d, t, c, m=None: _set(done=d, total=t, current=c,
+                                                                 **(m or {})))
             _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"],
                  note=r.get("note", ""), stats=r.get("stats", {}),
                  engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0),
@@ -644,7 +702,8 @@ def _run(need_id: str):
             if not _cancel.is_set():
                 _set(phase="候选源相关度初评(LLM)", done=0, total=0, current="")
                 p = probe_pending(db, need_id,
-                                  on_progress=lambda d, t, c: _set(done=d, total=t, current=c))
+                                  on_progress=lambda d, t, c: _set(done=d, total=t, current=c,
+                                                                   queries=0, engines=0))
                 scores = llm_scores(db)
                 _set(probed=p.get("probed", 0),
                      new_candidates_detail=[

@@ -108,11 +108,21 @@ def load_seed_sources(db: Session, need_id: str, path: str | Path) -> int:
     count = 0
     for s in data.get("sources", []):
         entry = s.get("entry_url")
-        existing = (
-            db.query(Source)
-            .filter_by(adapter=s["adapter"], entry_url=entry)
-            .one_or_none()
-        )
+        cfg0 = s.get("adapter_config", {}) or {}
+        _sk0, ident0 = url_tools.source_keys(s["kind"], entry, cfg0)
+        # 幂等键优先用采集目标键:公众号(mp:号名)/站内检索(site:域名)都没有 entry_url,
+        # 只按 (adapter, entry_url) 去重会让同适配器的一批源互相覆盖——19 个公众号源只进得来 1 个。
+        existing = None
+        if ident0:
+            existing = db.query(Source).filter_by(identity_key=ident0).one_or_none()
+        if existing is None and entry:
+            existing = (db.query(Source)
+                        .filter_by(adapter=s["adapter"], entry_url=entry).one_or_none())
+        if existing is None and not ident0 and not entry:
+            # 既无目标键也无入口(如"多站汇总/定题检索"这类占位源):按 (适配器,名称) 幂等,
+            # 否则每次载入种子都会再插一条重复的
+            existing = (db.query(Source)
+                        .filter_by(adapter=s["adapter"], name=s["name"]).one_or_none())
         if existing:
             needs = set(existing.serves_needs or [])
             needs.add(need_id)

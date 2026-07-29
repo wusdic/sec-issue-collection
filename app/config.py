@@ -146,7 +146,7 @@ class Settings:
     # 公众号文章要抓一次才知道属于哪个号,单轮最多解析这么多条(每条一次网络请求)
     prospect_wechat_resolve_max: int = int(os.getenv("PROSPECT_WECHAT_RESOLVE_MAX", "30"))
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
-    prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "40"))       # 单轮最多跑多少条找源词
+    prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "150"))      # 单轮最多跑多少条找源词
     # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条
     prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "200"))
     # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个

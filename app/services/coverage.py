@@ -73,15 +73,19 @@ def summary(db, need_id: str, days: int | None = None) -> dict:
 _Q_TPL = ["{ind} 数据泄露", "{ind} 网络安全 通报", "{ind} 信息安全 处罚"]
 # 行业名取短:词表里的"医疗卫生/交通物流"在语料里不如"医疗/物流"常见
 _SHORT = {"医疗卫生": "医疗", "交通物流": "物流", "文化传媒": "传媒",
-          "批发零售": "零售", "住宿餐饮": "餐饮", "信息技术服务": "IT服务"}
+          "批发零售": "零售", "住宿餐饮": "餐饮", "信息技术服务": "IT服务",
+          "零售消费": "零售", "建筑地产": "房地产", "电信运营": "运营商"}
+# 占位/兜底分类:它们只是词表里的"其余"桶,不是真实行业,拿去组词毫无意义
+# (「其他 网络安全」搜不到任何有价值的渠道),必须排除。
+_PLACEHOLDER = {"其他", "其它", "未分类", "未知", "其他行业", "词表外"}
 
 
 def prospect_queries(db, need_id: str, days: int | None = None, per_industry: int = 2) -> list[str]:
     """把覆盖空白翻译成找源检索词(交给 prospect.run_once 去搜索引擎捞渠道)。"""
     out = []
     for c in industry_coverage(db, need_id, days):
-        if not c["gap"]:
-            continue
+        if not c["gap"] or c["industry"] in _PLACEHOLDER:
+            continue          # "其他/未分类"是兜底桶不是行业,组出来的词是废词
         ind = _SHORT.get(c["industry"], c["industry"])
         for tpl in _Q_TPL[:per_industry]:
             out.append(tpl.format(ind=ind))
