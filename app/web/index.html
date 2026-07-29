@@ -581,14 +581,16 @@ async function vSources(){
     </div>
     <div class="toolbar" style="margin:4px 0 10px">
       <button class="ghost" onclick="prospectAll()" id="prosBtn">🧭 主动找源(搜新渠道)</button>
+      <button class="ghost" onclick="showCandidates()" id="candBtn">🧺 候选池</button>
       <button class="ghost" onclick="showCoverage()" id="covBtn">📊 覆盖度盘点</button>
       <button class="ghost" onclick="locateAll(false)" id="locBtn">🎯 精准定位栏目(未定位的源)</button>
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
       <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
       <button class="ghost" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
-      <span class="sub">主动找源:用「找源专用检索词」+ 覆盖空白方向去搜索引擎捞新渠道(不必等已采文章引用),再用大模型给候选打相关度分、达标自动入库试运行。覆盖度盘点:看哪些行业近期一条事件都没有,那就是该补源的方向。定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
+      <span class="sub">候选池:已发现但还没建成源的渠道,可看分数/相关度并一键收下。主动找源:用「找源专用检索词」+ 覆盖空白方向去搜索引擎捞新渠道(不必等已采文章引用),再用大模型给候选打相关度分、达标自动入库试运行。覆盖度盘点:看哪些行业近期一条事件都没有,那就是该补源的方向。定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
     </div>
     <div id="prosProgress" class="sub" style="margin-bottom:8px"></div>
+    <div id="candBox" style="margin-bottom:8px"></div>
     <div id="covBox" style="margin-bottom:8px"></div>
     <div id="locProgress" class="sub" style="margin-bottom:8px"></div>
     <div id="dupBox" style="margin-bottom:8px"></div>
@@ -908,6 +910,12 @@ function renderProspect(h){
       ${(h.dropped_top&&h.dropped_top.length)?`<div class="sub" style="margin-top:4px">丢弃最多的渠道(看看是不是误伤):
         ${h.dropped_top.map(d=>`<span class="pill">${esc(d.key)} ×${d.count}</span>`).join(" ")}</div>`:''}
       </details>`:''}
+    ${(h.new_candidates_detail&&h.new_candidates_detail.length)?`<div class="sub" style="margin-top:4px">
+      <b>本轮新发现的渠道</b>(进候选池,达标才自动入库;可在下方候选池一键收下):
+      ${h.new_candidates_detail.map(c=>`<span class="pill ${c.llm_relevance>=0.7?'ok':''}"
+        title="${c.llm_relevance!=null?`LLM 相关度 ${c.llm_relevance}`:'尚未初评'}">${esc(c.kind)}·${esc(c.name)}${c.llm_relevance!=null?` ${c.llm_relevance}`:""}</span>`).join(" ")}</div>`
+      :((h.new_keys&&h.new_keys.length)?`<div class="sub" style="margin-top:4px"><b>本轮新发现的渠道</b>:
+        ${h.new_keys.map(k=>`<span class="pill">${esc(k)}</span>`).join(" ")}</div>`:'')}
     ${(h.new_columns&&h.new_columns.length)?`<div class="sub" style="margin-top:4px">从已有源站点补到的漏采栏目:
       ${h.new_columns.map(c=>`<span class="pill ok" title="搜索命中 ${c.hits} 篇">${esc(c.url)}</span>`).join(" ")}</div>`:''}
     ${(h.trial_names&&h.trial_names.length)?`<div class="sub" style="margin-top:4px">本轮入库(S4 试运行,待人工定级):
@@ -924,6 +932,53 @@ async function pollProspect(){
   };
   await tick();
   PROS_POLL=setInterval(tick,2000);
+}
+
+/* ---- 候选池:发现到但还没建成源的渠道。此前完全没有入口,等于进了黑洞 ---- */
+async function showCandidates(){
+  const box=document.getElementById("candBox");
+  box.innerHTML=`<span class="muted">加载中…</span>`;
+  try{
+    const rows=await api(`/source-candidates`);
+    if(!rows.length){ box.innerHTML=`<span class="pill info">候选池是空的</span>
+      <span class="muted">点「🧭 主动找源」去搜新渠道,或等采集时从文章引用里自动发现</span>`; return; }
+    box.innerHTML=`<div class="card" style="padding:12px">
+      <b>🧺 候选池 ${rows.length} 个</b>
+      <span class="muted">发现到但还没建成源的渠道。分数够且证据够就会自动入库试运行;
+        没自动入库的下面写了卡在哪,你可以直接「收下」</span>
+      <div style="max-height:420px;overflow:auto;margin-top:8px"><table><thead><tr>
+        <th>渠道</th><th>类型</th><th style="text-align:right">分数</th><th>内容相关度</th>
+        <th>发现通道</th><th>状态 / 卡在哪</th>${canEditSrc()?"<th>操作</th>":""}</tr></thead><tbody>`+
+      rows.map(c=>`<tr>
+        <td>${esc(c.name||c.identity_key)}<div class="muted mono" style="font-size:11px">${esc(c.identity_key)}</div></td>
+        <td>${esc(c.kind)}</td>
+        <td style="text-align:right"><b>${c.score}</b><span class="muted">/${c.threshold}</span></td>
+        <td>${c.llm_relevance==null?'<span class="muted">未初评</span>':
+             `<span class="pill ${c.llm_relevance>=0.7?'ok':(c.llm_relevance>=0.4?'':'warn')}">${c.llm_relevance}</span>
+              <div class="muted" style="font-size:11px;max-width:260px">${esc(c.llm_reason||"")}</div>`}</td>
+        <td class="muted" style="font-size:12px">${c.channels.map(esc).join("、")}<br>命中 ${c.hits} 次</td>
+        <td class="muted" style="font-size:12px">${c.blocked_reason?esc(c.blocked_reason):'<span class="pill ok">达标,下轮自动入库</span>'}</td>
+        ${canEditSrc()?`<td style="white-space:nowrap">
+          <button class="ghost sm" title="不等自动入库,直接建成 S4 试运行源" onclick="admitCand('${esc(c.identity_key).replace(/'/g,"")}')">收下</button>
+          <button class="ghost sm" title="拉黑后不再作为候选出现" onclick="banCand('${esc(c.identity_key).replace(/'/g,"")}')">拉黑</button></td>`:""}
+      </tr>`).join("")+`</tbody></table></div></div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+async function admitCand(key){
+  try{
+    const r=await api(`/source-candidates/${encodeURIComponent(key)}/admit?need_id=${NEED}`,{method:"POST"});
+    toast(`已收下「${r.name}」,进入 S4 试运行`);
+    showCandidates(); loadSources();
+  }catch(e){ alert("收下失败:"+e.message); }
+}
+async function banCand(key){
+  const reason=prompt(`拉黑「${key}」的原因?`,"与需求无关");
+  if(reason===null) return;
+  try{
+    await api(`/source-candidates/${encodeURIComponent(key)}/blacklist`,
+              {method:"POST",body:JSON.stringify({reason})});
+    toast("已拉黑"); showCandidates();
+  }catch(e){ alert("拉黑失败:"+e.message); }
 }
 
 /* ---- 覆盖度盘点:缺哪个行业 = 该补哪块源 ---- */

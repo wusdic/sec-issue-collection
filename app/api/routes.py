@@ -630,21 +630,59 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
 def source_candidates(min_score: float = 0, db: Session = Depends(get_session),
                       _: AppUser = Depends(current_user)):
     from app.models import SourceProbe
+    threshold = float(getattr(settings, "discovery_auto_trial_threshold", 0) or 8.0)
+    probe_pass = float(getattr(settings, "discovery_probe_pass", 0) or 0)
     keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
     out = []
     for key in keys:
+        if db.query(Source).filter_by(site_key=key).first():
+            continue                       # 已经建成源的不再列在候选池
         probe = db.get(SourceProbe, key)
         rel = float(probe.relevance) if (probe and probe.ok) else 0.0
         score = discovery_svc.candidate_score(db, key, rel)   # 含 LLM 内容相关度,不再恒为 0
-        if score >= min_score:
-            evs = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
-            out.append({"identity_key": key, "score": score,
-                        "channels": sorted({e.channel for e in evs}),
-                        "hits": sum(e.hit_count for e in evs),
-                        "llm_relevance": rel if probe else None,
-                        "llm_reason": (probe.reason if probe else None),
-                        "probed": bool(probe)})
+        if score < min_score:
+            continue
+        evs = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
+        chans = sorted({e.channel for e in evs})
+        multi = (len(chans) >= 2 or any(e.was_cluster_primary for e in evs)
+                 or (probe_pass > 0 and rel >= probe_pass and "source_search" in chans))
+        # 没自动入库的,必须说得出为什么——否则候选池里一堆东西不知道卡在哪
+        if score < threshold and not multi:
+            blocked = f"评分 {score} 未达 {threshold},且只有 {len(chans)} 个发现通道"
+        elif score < threshold:
+            blocked = f"评分 {score} 未达自动入库阈值 {threshold}"
+        elif not multi:
+            blocked = (f"只有 1 个发现通道且 LLM 初评{'未达 %s' % probe_pass if probe else '尚未进行'},"
+                       "按多通道闸门暂不自动入库")
+        else:
+            blocked = ""
+        out.append({"identity_key": key, "name": discovery_svc.candidate_name(db, key),
+                    "kind": ("公众号" if key.startswith("mp:") else
+                             "百家号" if key.startswith("bjh:") else
+                             "微博号" if key.startswith("wb:") else "网站"),
+                    "score": score, "threshold": threshold,
+                    "channels": chans, "hits": sum(e.hit_count for e in evs),
+                    "first_seen": min(e.first_seen for e in evs).isoformat(timespec="seconds"),
+                    "last_seen": max(e.last_seen for e in evs).isoformat(timespec="seconds"),
+                    "llm_relevance": rel if probe else None,
+                    "llm_reason": (probe.reason if probe else None),
+                    "probed": bool(probe), "blocked_reason": blocked})
     return sorted(out, key=lambda x: -x["score"])
+
+
+@api.post("/source-candidates/{identity_key:path}/admit")
+def admit_candidate(identity_key: str, need_id: str = "sec_events",
+                    db: Session = Depends(get_session),
+                    user: AppUser = Depends(require_roles("analyst"))):
+    """人工"收下"一个候选:直接建成 S4 试运行源(不必等它攒够自动入库分数)。"""
+    if db.query(Source).filter_by(site_key=identity_key).first():
+        raise HTTPException(409, "该候选已经建成源了")
+    if not db.query(SourceDiscoveryEvidence).filter_by(identity_key=identity_key).first():
+        raise HTTPException(404, "候选不存在")
+    src = discovery_svc.create_from_candidate(db, identity_key, need_id)
+    db.add(AuditLog(user_id=user.id, action="candidate.admit", target=identity_key))
+    db.commit()
+    return {"id": src.id, "name": src.name, "kind": src.kind, "entry_url": src.entry_url}
 
 
 class BlacklistIn(BaseModel):

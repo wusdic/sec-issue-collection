@@ -108,6 +108,38 @@ def candidate_score(db: Session, identity_key: str, llm_relevance: float = 0.0) 
     )
 
 
+def candidate_name(db: Session, key: str) -> str:
+    """候选的展示名:优先用证据里带的名字(公众号名/结果标题),没有就用键本身。"""
+    rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
+    return next((r.display_name for r in rows if r.display_name), key)
+
+
+def create_from_candidate(db: Session, key: str, need_id: str, score: float | None = None) -> Source:
+    """候选键 → 建成 trial 源(自动入库与人工"收下"共用同一份构造逻辑)。"""
+    display = candidate_name(db, key)
+    is_mp = key.startswith("mp:")
+    plat_entry = url_tools.platform_entry_url(key)   # bjh:/wb: → 该号的主页(就是文章列表)
+    entry = None if is_mp else (plat_entry or f"https://{key}/")
+    if is_mp:
+        ident, kind, adapter, cfg = key, "query", "sogou_wechat", {"account": key[3:]}
+    elif plat_entry:
+        # 平台号主页多为 JS 渲染,用通用列表适配器 + auto 渲染;身份键就是号本身
+        ident, kind, adapter, cfg = key, "page", "generic_list", {"render": "auto"}
+    else:
+        _sk, ident = url_tools.source_keys("page", entry, {})
+        kind, adapter, cfg = "page", "generic_rss", {}
+    src = Source(
+        name=f"[候选]{display}", identity_key=ident, site_key=key, discovery_score=score,
+        entry_url=entry, kind=kind, adapter=adapter, adapter_config=cfg,
+        credibility="S4",  # 候选一律 S4,转正人工定级
+        lifecycle="trial", serves_needs=[need_id],
+        discovered_from="discovery", trial_started_at=datetime.utcnow(),
+    )
+    db.add(src)
+    db.flush()
+    return src
+
+
 def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] | None = None) -> list[dict]:
     """日任务/每轮采集收尾:候选池评分,≥阈值自动建 trial 源(自动入库,转正仍需人工定级)。
 
@@ -136,33 +168,11 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
                  or (probe_pass > 0 and llm_scores.get(key, 0.0) >= probe_pass
                      and any(r.channel == "source_search" for r in rows_all)))
         if score >= threshold and multi:
-            rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
-            display = next((r.display_name for r in rows if r.display_name), key)
-            is_mp = key.startswith("mp:")
-            plat_entry = url_tools.platform_entry_url(key)   # bjh:/wb: → 该号的主页(就是文章列表)
-            entry = None if is_mp else (plat_entry or f"https://{key}/")
-            if is_mp:
-                ident, kind, adapter, cfg = key, "query", "sogou_wechat", {"account": key[3:]}
-            elif plat_entry:
-                # 平台号主页多为 JS 渲染,用通用列表适配器 + auto 渲染;身份键就是号本身
-                ident, kind, adapter, cfg = key, "page", "generic_list", {"render": "auto"}
-            else:
-                _sk, ident = url_tools.source_keys("page", entry, {})
-                kind, adapter, cfg = "page", "generic_rss", {}
-            db.add(Source(
-                name=f"[候选]{display}",
-                identity_key=ident, site_key=key, discovery_score=score,
-                entry_url=entry,
-                kind=kind,
-                adapter=adapter,
-                adapter_config=cfg,
-                credibility="S4",  # 候选一律 S4,转正人工定级
-                lifecycle="trial", serves_needs=[need_id],
-                discovered_from="discovery", trial_started_at=datetime.utcnow(),
-            ))
+            src = create_from_candidate(db, key, need_id, score)
             item["auto_trial"] = True
-            item["name"] = display
-            auto_added.append(display)
+            item["name"] = src.name.replace("[候选]", "")
+            item["source_id"] = src.id
+            auto_added.append(item["name"])
         results.append(item)
     db.flush()
     if auto_added:

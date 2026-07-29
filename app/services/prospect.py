@@ -591,7 +591,8 @@ def _run(need_id: str):
             _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"],
                  note=r.get("note", ""), stats=r.get("stats", {}),
                  engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0),
-                 dropped_top=r.get("dropped_top", []), new_columns=r.get("new_columns", []))
+                 dropped_top=r.get("dropped_top", []), new_columns=r.get("new_columns", []),
+                 new_keys=r.get("new_keys", []))
             if not r["new_keys"]:
                 # 一无所获必须留痕:否则"主动找源"会长期静默空转,没人知道它其实一直没用
                 from app.services import actions
@@ -608,7 +609,15 @@ def _run(need_id: str):
                 _set(phase="候选源相关度初评(LLM)", done=0, total=0, current="")
                 p = probe_pending(db, need_id,
                                   on_progress=lambda d, t, c: _set(done=d, total=t, current=c))
-                _set(probed=p.get("probed", 0))
+                scores = llm_scores(db)
+                _set(probed=p.get("probed", 0),
+                     new_candidates_detail=[
+                         {"key": k, "name": discovery.candidate_name(db, k),
+                          "kind": ("公众号" if k.startswith("mp:") else
+                                   "百家号" if k.startswith("bjh:") else
+                                   "微博号" if k.startswith("wb:") else "网站"),
+                          "llm_relevance": scores.get(k)}
+                         for k in r["new_keys"]])
 
         _set(phase="评分与自动入库", current="")
         cands = discovery.evaluate_candidates(db, need_id, llm_scores(db))

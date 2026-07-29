@@ -565,3 +565,62 @@ def test_probe_pass_disabled_keeps_strict_gate(db, need, monkeypatch):
     discovery.record_evidence(db, "https://probed-off.cn/a", "source_search")
     discovery.evaluate_candidates(db, need.id, {"probed-off.cn": 1.0})
     assert db.query(Source).filter_by(site_key="probed-off.cn").first() is None
+
+
+# ---------------- ⑩ 候选池必须看得见、能操作 ----------------
+
+def test_candidates_api_shows_name_and_blocked_reason(db, need, monkeypatch):
+    """此前候选池没有任何入口,发现到的渠道等于进黑洞;而且"没入库"从不说明卡在哪。"""
+    from app.api.routes import source_candidates
+    from app.services import discovery
+    monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 99)   # 谁都达不到
+    discovery.record_evidence(db, None, "source_search", display_name="平安北京",
+                              wechat_account="平安北京")
+    db.flush()
+    rows = [r for r in source_candidates(min_score=0, db=db, _=None)
+            if r["identity_key"] == "mp:平安北京"]
+    assert rows, "候选没出现在候选池里"
+    c = rows[0]
+    assert c["name"] == "平安北京" and c["kind"] == "公众号"
+    assert c["channels"] == ["source_search"] and c["hits"] >= 1
+    assert "未达" in c["blocked_reason"]              # 说得出卡在哪
+
+
+def test_candidate_already_a_source_is_hidden(db, need, monkeypatch):
+    from app.api.routes import source_candidates
+    from app.services import discovery
+    discovery.record_evidence(db, "https://cand-hidden.cn/a", "source_search")
+    db.add(Source(name="已建源", kind="page", adapter="generic_list", credibility="S3", tier="B",
+                  lifecycle="active", serves_needs=[need.id],
+                  entry_url="https://cand-hidden.cn/c/", site_key="cand-hidden.cn"))
+    db.flush()
+    keys = {r["identity_key"] for r in source_candidates(min_score=0, db=db, _=None)}
+    assert "cand-hidden.cn" not in keys
+
+
+def test_admit_candidate_creates_trial_source(db, need):
+    """不等自动入库,人工一键收下。"""
+    from app.api.routes import admit_candidate
+    from app.models import AppUser
+    from app.services import discovery
+    user = db.query(AppUser).filter_by(role="admin").first()
+    discovery.record_evidence(db, None, "source_search", display_name="网信中国",
+                              wechat_account="网信中国")
+    db.flush()
+    out = admit_candidate("mp:网信中国", need_id=need.id, db=db, user=user)
+    src = db.get(Source, out["id"])
+    assert src.lifecycle == "trial" and src.credibility == "S4"
+    assert src.kind == "query" and src.adapter == "sogou_wechat"
+    assert (src.adapter_config or {}).get("account") == "网信中国"
+
+
+def test_admit_baijiahao_candidate_gets_usable_entry(db, need):
+    from app.api.routes import admit_candidate
+    from app.models import AppUser
+    from app.services import discovery
+    user = db.query(AppUser).filter_by(role="admin").first()
+    discovery.record_evidence(db, None, "source_search", display_name="某安全作者",
+                              platform_key="bjh:2024")
+    db.flush()
+    out = admit_candidate("bjh:2024", need_id=need.id, db=db, user=user)
+    assert out["entry_url"] == "https://author.baidu.com/home?app_id=2024"
