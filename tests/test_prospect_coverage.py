@@ -462,3 +462,106 @@ def test_drop_reasons_are_itemised(db, need, monkeypatch):
     assert r["stats"]["already_source"] == 1 and r["stats"]["blacklisted"] == 1
     assert {d["key"] for d in r["dropped_top"]} == {"known-x.cn", "banned-x.cn"}
     assert "已有的源" in r["note"] and "已拉黑" in r["note"]
+
+
+# ---------------- ⑨ 搜狗结果自带号名 / 已有源站点反推栏目 / 单通道也能入库 ----------------
+
+class _SogouLike:
+    """搜狗微信:结果页自带公众号名(不必逐条还原临时链)。"""
+    def __init__(self, *_a, **_k): pass
+    def search_page(self, q, page, tf=None):
+        if page:
+            return None
+        return [DiscoveredItem(url="https://weixin.sogou.com/link?url=AAA", title="网警通报",
+                               wechat_account="平安北京"),
+                DiscoveredItem(url="https://weixin.sogou.com/link?url=BBB", title="处罚案例",
+                               wechat_account="网信中国")]
+
+
+def test_sogou_account_used_without_resolving(db, need, monkeypatch):
+    """790 条搜狗结果此前全被当跳转链、受配额限制白丢——结果页本来就带号名。"""
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _SogouLike())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_resolve_redirect",
+                        lambda u: pytest.fail("自带号名时不该再去还原跳转链"))
+    monkeypatch.setattr(prospect, "_wechat_account",
+                        lambda u: pytest.fail("自带号名时不该再抓文章解析"))
+    r = prospect.run_once(db, need.id)
+    assert set(r["new_keys"]) == {"mp:平安北京", "mp:网信中国"}
+    assert r["stats"]["new_wechat"] == 2 and r["stats"]["redirect"] == 0
+
+
+def test_redirect_budget_skips_are_counted(db, need, monkeypatch):
+    """因配额跳过的跳转链必须计数并写进结论:此前 754 条静默丢弃,页面一个字没提。"""
+    monkeypatch.setattr(settings, "prospect_resolve_max", 1)
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            return [DiscoveredItem(url=f"https://www.baidu.com/link?url=X{i}", title=f"结果{i}")
+                    for i in range(5)]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_resolve_redirect", lambda u: "https://real-a.cn/x")
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["redirect"] == 5 and r["stats"]["resolved"] == 1
+    assert r["stats"]["redirect_over_budget"] == 4
+    assert "还原配额" in r["note"]
+
+
+def test_hits_on_existing_site_become_columns(db, need, monkeypatch):
+    """站点已有源 ≠ 该栏目已在采:miit.gov.cn 命中 162 条,应反推出漏采栏目而不是白丢。"""
+    from app.services import columns
+    parent = Source(name="工信部", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+                    lifecycle="active", serves_needs=[need.id], entry_url="https://miit-x.gov.cn/",
+                    site_key="miit-x.gov.cn", identity_key="miit-x.gov.cn")
+    db.add(parent); db.flush()
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            return [DiscoveredItem(url=f"https://miit-x.gov.cn/tongbao/2026-07/{i}.html",
+                                   title=f"通报{i}") for i in range(3)]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["工信部 通报"])
+    monkeypatch.setattr(columns, "validate_column",
+                        lambda url, *a, **k: {"url": url, "valid": True, "article_count": 6,
+                                              "consistency": 0.9, "relevance": 0.8})
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["already_source"] == 3
+    assert r["stats"]["column_hints"] == 1 and r["new_columns"]
+    kid = db.query(Source).filter_by(site_key="miit-x.gov.cn",
+                                     discovered_from="column_auto").one()
+    assert kid.entry_url.endswith("/tongbao/2026-07/")
+    assert (kid.adapter_config or {}).get("parent_site_id") == parent.id
+    assert "漏采栏目" in r["note"] or "补到" in r["note"]
+
+
+def test_probe_verified_single_channel_can_register(db, need, monkeypatch):
+    """主动找源是单通道,过不了多通道闸门 → 实测一轮 4 个候选入库 0 个。
+    LLM 初评判定确实相关时,应视为第二重证据放行。"""
+    from app.services import discovery
+    monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 0.1)
+    monkeypatch.setattr(settings, "discovery_probe_pass", 0.7)
+    discovery.record_evidence(db, "https://probed-new.cn/a", "source_search")
+    # 没有初评分 → 单通道,仍不入库
+    discovery.evaluate_candidates(db, need.id, {})
+    assert db.query(Source).filter_by(site_key="probed-new.cn").first() is None
+    # 初评分达标 → 放行
+    discovery.evaluate_candidates(db, need.id, {"probed-new.cn": 0.9})
+    assert db.query(Source).filter_by(site_key="probed-new.cn").first() is not None
+
+
+def test_probe_pass_disabled_keeps_strict_gate(db, need, monkeypatch):
+    from app.services import discovery
+    monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 0.1)
+    monkeypatch.setattr(settings, "discovery_probe_pass", 0)      # 关掉这条通路
+    discovery.record_evidence(db, "https://probed-off.cn/a", "source_search")
+    discovery.evaluate_candidates(db, need.id, {"probed-off.cn": 1.0})
+    assert db.query(Source).filter_by(site_key="probed-off.cn").first() is None

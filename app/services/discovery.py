@@ -127,8 +127,14 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
         score = candidate_score(db, key, llm_scores.get(key, 0.0))
         item = {"identity_key": key, "score": score, "auto_trial": False}
         rows_all = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
-        # 硬闸门:单通道的孤证(常是正文里偶然出现的名字)不自动入库,需≥2 个发现通道或曾为同稿首发
-        multi = len({r.channel for r in rows_all}) >= 2 or any(r.was_cluster_primary for r in rows_all)
+        # 硬闸门:单通道的孤证(常是正文里偶然出现的名字)不自动入库。
+        # 但"主动找源命中 + LLM 初评判定确实持续产出安全内容"本身就是有意的双重证据,
+        # 否则主动找源找到的渠道永远卡在候选池进不了库(实测一轮 4 个候选、入库 0 个)。
+        probe_pass = float(getattr(settings, "discovery_probe_pass", 0) or 0)
+        multi = (len({r.channel for r in rows_all}) >= 2
+                 or any(r.was_cluster_primary for r in rows_all)
+                 or (probe_pass > 0 and llm_scores.get(key, 0.0) >= probe_pass
+                     and any(r.channel == "source_search" for r in rows_all)))
         if score >= threshold and multi:
             rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
             display = next((r.display_name for r in rows if r.display_name), key)

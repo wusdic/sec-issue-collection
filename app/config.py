@@ -121,6 +121,9 @@ class Settings:
     # 源自动发现:搜索/采集中出现的新域名累积证据评分≥此值即自动建 trial 源(自动入库,
     # 仍 S4 待人工定级)。越低越激进(新源多但杂),越高越保守。留空则用 discovery.yaml 的值。
     discovery_auto_trial_threshold: float = float(os.getenv("DISCOVERY_AUTO_TRIAL_THRESHOLD", "4.0"))
+    # 主动找源命中的渠道:LLM 初评相关度≥此值即视为"第二重证据",可单通道自动入库试运行。
+    # 否则主动找源找到的渠道永远卡在候选池(单通道过不了多通道闸门)。0=关闭这条通路
+    discovery_probe_pass: float = float(os.getenv("DISCOVERY_PROBE_PASS", "0.7"))
 
     # 源健康:连续失败(采集异常/试抓抓不到)达到此次数即自动标记停用(不再采集)。默认 3
     source_auto_retire_fail_streak: int = int(os.getenv("SOURCE_AUTO_RETIRE_FAIL_STREAK", "3"))
@@ -141,7 +144,9 @@ class Settings:
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
     prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "40"))       # 单轮最多跑多少条找源词
     # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条
-    prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "60"))
+    prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "200"))
+    # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个
+    prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "8"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)
     # 候选源 LLM 相关度初评:抓候选站首页抽样标题,让模型判"是否持续产出国内安全事件内容"
     probe_llm_enabled: bool = os.getenv("PROBE_LLM_ENABLED", "true").lower() in ("1", "true", "yes", "on")

@@ -900,12 +900,16 @@ function renderProspect(h){
       <div class="sub" style="margin-top:4px">结果去向:跳转链 ${st.redirect||0}(还原成功 ${st.resolved||0})｜
         通用大平台丢弃 ${st.platform||0}｜已是现有源 ${st.already_source||0}｜已拉黑 ${st.blacklisted||0}｜
         指向搜索引擎自身 ${st.engine_self||0}｜链接不可用 ${st.bad_url||0}
+        ${st.redirect_over_budget?`｜<span class="pill warn">跳转链因配额跳过 ${st.redirect_over_budget}</span>`:""}
+        ${st.column_hints?`｜<b>从已有源补到栏目 ${st.column_hints}</b>`:""}
         ${st.wechat_unresolved?`｜公众号解析失败 ${st.wechat_unresolved}`:""}
         ${st.new_wechat?`｜<b>新公众号 ${st.new_wechat}</b>`:""}
         ${st.new_platform_account?`｜<b>新平台号 ${st.new_platform_account}</b>`:""}</div>
       ${(h.dropped_top&&h.dropped_top.length)?`<div class="sub" style="margin-top:4px">丢弃最多的渠道(看看是不是误伤):
         ${h.dropped_top.map(d=>`<span class="pill">${esc(d.key)} ×${d.count}</span>`).join(" ")}</div>`:''}
       </details>`:''}
+    ${(h.new_columns&&h.new_columns.length)?`<div class="sub" style="margin-top:4px">从已有源站点补到的漏采栏目:
+      ${h.new_columns.map(c=>`<span class="pill ok" title="搜索命中 ${c.hits} 篇">${esc(c.url)}</span>`).join(" ")}</div>`:''}
     ${(h.trial_names&&h.trial_names.length)?`<div class="sub" style="margin-top:4px">本轮入库(S4 试运行,待人工定级):
       ${h.trial_names.map(n=>`<span class="pill info">${esc(n)}</span>`).join(" ")}</div>`:''}`;
   return false;

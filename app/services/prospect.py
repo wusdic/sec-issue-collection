@@ -205,10 +205,11 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
           "platform": 0, "bad_url": 0, "empty_pages": 0, "blocked_pages": 0,
           # 丢弃原因细分:"已是现有源"和"被拉黑"是两回事,混成一个数字等于没说
           "already_source": 0, "blacklisted": 0, "engine_self": 0, "invalid_name": 0,
-          "wechat_unresolved": 0, "wechat_over_budget": 0,
-          "new_wechat": 0, "new_platform_account": 0}
+          "wechat_unresolved": 0, "wechat_over_budget": 0, "redirect_over_budget": 0,
+          "new_wechat": 0, "new_platform_account": 0, "column_hints": 0}
     dropped: dict[str, int] = {}      # 被丢弃的域名 → 次数(给人看"到底丢了什么")
     budget: dict[str, int] = {}
+    col_hints: dict[str, set] = {}    # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目
     edetail: dict[str, dict] = {e[0]: {"engine": e[0], "pages": 0, "items": 0, "errors": 0}
                                 for e in engines}
     new_keys, resolved_used = set(), 0
@@ -237,9 +238,28 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                     for it in items:
                         st["raw_items"] += 1
                         url = it.url
+                        # 搜狗微信的结果页自带公众号名:直接拿来用,不必逐条还原临时链再抓文章
+                        # (此前 790 条搜狗结果全被当成跳转链,受配额限制只还原了几十条,绝大多数白丢)
+                        acct = (getattr(it, "wechat_account", None) or "").strip()
+                        if acct:
+                            key = f"mp:{acct}"
+                            why_skip = _why_known(db, key)
+                            if why_skip:
+                                st[why_skip] += 1
+                                dropped[key] = dropped.get(key, 0) + 1
+                                continue
+                            k = discovery.record_evidence(db, None, "source_search",
+                                                          display_name=acct, wechat_account=acct)
+                            if k:
+                                new_keys.add(k)
+                                st["new_wechat"] += 1
+                            else:
+                                st["invalid_name"] += 1
+                            continue
                         if url_tools.is_search_redirect(url):
                             st["redirect"] += 1
                             if resolve_cap and resolved_used >= resolve_cap:
+                                st["redirect_over_budget"] += 1
                                 continue     # 还原有配额,超了就跳过(否则一轮几百次请求)
                             resolved_used += 1
                             url = _resolve_redirect(url)
@@ -257,6 +277,10 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                         if why_skip:
                             st[why_skip] += 1
                             dropped[key] = dropped.get(key, 0) + 1
+                            if why_skip == "already_source":
+                                # 站点已有源 ≠ 这个栏目已在采。搜索命中的正是"相关内容所在的页面",
+                                # 拿它反推栏目,补上该站尚未覆盖的栏目——这批结果此前是纯浪费。
+                                col_hints.setdefault(key, set()).add(url)
                             continue
                         # 复用统一入口:黑名单/已注册/主体名校验/去重全都走同一套规则
                         k = discovery.record_evidence(
@@ -282,12 +306,73 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
             db.commit()
         except Exception:  # noqa: BLE001
             db.rollback()
+    hinted = _columns_from_hints(db, col_hints)
+    st["column_hints"] = len(hinted)
     out = {"queries": len(queries), "engines": [e[0] for e in engines],
-           "hits": st["raw_items"], "new_keys": sorted(new_keys),
+           "hits": st["raw_items"], "new_keys": sorted(new_keys), "new_columns": hinted,
            "stats": st, "engine_detail": list(edetail.values()),
            "dropped_top": sorted(({"key": k, "count": n} for k, n in dropped.items()),
                                  key=lambda x: -x["count"])[:20]}
     out["note"] = explain(out)
+    return out
+
+
+def _columns_from_hints(db, hints: dict[str, set]) -> list[dict]:
+    """把"已有源站点上搜到的相关页面"反推成该站尚未采集的栏目并落库。
+
+    站点已有源 ≠ 这个栏目已在采:比如 miit.gov.cn 已经是源,但搜索命中的 162 个页面可能
+    分布在好几个我们还没定位到的栏目下。这批结果原来是纯浪费,现在拿来补栏目。
+    """
+    from app.services import columns
+    cap = int(getattr(settings, "prospect_column_hint_max", 8) or 0)
+    out: list[dict] = []
+    if not hints or cap <= 0:
+        return out
+    for site, urls in hints.items():
+        parent = (db.query(Source).filter_by(site_key=site)
+                  .filter(Source.lifecycle != "retired").first())
+        if not parent:
+            continue
+        # 文章 URL → 其所在目录(栏目页),按命中次数排序:命中越多越可能是稳定栏目
+        cand: dict[str, int] = {}
+        for u in urls:
+            pr = urlparse(u)
+            segs = [x for x in (pr.path or "").split("/") if x]
+            if len(segs) < 2:
+                continue
+            col = f"{pr.scheme}://{pr.netloc}/" + "/".join(segs[:-1]) + "/"
+            cand[col] = cand.get(col, 0) + 1
+        ranked = sorted(cand.items(), key=lambda kv: -kv[1])[:cap]
+        terms = columns.relevance_terms(db, (parent.serves_needs or ["sec_events"])[0])
+        for col_url, n in ranked:
+            ik = url_tools.normalize_url(col_url)
+            if db.query(Source).filter_by(identity_key=ik).first():
+                continue                       # 该栏目已经是源了
+            v = columns.validate_column(col_url, (parent.adapter_config or {}).get("render", "auto"),
+                                        terms)
+            if not v["valid"]:
+                continue
+            child = Source(
+                name=f"{parent.name}·搜索发现栏目", entry_url=col_url, kind="page",
+                adapter="generic_list",
+                adapter_config={"parent_site_id": parent.id, "render": "auto"},
+                credibility=parent.credibility, tier=parent.tier, lifecycle="active",
+                serves_needs=list(parent.serves_needs or []),
+                identity_key=ik, site_key=parent.site_key, discovered_from="column_auto",
+                note=(f"由主动找源命中 {n} 篇反推的栏目(文章{v['article_count']}"
+                      f"/一致性{v['consistency']}/相关度{v.get('relevance', 0)})"))
+            db.add(child)
+            try:
+                db.flush()
+            except Exception:  # noqa: BLE001 并发/重复不致命
+                db.rollback()
+                continue
+            out.append({"site": site, "url": col_url, "hits": n, "name": child.name})
+    if out:
+        try:
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
     return out
 
 
@@ -343,9 +428,13 @@ def explain(r: dict) -> str:
             parts.append(f"{st['redirect']} 条是搜索引擎跳转链且还原失败")
         if st.get("platform"):
             parts.append(f"{st['platform']} 条落在通用大平台(知乎/CSDN/门户等,不作专业源)")
+        if st.get("redirect_over_budget"):
+            parts.append(f"{st['redirect_over_budget']} 条跳转链因还原配额被跳过"
+                         "(设置页调大『跳转链还原上限』)")
         if st.get("already_source"):
-            parts.append(f"{st['already_source']} 条来自已有的源(说明这些词搜到的还是老渠道,"
-                         "该换更细的找源词或换引擎)")
+            parts.append(f"{st['already_source']} 条来自已有的源"
+                         + (f",已从中补到 {st['column_hints']} 个漏采栏目" if st.get("column_hints")
+                            else ",说明这些词搜到的还是老渠道,该换更细的找源词或换引擎"))
         if st.get("blacklisted"):
             parts.append(f"{st['blacklisted']} 条已拉黑")
         if st.get("engine_self"):
@@ -355,6 +444,11 @@ def explain(r: dict) -> str:
         why = ";".join(parts) or "全部被去重/校验规则挡下"
         return f"抓到 {st.get('raw_items', 0)} 条结果,但没有新渠道:{why}"
     extra = []
+    if st.get("redirect_over_budget"):
+        extra.append(f"另有 {st['redirect_over_budget']} 条跳转链因还原配额被跳过"
+                     "(设置页可调大『跳转链还原上限』)")
+    if st.get("column_hints"):
+        extra.append(f"顺带从已有源站点补到 {st['column_hints']} 个漏采栏目")
     if st.get("new_wechat"):
         extra.append(f"其中公众号 {st['new_wechat']} 个")
     if st.get("new_platform_account"):
@@ -497,7 +591,7 @@ def _run(need_id: str):
             _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"],
                  note=r.get("note", ""), stats=r.get("stats", {}),
                  engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0),
-                 dropped_top=r.get("dropped_top", []))
+                 dropped_top=r.get("dropped_top", []), new_columns=r.get("new_columns", []))
             if not r["new_keys"]:
                 # 一无所获必须留痕:否则"主动找源"会长期静默空转,没人知道它其实一直没用
                 from app.services import actions
