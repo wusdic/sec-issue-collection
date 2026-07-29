@@ -29,11 +29,24 @@ def _init():
     profiles.load_dictionaries(db, np.id, paths["dictionaries"])
     profiles.load_keyword_set(db, np.id, paths["keywords"])
     profiles.load_seed_sources(db, np.id, paths["sources"])
-    for uname, role in [("editor1", "editor"), ("reviewer1", "reviewer"), ("reviewer2", "reviewer")]:
+    # admin 也要有:好几个测试直接查 role="admin" 拿操作人,缺了它只有在别的测试文件
+    # 恰好先建过 admin 时才碰巧能过——单跑本文件就 AttributeError
+    for uname, role in [("admin1", "admin"), ("editor1", "editor"),
+                        ("reviewer1", "reviewer"), ("reviewer2", "reviewer")]:
         db.add(AppUser(username=uname, display_name=uname,
                        password_hash=hash_password("x"), role=role))
     db.commit()
     db.close()
+
+
+@pytest.fixture(autouse=True)
+def _no_prospect_delay():
+    """找源的请求间隔是给真实搜索引擎留的,测试里全是假引擎,不该真去 sleep。"""
+    from app.config import settings
+    old = getattr(settings, "prospect_delay_seconds", 1.5)
+    settings.prospect_delay_seconds = 0
+    yield
+    settings.prospect_delay_seconds = old
 
 
 @pytest.fixture()

@@ -156,6 +156,11 @@ class Settings:
     prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "400"))
     # 某引擎在本轮内连续失败到这个次数就停用,不再拿剩下的词去撞反爬(0=不停用)
     prospect_engine_fail_streak: int = int(os.getenv("PROSPECT_ENGINE_FAIL_STREAK", "8"))
+    # 两次搜索请求之间的间隔(秒),连错时按 2 倍退避,封顶 30 秒。0=不等
+    prospect_delay_seconds: float = float(os.getenv("PROSPECT_DELAY_SECONDS", "1.5"))
+    # 某个"我们早就有的域"在一轮里霸榜到这个次数,后续的词就用 -site: 把它排掉
+    prospect_exclude_after_hits: int = int(os.getenv("PROSPECT_EXCLUDE_AFTER_HITS", "25"))
+    prospect_exclude_max_sites: int = int(os.getenv("PROSPECT_EXCLUDE_MAX_SITES", "6"))
     # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个
     prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "8"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)

@@ -897,3 +897,140 @@ def test_cn_domain_kept_even_with_english_title(db, need, monkeypatch):
     monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
     r = prospect.run_once(db, need.id)
     assert r["stats"]["non_chinese"] == 0 and r["new_keys"]
+
+
+# ---------------- ⑧ 已有域霸榜 / 页脚模板链 / 结果样本 ----------------
+
+def test_hog_domain_excluded_from_later_queries(db, need, monkeypatch):
+    """941 条结果里 905 条来自已收录的站(904 条只来自两个域)=整轮空转。
+    某个已有域霸榜到阈值后,后续找源词应自动加 -site: 把它排掉。"""
+    monkeypatch.setattr(settings, "prospect_exclude_after_hits", 3)
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 0)
+    db.add(Source(name="工信部", kind="page", adapter="generic_rss", credibility="S1", tier="B",
+                  lifecycle="active", serves_needs=[need.id],
+                  entry_url="https://hog-miit.gov.cn/", site_key="hog-miit.gov.cn"))
+    db.flush()
+    seen = []
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            seen.append(q)
+            return None if page else [
+                DiscoveredItem(url=f"https://hog-miit.gov.cn/n/{len(seen)}.html", title="工信部通报")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: [f"词{i}" for i in range(6)])
+    r = prospect.run_once(db, need.id)
+    assert not any("-site:" in q for q in seen[:3]), "达到阈值前不该排除"
+    assert seen[-1].endswith("-site:hog-miit.gov.cn"), seen
+    assert r["stats"]["excluded_sites"] == 1
+    detail = {e["engine"]: e for e in r["engine_detail"]}
+    assert detail["bing_search"]["excluded"] == ["hog-miit.gov.cn"]
+
+
+def test_exclusion_capped(db, need, monkeypatch):
+    """排除词占查询长度,排太多反而压召回——按上限封顶。"""
+    monkeypatch.setattr(settings, "prospect_exclude_after_hits", 1)
+    monkeypatch.setattr(settings, "prospect_exclude_max_sites", 2)
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 0)
+    for i in range(4):
+        db.add(Source(name=f"站{i}", kind="page", adapter="generic_rss", credibility="S1",
+                      tier="B", lifecycle="active", serves_needs=[need.id],
+                      entry_url=f"https://cap{i}.gov.cn/", site_key=f"cap{i}.gov.cn"))
+    db.flush()
+
+    class _E:
+        n = 0
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            _E.n += 1
+            return [DiscoveredItem(url=f"https://cap{_E.n % 4}.gov.cn/a.html", title="通报")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: [f"词{i}" for i in range(10)])
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["excluded_sites"] == 2
+
+
+def test_wechat_engine_not_polluted_by_exclusions(db, need, monkeypatch):
+    """公众号候选是 mp:号名,不是站点,不该把它算进"霸榜域"、更不该拿去 -site:。"""
+    monkeypatch.setattr(settings, "prospect_exclude_after_hits", 1)
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 0)
+    db.add(Source(name="某号", kind="query", adapter="sogou_wechat", credibility="S3", tier="B",
+                  lifecycle="active", serves_needs=[need.id],
+                  adapter_config={"account": "霸榜号"}, site_key="mp:霸榜号",
+                  identity_key="mp:霸榜号"))
+    db.flush()
+    seen = []
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            seen.append(q)
+            return None if page else [
+                DiscoveredItem(url="https://mp.weixin.qq.com/s/AAA", title="通报",
+                               wechat_account="霸榜号")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: [f"词{i}" for i in range(5)])
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["excluded_sites"] == 0
+    assert not any("-site:" in q for q in seen)
+
+
+def test_beian_footer_links_dropped(db, need, monkeypatch):
+    """备案/举报页脚链几乎每个中文站底部都有,被通用抽链扫进来就会堆成假的"结果最多的域"。"""
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 0)
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url="https://beian.miit.gov.cn/", title="京ICP备10036305号"),
+                DiscoveredItem(url="https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=1",
+                               title="京公网安备11010802022657号"),
+                DiscoveredItem(url="https://real-new-sec.cn/tongbao/1.html", title="某地网警通报")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["boilerplate"] == 2
+    assert r["new_keys"] == ["real-new-sec.cn"]
+
+
+def test_engine_detail_carries_url_samples(db, need, monkeypatch):
+    """光看统计数字判不出"900 条全落在两个已有域"是真结果还是页脚模板链,必须留样本。"""
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 0)
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url="https://sample-a.gov.cn/n/1.html", title="样本一")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    r = prospect.run_once(db, need.id)
+    detail = {e["engine"]: e for e in r["engine_detail"]}
+    assert any("sample-a.gov.cn" in s for s in detail["bing_search"]["url_samples"])
+
+
+def test_pace_backs_off_on_failure_streak(monkeypatch):
+    """连错时要退避:不退避的话熔断只是让引擎"更快地死",召回一样是 0。"""
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 1.0)
+    slept = []
+    monkeypatch.setattr(prospect._time, "sleep", slept.append)
+    prospect._pace("bing_search", 0)
+    prospect._pace("bing_search", 3)
+    prospect._pace("bing_search", 99)
+    assert slept == [1.0, 8.0, 16.0]
+
+
+def test_pace_disabled_by_zero(monkeypatch):
+    monkeypatch.setattr(settings, "prospect_delay_seconds", 0)
+    monkeypatch.setattr(prospect._time, "sleep",
+                        lambda *_: pytest.fail("设为 0 时不该 sleep"))
+    prospect._pace("bing_search", 5)

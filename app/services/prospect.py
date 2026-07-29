@@ -11,6 +11,7 @@
    候选总分,让排序看内容而不只看被提及次数。结果按 probe_ttl_days 复用不重评。
 """
 import threading
+import time as _time
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
@@ -136,7 +137,23 @@ def _engines():
 
 _SKIP_HOSTS = {"baidu.com", "bing.com", "sogou.com", "google.com", "so.com", "zhihu.com",
                "weibo.com", "douyin.com", "bilibili.com", "csdn.net", "jianshu.com",
-               "163.com", "qq.com", "sina.com.cn", "sohu.com", "toutiao.com", "baijiahao.baidu.com"}
+               "163.com", "qq.com", "sina.com.cn", "sina.cn", "sohu.com", "toutiao.com",
+               "baijiahao.baidu.com"}
+
+# 页脚模板链:ICP 备案、公安网备、违法有害信息举报——几乎每个中文站底部都有一串。
+# 它们不是搜索结果,一旦被通用抽链兜底扫进来,就会在统计里堆成"结果最多的域名",
+# 把真正的召回情况整个盖住。
+_BOILERPLATE_HOSTS = ("beian.miit.gov.cn", "beian.gov.cn", "beian.cac.gov.cn",
+                      "12377.cn", "12321.cn", "12318.gov.cn", "jubao.cac.gov.cn")
+_BOILERPLATE_PATHS = ("/icp/", "/beian", "/portal/registersysteminfo")
+
+
+def _is_boilerplate(url: str) -> bool:
+    u = (url or "").lower()
+    host = (urlparse(u).netloc or "").removeprefix("www.")
+    if any(host == h or host.endswith("." + h) for h in _BOILERPLATE_HOSTS):
+        return True
+    return any(p in u for p in _BOILERPLATE_PATHS)
 
 
 def _resolve_redirect(url: str) -> str:
@@ -215,6 +232,17 @@ def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
     return key, "", {}
 
 
+def _pace(ename: str, streak: int):
+    """请求之间留间隔,连错时再退避——搜狗/百度上一轮各只跑了 1 页和 3 页就被拦死。
+
+    不做退避的话,熔断只是让它"更快地死",召回一样是 0;慢一点反而能多跑几十页。
+    """
+    base = float(getattr(settings, "prospect_delay_seconds", 1.5) or 0)
+    if base <= 0:
+        return
+    _time.sleep(min(base * (2 ** min(streak, 4)), 30.0) if streak else base)
+
+
 def run_once(db, need_id: str, on_progress=None) -> dict:
     """跑一轮主动找源。
 
@@ -230,7 +258,7 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
           # 丢弃原因细分:"已是现有源"和"被拉黑"是两回事,混成一个数字等于没说
           "already_source": 0, "blacklisted": 0, "engine_self": 0, "invalid_name": 0,
           "wechat_unresolved": 0, "wechat_over_budget": 0, "redirect_over_budget": 0,
-          "redirect_cached": 0, "non_chinese": 0,
+          "redirect_cached": 0, "non_chinese": 0, "boilerplate": 0, "excluded_sites": 0,
           "new_wechat": 0, "new_platform_account": 0, "column_hints": 0}
     dropped: dict[str, int] = {}      # 被丢弃的域名 → 次数(给人看"到底丢了什么")
     budget: dict[str, int] = {}
@@ -242,6 +270,12 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     fail_streak: dict[str, int] = {name: 0 for name, _ in engines}
     streak_cap = int(getattr(settings, "prospect_engine_fail_streak", 8) or 0)
     redirect_cache: dict[str, str] = {}   # 同一条跳转链只还原一次
+    # 某引擎老把结果落在同几个"我们早就有的站"上时,后续的词直接用 -site: 把它们排掉。
+    # 实测 941 条结果里 905 条是现有源、其中 904 条只来自 miit/mps 两个域——不排掉等于整轮空转。
+    hog: dict[str, dict[str, int]] = {name: {} for name, _ in engines}
+    excl: dict[str, list[str]] = {name: [] for name, _ in engines}
+    hog_at = int(getattr(settings, "prospect_exclude_after_hits", 25) or 0)
+    hog_max = int(getattr(settings, "prospect_exclude_max_sites", 6) or 0)
     new_keys, resolved_used = set(), 0
     total = max(1, len(queries) * max(1, len(engines)))
     done = 0
@@ -253,9 +287,11 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                 edetail[ename].setdefault("stopped", f"连续失败 {streak_cap} 次,本轮停用")
                 done += 1
                 continue
+            eq = q + "".join(f" -site:{h}" for h in excl[ename])
             try:
                 for page in range(pages):
-                    items = eng.search_page(q, page)
+                    _pace(ename, fail_streak.get(ename, 0))
+                    items = eng.search_page(eq, page)
                     if items is None:
                         st["fetch_fail"] += 1
                         edetail[ename]["errors"] += 1
@@ -274,6 +310,11 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                         _diagnose_empty(eng, q, page, edetail[ename], st)
                         break
                     edetail[ename]["items"] += len(items)
+                    # 留几条真实结果样本:上一轮"必应 900 条全落在两个已有域"这种情况,
+                    # 光看统计数字判不出是真结果还是页脚模板链,有样本就一眼看穿
+                    for s in items[:2]:
+                        if len(edetail[ename].setdefault("url_samples", [])) < 6:
+                            edetail[ename]["url_samples"].append(f"{(s.title or '')[:40]} → {s.url[:110]}")
                     for it in items:
                         st["raw_items"] += 1
                         url = it.url
@@ -315,6 +356,10 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                             if url_tools.is_search_redirect(url):
                                 continue     # 还原失败(JS 跳转/需登录)
                             st["resolved"] += 1
+                        if _is_boilerplate(url):
+                            # 备案/举报中心这类页脚模板链:任何中文站底部都有,永远不是搜索结果
+                            st["boilerplate"] += 1
+                            continue
                         if not _looks_domestic(url, it.title):
                             # 中文词搜出来的纯英文外站(Thesaurus.com 之类)是引擎的跨语言噪声,
                             # 不该占候选池名额,也不值得再花一次 LLM 初评
@@ -335,6 +380,15 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                                 # 站点已有源 ≠ 这个栏目已在采。搜索命中的正是"相关内容所在的页面",
                                 # 拿它反推栏目,补上该站尚未覆盖的栏目——这批结果此前是纯浪费。
                                 col_hints.setdefault(key, set()).add(url)
+                                # 同一个已有域反复霸榜时,后面的词就把它 -site: 排掉,
+                                # 让搜索引擎去翻第二梯队的渠道——那里才有没收录过的源
+                                if hog_at and ":" not in key:
+                                    hog[ename][key] = hog[ename].get(key, 0) + 1
+                                    if (hog[ename][key] >= hog_at and key not in excl[ename]
+                                            and len(excl[ename]) < hog_max):
+                                        excl[ename].append(key)
+                                        st["excluded_sites"] += 1
+                                        edetail[ename].setdefault("excluded", []).append(key)
                             continue
                         # 复用统一入口:黑名单/已注册/主体名校验/去重全都走同一套规则
                         k = discovery.record_evidence(
@@ -591,7 +645,11 @@ def explain(r: dict) -> str:
         if st.get("already_source"):
             parts.append(f"{st['already_source']} 条来自已有的源"
                          + (f",已从中补到 {st['column_hints']} 个漏采栏目" if st.get("column_hints")
-                            else ",说明这些词搜到的还是老渠道,该换更细的找源词或换引擎"))
+                            else ",说明这些词搜到的还是老渠道,该换更细的找源词或换引擎")
+                         + (f";已自动 -site: 排除霸榜的 {st['excluded_sites']} 个域"
+                            if st.get("excluded_sites") else ""))
+        if st.get("boilerplate"):
+            parts.append(f"{st['boilerplate']} 条是备案/举报页脚模板链")
         if st.get("blacklisted"):
             parts.append(f"{st['blacklisted']} 条已拉黑")
         if st.get("engine_self"):
