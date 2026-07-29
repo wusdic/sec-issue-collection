@@ -42,7 +42,7 @@ def _valid_subject(name: str | None) -> bool:
 def record_evidence(db: Session, url: str | None, channel: str,
                     display_name: str | None = None, wechat_account: str | None = None,
                     doc_id: int | None = None, was_cluster_primary: bool = False,
-                    platform_key: str | None = None) -> str | None:
+                    platform_key: str | None = None, found_by_query: str | None = None) -> str | None:
     """登记一次候选源证据(D1-D6 通道统一入口)。返回 identity_key,已注册/黑名单返回 None。
 
     platform_key:百家号/微博等"平台内的号"(bjh:/wb:)。按注册域算它们会退化成
@@ -76,12 +76,14 @@ def record_evidence(db: Session, url: str | None, channel: str,
         ev.was_cluster_primary = ev.was_cluster_primary or was_cluster_primary
         if display_name:
             ev.display_name = display_name
+        if found_by_query and not ev.found_by_query:
+            ev.found_by_query = found_by_query
     else:
         db.add(SourceDiscoveryEvidence(
             identity_key=key, display_name=display_name,
             kind_guess="wechat_mp" if wechat_account else "website",
             channel=channel, evidence_doc_id=doc_id, evidence_url=url,
-            was_cluster_primary=was_cluster_primary,
+            was_cluster_primary=was_cluster_primary, found_by_query=found_by_query,
         ))
     db.flush()
     return key
@@ -193,6 +195,7 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
                      and any(r.channel == "source_search" for r in rows_all)))
         if score >= threshold and multi:
             src = create_from_candidate(db, key, need_id, score)
+            _credit_query(db, need_id, rows_all)
             item["auto_trial"] = True
             item["name"] = src.name.replace("[候选]", "")
             item["source_id"] = src.id
@@ -204,6 +207,18 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
                        f"新源自动入库试运行 {len(auto_added)} 个(S4 待定级):" + "、".join(auto_added[:10]),
                        need_id=need_id, count=len(auto_added), detail={"names": auto_added[:50]})
     return sorted(results, key=lambda x: -x["score"])
+
+
+def _credit_query(db: Session, need_id: str, rows) -> None:
+    """候选真的进了源库 —— 把功劳记回当初捞到它的那条找源词(进化机制最强的正反馈)。"""
+    q = next((r.found_by_query for r in rows if r.found_by_query), None)
+    if not q:
+        return
+    try:
+        from app.services import query_evolution
+        query_evolution.attribute_admitted(db, need_id, q)
+    except Exception:  # noqa: BLE001 回填失败不该挡住入库
+        pass
 
 
 def prune_candidates(db: Session, need_id: str) -> dict:

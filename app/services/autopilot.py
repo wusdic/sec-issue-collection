@@ -25,6 +25,8 @@ TASKS = [
     ("dedup", "整理源键与查重合并", "autopilot_dedup_days", 7),
     ("locate", "给根域源精准定位栏目", "autopilot_locate_days", 7),
     ("health", "源体检 + 停用源复检恢复", "autopilot_health_days", 3),
+    # 找源之前先进化词表:淘汰拖后腿的限定词、从语料里挖新词,这一轮就能用上
+    ("queries", "找源词进化:算增益、淘汰废词、挖新词", "autopilot_queries_days", 7),
     ("prospect", "主动找源 + 候选相关度初评", "autopilot_prospect_days", 7),
     ("grade", "试运行源自动定级/淘汰", "autopilot_grade_days", 1),
     ("candidates", "候选池:补初评 + 达标入库 + 清理无关", "autopilot_candidates_days", 1),
@@ -178,7 +180,30 @@ def _do_engines(db, need_id: str) -> dict:
     return r
 
 
-_ACTIONS = {"seeds": _do_seeds, "engines": _do_engines, "dedup": _do_dedup, "locate": _do_locate, "health": _do_health,
+def _do_queries(db, need_id: str) -> dict:
+    """找源词进化:算限定词增益、淘汰废词、从语料里挖新词。"""
+    from app.services import query_evolution
+    if not getattr(settings, "query_evolution_enabled", True):
+        return {"skipped": "关键词进化已关闭"}
+    r = query_evolution.evolve(db, need_id)
+    db.commit()
+    weak, added = r["terms"]["weak"], r["mutate"]["added"]
+    if weak or added:
+        from app.services import actions
+        bits = []
+        if weak:
+            bits.append("降级拖后腿的限定词 " + "、".join(
+                f"{w['term']}(增益 {w['lift']})" for w in weak[:5]))
+        if added:
+            bits.append(f"新增候选找源词 {len(added)} 条")
+        actions.record(db, "source.queries_evolved", ";".join(bits),
+                       need_id=need_id, count=len(added), detail=r)
+        db.commit()
+    return r
+
+
+_ACTIONS = {"seeds": _do_seeds, "engines": _do_engines, "queries": _do_queries,
+            "dedup": _do_dedup, "locate": _do_locate, "health": _do_health,
             "prospect": _do_prospect, "grade": _do_grade, "candidates": _do_candidates}
 
 

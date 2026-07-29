@@ -633,6 +633,28 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
                      "建议改用 RSS 地址或换源")}
 
 
+# ---------- 找源词表现 / 关键词进化 ----------
+
+@api.get("/query-evolution")
+def query_evolution_report(need_id: str = "sec_events", top: int = 12,
+                           db: Session = Depends(get_session),
+                           _: AppUser = Depends(current_user)):
+    """哪些找源词在干活、哪些限定词在拖后腿、词表正在怎么长。"""
+    from app.services import query_evolution
+    return query_evolution.report(db, need_id, top=top)
+
+
+@api.post("/query-evolution/run")
+def query_evolution_run(need_id: str = "sec_events", db: Session = Depends(get_session),
+                        user: AppUser = Depends(require_roles("analyst"))):
+    """立刻跑一轮词表进化(平时由自动运维按周期跑)。"""
+    from app.services import query_evolution
+    r = query_evolution.evolve(db, need_id)
+    db.add(AuditLog(user_id=user.id, action="query.evolve", target=need_id))
+    db.commit()
+    return r
+
+
 # ---------- 候选源池 M10 ----------
 
 @api.get("/source-candidates")

@@ -86,13 +86,11 @@ def combo_queries() -> list[str]:
     return out[:cap] if cap > 0 else out
 
 
-def build_queries(db, need_id: str) -> list[str]:
-    """本轮要跑的找源词 = 固定短词 + 配方生成的 2 词组合 + 覆盖度空白方向词。
+def seed_queries(db, need_id: str) -> list[str]:
+    """词表的原料池:固定短词 + 覆盖空白方向词 + 配方生成的 2 词组合。
 
-    覆盖空白词让"缺哪块就去找哪块的源"成为闭环,而不是每周重复搜同样的词。
+    这些只是"可以跑什么",跑不跑、按什么顺序跑由 query_evolution 按历史表现决定。
     """
-    # 顺序即优先级(cap 截断时靠后的会被丢掉):
-    # 固定短词 → 覆盖空白方向词(缺哪块补哪块,最该优先) → 通用组合词
     qs = list(base_queries())
     try:
         from app.services import coverage
@@ -100,14 +98,37 @@ def build_queries(db, need_id: str) -> list[str]:
     except Exception:  # noqa: BLE001 覆盖度算不出来不该挡住找源
         pass
     qs += combo_queries()
+    # 每个锚点单独也要能跑:增益(加了限定词到底是帮忙还是帮倒忙)全靠这个分母
+    r = _recipes()
+    qs += [str(x).strip() for x in (r.get("event_terms") or []) if str(x).strip()]
     seen, out = set(), []
     for q in qs:
         q = " ".join(q.split())
         if q and q not in seen:
             seen.add(q)
             out.append(q)
-    cap = int(getattr(settings, "prospect_query_cap", 0) or 0)
-    return out[:cap] if cap > 0 else out
+    return out
+
+
+def build_queries(db, need_id: str) -> list[str]:
+    """本轮要跑的找源词 —— 交给关键词进化机制按历史表现排期。
+
+    静态清单的问题是「零售 数据泄露」和「数据泄露」看起来一样重要,而实测前者因为
+    搜索引擎按 AND 收紧,召回反而更差。进化机制按四类配额混词:利用高产词、跑锚点基线
+    (增益的分母)、探索新词、复活歇着的词,让词表按实际产出自己变好、自己变宽。
+    """
+    seed = seed_queries(db, need_id)
+    cap = int(getattr(settings, "prospect_query_cap", 0) or 0) or len(seed)
+    if not getattr(settings, "query_evolution_enabled", True):
+        return seed[:cap]
+    try:
+        from app.services import query_evolution
+        out = query_evolution.plan(db, need_id, cap, seed=seed)
+        db.commit()
+        return out
+    except Exception:  # noqa: BLE001 进化机制出问题不该让找源整个停摆
+        db.rollback()
+        return seed[:cap]
 
 
 # ---------------- 搜索引擎(不依赖 Source 行) ----------------
@@ -277,9 +298,12 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     hog_at = int(getattr(settings, "prospect_exclude_after_hits", 25) or 0)
     hog_max = int(getattr(settings, "prospect_exclude_max_sites", 6) or 0)
     new_keys, resolved_used = set(), 0
+    # 每条词的产出单独记账,词表才谈得上按表现进化(而不是每周原样重跑)
+    per_q: dict[str, dict] = {q: {"results": 0, "usable": 0, "new": set()} for q in queries}
     total = max(1, len(queries) * max(1, len(engines)))
     done = 0
     for q in queries:
+        acc = per_q[q]
         for ename, eng in engines:
             if _cancel.is_set():
                 break
@@ -317,6 +341,7 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                             edetail[ename]["url_samples"].append(f"{(s.title or '')[:40]} → {s.url[:110]}")
                     for it in items:
                         st["raw_items"] += 1
+                        acc["results"] += 1
                         url = it.url
                         # 搜狗微信的结果页自带公众号名:直接拿来用,不必逐条还原临时链再抓文章
                         # (此前 790 条搜狗结果全被当成跳转链,受配额限制只还原了几十条,绝大多数白丢)
@@ -332,9 +357,13 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                                 st[why_skip] += 1
                                 dropped[key] = dropped.get(key, 0) + 1
                                 continue
+                            acc["usable"] += 1
                             k = discovery.record_evidence(db, None, "source_search",
-                                                          display_name=acct, wechat_account=acct)
+                                                          display_name=acct, wechat_account=acct,
+                                                          found_by_query=q)
                             if k:
+                                if k not in new_keys:
+                                    acc["new"].add(k)
                                 new_keys.add(k)
                                 st["new_wechat"] += 1
                             else:
@@ -390,13 +419,17 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                                         st["excluded_sites"] += 1
                                         edetail[ename].setdefault("excluded", []).append(key)
                             continue
+                        acc["usable"] += 1
                         # 复用统一入口:黑名单/已注册/主体名校验/去重全都走同一套规则
                         k = discovery.record_evidence(
                             db, None if extra.get("kind") == "wechat" else url, "source_search",
                             display_name=(extra.get("account") or (it.title or ""))[:80],
                             wechat_account=extra.get("account"),
-                            platform_key=key if extra.get("kind") in ("baijiahao", "weibo") else None)
+                            platform_key=key if extra.get("kind") in ("baijiahao", "weibo") else None,
+                            found_by_query=q)
                         if k:
+                            if k not in new_keys:
+                                acc["new"].add(k)
                             new_keys.add(k)
                             if extra.get("kind") == "wechat":
                                 st["new_wechat"] += 1
@@ -418,13 +451,32 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
             db.rollback()
     hinted = _columns_from_hints(db, col_hints)
     st["column_hints"] = len(hinted)
+    _record_query_outcomes(db, need_id, per_q)
     out = {"queries": len(queries), "engines": [e[0] for e in engines],
+           "query_yield": sorted(
+               ({"query": q, "results": a["results"], "usable": a["usable"],
+                 "new_channels": len(a["new"])} for q, a in per_q.items()),
+               key=lambda x: (-x["new_channels"], -x["usable"]))[:20],
            "hits": st["raw_items"], "new_keys": sorted(new_keys), "new_columns": hinted,
            "stats": st, "engine_detail": list(edetail.values()),
            "dropped_top": sorted(({"key": k, "count": n} for k, n in dropped.items()),
                                  key=lambda x: -x["count"])[:20]}
     out["note"] = explain(out)
     return out
+
+
+def _record_query_outcomes(db, need_id: str, per_q: dict):
+    """把每条词本轮的产出记进台账。记账失败绝不能影响本轮找源的结果。"""
+    if not getattr(settings, "query_evolution_enabled", True):
+        return
+    try:
+        from app.services import query_evolution
+        for q, a in per_q.items():
+            query_evolution.record_run(db, need_id, q, results=a["results"],
+                                       usable=a["usable"], new_channels=len(a["new"]))
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 def _columns_from_hints(db, hints: dict[str, set]) -> list[dict]:
@@ -879,6 +931,7 @@ def _run(need_id: str):
                                                                  **(m or {})))
             _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"],
                  note=r.get("note", ""), stats=r.get("stats", {}),
+                 query_yield=r.get("query_yield", []),
                  engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0),
                  dropped_top=r.get("dropped_top", []), new_columns=r.get("new_columns", []),
                  new_keys=r.get("new_keys", []))

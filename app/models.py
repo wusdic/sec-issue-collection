@@ -118,6 +118,9 @@ class SourceDiscoveryEvidence(Base):
     evidence_doc_id: Mapped[int | None] = mapped_column(ForeignKey("raw_document.id"), nullable=True)
     evidence_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     was_cluster_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 是哪条找源词把它捞出来的。候选后来真进了源库时,这条词才拿得到最强的正反馈,
+    # 关键词进化才有"产出"这个分子可算
+    found_by_query: Mapped[str | None] = mapped_column(String(200), nullable=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime, default=now)
     last_seen: Mapped[datetime] = mapped_column(DateTime, default=now)
     hit_count: Mapped[int] = mapped_column(Integer, default=1)
@@ -500,3 +503,58 @@ class DailyDigest(Base):
     delivered: Mapped[bool] = mapped_column(Boolean, default=False)    # 是否已推送
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     __table_args__ = (UniqueConstraint("need_id", "day", name="uq_digest_need_day"),)
+
+
+class SearchQueryStat(Base):
+    """找源检索词的表现台账 —— 关键词进化机制的底座。
+
+    此前找源词是一份静态清单:同一批词每周重复跑,从没人知道哪条词真的带回过渠道。
+    「零售 数据泄露」这种加了限定反而把召回压死的词,和「数据泄露」这种有效词,
+    在系统里长得一模一样。这张表按词记账,让词表能按实际产出自我淘汰和自我扩张。
+
+    关键在于 anchor/modifier 的拆分:2 词组合里 anchor 是主锚点(单独也会跑,提供基线),
+    modifier 是限定词。有了基线才能算出"加上这个限定词到底是帮忙还是帮倒忙"。
+    """
+    __tablename__ = "search_query_stat"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
+    query: Mapped[str] = mapped_column(String(200), index=True)
+    terms: Mapped[list] = mapped_column(JSON, default=list)
+    anchor: Mapped[str | None] = mapped_column(String(64), nullable=True)     # 主锚点词
+    modifier: Mapped[str | None] = mapped_column(String(64), nullable=True)   # 限定词(单词查询为空)
+    origin: Mapped[str] = mapped_column(String(16), default="combo")
+    # base/combo/coverage/anchor/drop/swap/harvest/llm —— 这条词是怎么来的
+    parent: Mapped[str | None] = mapped_column(String(200), nullable=True)    # 由哪条词变异而来
+    runs: Mapped[int] = mapped_column(Integer, default=0)
+    results: Mapped[int] = mapped_column(Integer, default=0)      # 原始结果条数(会被页脚链之类灌水)
+    usable: Mapped[int] = mapped_column(Integer, default=0)       # 去掉页脚/大平台/已有源后仍有效的
+    new_channels: Mapped[int] = mapped_column(Integer, default=0)  # 带回的新候选渠道
+    admitted: Mapped[int] = mapped_column(Integer, default=0)      # 其中最终进了源库的
+    barren_streak: Mapped[int] = mapped_column(Integer, default=0)  # 连续多少轮没带回新渠道
+    state: Mapped[str] = mapped_column(String(12), default="active", index=True)
+    # active=正常轮换 / resting=暂时歇着(低频复测,不是判死) / retired=确认无效
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=now)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    __table_args__ = (UniqueConstraint("need_id", "query", name="uq_qstat_need_query"),)
+
+
+class TermStat(Base):
+    """词一级的表现:同一个词在多条组合里的平均增益。
+
+    单看某条组合的好坏容易被偶然性带偏;把同一个限定词在所有组合里的增益汇总起来,
+    才判得出"零售"这类词是不是普遍在拖后腿——是就把它整个从组合池里降级。
+    """
+    __tablename__ = "term_stat"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
+    term: Mapped[str] = mapped_column(String(64), index=True)
+    role: Mapped[str] = mapped_column(String(12), default="modifier")   # anchor/modifier
+    samples: Mapped[int] = mapped_column(Integer, default=0)   # 参与统计的组合条数
+    lift: Mapped[float] = mapped_column(Float, default=1.0)    # 组合产出 / 锚点单独产出 的中位数
+    solo_value: Mapped[float] = mapped_column(Float, default=0.0)  # 单独跑时的每轮产出
+    state: Mapped[str] = mapped_column(String(12), default="active", index=True)
+    # active / weak=不再参与组合(仍可单独跑) / retired
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    __table_args__ = (UniqueConstraint("need_id", "term", "role", name="uq_termstat"),)

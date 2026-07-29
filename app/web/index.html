@@ -583,6 +583,7 @@ async function vSources(){
       <button class="ghost" onclick="prospectSelftest()" id="pstBtn">🔎 找源路径自检</button>
       <button class="ghost" onclick="prospectAll()" id="prosBtn">🧭 主动找源(搜新渠道)</button>
       <button class="ghost" onclick="showCandidates()" id="candBtn">🧺 候选池</button>
+      <button class="ghost" onclick="showQueryLab()" id="qlabBtn">🧬 找源词表现</button>
       <button class="ghost" onclick="showCoverage()" id="covBtn">📊 覆盖度盘点</button>
       <button class="ghost" onclick="locateAll(false)" id="locBtn">🎯 精准定位栏目(未定位的源)</button>
       <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
@@ -918,6 +919,10 @@ function renderProspect(h){
         ${st.boilerplate?`｜备案/举报页脚链丢弃 ${st.boilerplate}`:""}
         ${st.new_wechat?`｜<b>新公众号 ${st.new_wechat}</b>`:""}
         ${st.new_platform_account?`｜<b>新平台号 ${st.new_platform_account}</b>`:""}</div>
+      ${(h.query_yield&&h.query_yield.length)?`<div class="sub" style="margin-top:4px">本轮最能干的找源词(有效=去掉页脚/大平台/已有源后还剩的):
+        ${h.query_yield.filter(x=>x.usable||x.new_channels).slice(0,10).map(x=>
+          `<span class="pill ${x.new_channels?'ok':''}">${esc(x.query)} · 新渠道 ${x.new_channels}/有效 ${x.usable}</span>`).join(" ")||'<span class="muted">本轮没有一条词带回有效结果</span>'}
+        <a href="#" onclick="showQueryLab();return false" style="margin-left:6px">看全部词表现 →</a></div>`:''}
       ${(h.dropped_top&&h.dropped_top.length)?`<div class="sub" style="margin-top:4px">丢弃最多的渠道(看看是不是误伤):
         ${h.dropped_top.map(d=>`<span class="pill">${esc(d.key)} ×${d.count}</span>`).join(" ")}</div>`:''}
       </details>`:''}
@@ -943,6 +948,53 @@ async function pollProspect(){
   };
   await tick();
   PROS_POLL=setInterval(tick,2000);
+}
+
+/* ---- 找源词表现:关键词进化机制的可视面。词表按实际产出自我淘汰和自我扩张,
+       但人得能看见它在怎么变,否则又是一个黑箱 ---- */
+async function showQueryLab(){
+  const box=document.getElementById("srcPanel"); box.style.display="block";
+  box.innerHTML=`<span class="muted">读取找源词表现…</span>`;
+  try{
+    const r=await api(`/query-evolution?need_id=${NEED}&top=15`);
+    const st=r.by_state||{};
+    const qrow=x=>`<tr><td>${esc(x.query)}<div class="muted mono" style="font-size:11px">${esc(x.origin)}${x.note?" · "+esc(x.note):""}</div></td>
+      <td style="text-align:right"><b>${x.value}</b></td><td style="text-align:right">${x.runs}</td>
+      <td style="text-align:right">${x.results}</td><td style="text-align:right">${x.usable}</td>
+      <td style="text-align:right">${x.new_channels}</td><td style="text-align:right">${x.admitted}</td>
+      <td>${x.state==="active"?'<span class="pill ok">轮换中</span>':(x.state==="resting"?`<span class="pill">歇着(连空 ${x.barren_streak} 轮)</span>`:'<span class="pill warn">已退休</span>')}</td></tr>`;
+    const head=`<tr><th>找源词</th><th style="text-align:right">每轮产出</th><th style="text-align:right">跑过</th>
+      <th style="text-align:right">结果</th><th style="text-align:right">有效</th><th style="text-align:right">新渠道</th>
+      <th style="text-align:right">进源库</th><th>状态</th></tr>`;
+    box.innerHTML=`<div class="card"><b>🧬 找源词表现</b>
+      <span class="sub" style="display:block;margin:4px 0">
+        词表不是静态清单,而是按实际产出自我进化的:每条词按轮记账,「每轮产出」=
+        5×进源库 + 1×新渠道 + 0.02×有效结果(原始结果条数权重压得很低,因为它最容易被页脚链之类灌水)。
+        <b>限定词增益</b>回答的正是「零售 数据泄露 到底不如 数据泄露 吗」——组合的每轮产出
+        除以锚点单独跑的每轮产出,小于 1 就是加了这个词反而更差;同一个词在多条组合上都拖后腿,
+        才把它整个降级(仍可单独跑)。「歇着」不是淘汰,只是转低频复测——没有哪个网站天天都出一堆报道。</span>
+      <div class="sub">共 ${r.total} 条词,跑过 ${r.ran} 条,没跑过 ${r.untried} 条｜
+        轮换中 ${st.active||0}｜歇着 ${st.resting||0}｜已退休 ${st.retired||0}
+        <button class="ghost sm" style="margin-left:8px" onclick="runEvolve()">立刻进化一轮</button></div>
+      ${(r.weak_terms&&r.weak_terms.length)?`<div style="margin-top:8px"><b>拖后腿的限定词(已退出组合池)</b>
+        <div class="sub">${r.weak_terms.map(t=>`<span class="pill warn" title="${esc(t.note||"")}">${esc(t.term)} 增益 ${t.lift}(${t.samples} 条组合)</span>`).join(" ")}</div></div>`:""}
+      ${(r.term_lifts&&r.term_lifts.length)?`<details style="margin-top:6px"><summary class="muted">全部限定词增益(从低到高)</summary>
+        <div class="sub">${r.term_lifts.map(t=>`<span class="pill ${t.lift>=1?'ok':''}">${esc(t.term)} ${t.lift}</span>`).join(" ")}</div></details>`:""}
+      <div style="max-height:360px;overflow:auto;margin-top:8px"><table><thead>${head}</thead><tbody>
+        ${(r.top||[]).map(qrow).join("")}</tbody></table></div>
+      ${(r.bottom&&r.bottom.length)?`<details style="margin-top:6px"><summary class="muted">颗粒无收的词 ${r.bottom.length} 条</summary>
+        <div style="max-height:240px;overflow:auto"><table><thead>${head}</thead><tbody>
+        ${r.bottom.map(qrow).join("")}</tbody></table></div></details>`:""}
+    </div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+async function runEvolve(){
+  try{
+    const r=await api(`/query-evolution/run?need_id=${NEED}`,{method:"POST"});
+    const w=(r.terms&&r.terms.weak||[]).length, a=(r.mutate&&r.mutate.added||[]).length;
+    toast(`进化完成:降级限定词 ${w} 个,新增候选找源词 ${a} 条`);
+    showQueryLab();
+  }catch(e){ alert("进化失败:"+e.message); }
 }
 
 /* ---- 候选池:发现到但还没建成源的渠道。此前完全没有入口,等于进了黑洞 ---- */

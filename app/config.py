@@ -169,6 +169,20 @@ class Settings:
     # 某个"我们早就有的域"在一轮里霸榜到这个次数,后续的词就用 -site: 把它排掉
     prospect_exclude_after_hits: int = int(os.getenv("PROSPECT_EXCLUDE_AFTER_HITS", "25"))
     prospect_exclude_max_sites: int = int(os.getenv("PROSPECT_EXCLUDE_MAX_SITES", "6"))
+
+    # ---- 找源关键词进化 ----
+    query_evolution_enabled: bool = os.getenv("QUERY_EVOLUTION", "true").lower() in ("1", "true", "yes", "on")
+    query_min_runs: int = int(os.getenv("QUERY_MIN_RUNS", "2"))          # 跑够几轮才给这条词下结论
+    term_min_samples: int = int(os.getenv("TERM_MIN_SAMPLES", "3"))      # 一个限定词要有几条组合才评它
+    term_weak_lift: float = float(os.getenv("TERM_WEAK_LIFT", "0.8"))    # 增益低于此值判为"拖后腿"
+    query_rest_barren: int = int(os.getenv("QUERY_REST_BARREN", "4"))    # 连续几轮空手转低频复测
+    query_retire_runs: int = int(os.getenv("QUERY_RETIRE_RUNS", "6"))    # 跑够几轮且零有效结果才退休
+    harvest_min_titles: int = int(os.getenv("HARVEST_MIN_TITLES", "30"))  # 语料少于此不挖新词
+    # 每轮词表的配额:基线(锚点单独跑)/ 探索(没跑过的新词)/ 复活(歇着的词复测),其余给高产词
+    query_share_baseline: float = float(os.getenv("QUERY_SHARE_BASELINE", "0.2"))
+    query_share_explore: float = float(os.getenv("QUERY_SHARE_EXPLORE", "0.25"))
+    query_share_revive: float = float(os.getenv("QUERY_SHARE_REVIVE", "0.1"))
+    autopilot_queries_days: int = int(os.getenv("AUTOPILOT_QUERIES_DAYS", "7"))
     # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个
     prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "8"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)

@@ -69,6 +69,10 @@ CATALOG: dict[str, Spec] = {
     "source.engines_tuned": Spec(
         "sources", NOTICE, "找源引擎自动调优", 0,
         "系统按自检结果自动增减了可用搜索引擎;想固定某几个可在设置页手改「主动找源:用哪些搜索引擎」"),
+    "source.queries_evolved": Spec(
+        "sources", NOTICE, "找源词自动进化", 0,
+        "词表按实际产出自我调整:拖后腿的限定词退出组合池(仍可单独跑),"
+        "从已采语料里挖到的新词进探索队列。想看明细去「数据源 → 找源词表现」"),
     "source.seeds_loaded": Spec(
         "sources", NOTICE, "种子源清单自动载入", 30,
         "新增的是配置文件里的内置源;不需要的在数据源页删除即可"),
