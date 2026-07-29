@@ -251,3 +251,76 @@ def test_prune_disabled_by_config(db, need, monkeypatch):
     from app.services import discovery
     monkeypatch.setattr(settings, "candidate_prune_relevance", 0)
     assert discovery.prune_candidates(db, need.id)["pruned"] == 0
+
+
+# ---------------- 把"我让你手动做的两步"也自动化 ----------------
+
+def test_engines_and_seeds_are_autopilot_tasks(db, need):
+    """自检引擎、载入内置源——这两件事不该要人手动点。"""
+    tasks = [t[0] for t in autopilot.TASKS]
+    assert "engines" in tasks and "seeds" in tasks
+    # 顺序:先补源、再挑引擎,后面的找源才不会白跑
+    assert tasks.index("seeds") < tasks.index("engines") < tasks.index("prospect")
+
+
+def test_autotune_keeps_only_usable_engines(db, monkeypatch):
+    """被反爬的引擎自动踢出,不用人去设置页改;可用的写回配置并留痕。"""
+    from app.services import prospect
+    monkeypatch.setattr(settings, "prospect_engines", "bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,baidu_search")
+    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x": {
+        "query": q, "usable": ["bing_search"], "advice": "",
+        "engines": [{"engine": "bing_search", "ok": True, "blocked": False, "hint": ""},
+                    {"engine": "baidu_search", "ok": False, "blocked": True, "hint": "验证页"}]})
+    saved = {}
+    monkeypatch.setattr("app.services.settings_service.save",
+                        lambda _db, upd: saved.update(upd) or list(upd))
+    r = prospect.autotune_engines(db)
+    assert r["changed"] is True and r["usable"] == ["bing_search"]
+    assert saved["prospect_engines"] == "bing_search"
+    assert "停用 baidu_search" in r["note"]
+    from app.services import actions
+    assert any(x["action"] == "source.engines_tuned"
+               for x in actions.feed(db, module="sources", min_level=1))
+
+
+def test_autotune_readds_recovered_engine(db, monkeypatch):
+    """之前被踢掉的引擎恢复了要能自动加回来——反爬是临时的,不能一棒子打死。"""
+    from app.services import prospect
+    monkeypatch.setattr(settings, "prospect_engines", "bing_search")
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,sogou_wechat")
+    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x": {
+        "query": q, "usable": ["bing_search", "sogou_wechat"], "advice": "",
+        "engines": [{"engine": "bing_search", "ok": True, "blocked": False, "hint": ""},
+                    {"engine": "sogou_wechat", "ok": True, "blocked": False, "hint": ""}]})
+    saved = {}
+    monkeypatch.setattr("app.services.settings_service.save",
+                        lambda _db, upd: saved.update(upd) or list(upd))
+    r = prospect.autotune_engines(db)
+    assert "加回 sogou_wechat" in r["note"] and "sogou_wechat" in saved["prospect_engines"]
+
+
+def test_autotune_never_empties_engine_list(db, monkeypatch):
+    """一个都不可用时保持原配置——宁可空跑也不要把找源彻底关掉。"""
+    from app.services import prospect
+    monkeypatch.setattr(settings, "prospect_engines", "bing_search,baidu_search")
+    monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,baidu_search")
+    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x": {
+        "query": q, "usable": [], "advice": "",
+        "engines": [{"engine": "bing_search", "ok": False, "blocked": True, "hint": "验证页"}]})
+    monkeypatch.setattr("app.services.settings_service.save",
+                        lambda _db, upd: pytest.fail("全不可用时不该改配置"))
+    r = prospect.autotune_engines(db)
+    assert r["changed"] is False and "保持原配置" in r["note"]
+    assert settings.prospect_engines == "bing_search,baidu_search"   # 未被改动
+
+
+def test_seeds_task_is_idempotent(db, need):
+    """载入内置源是幂等的:第二次不该再新增。"""
+    r1 = autopilot._do_seeds(db, need.id)
+    r2 = autopilot._do_seeds(db, need.id)
+    # 幂等:不管第一次补了几个,第二次一定不再新增
+    assert r2["added"] == 0, r2
+    # 清单本身要够宽(内置源不能只有几十个),且库里已覆盖清单里的全部源
+    assert r1["in_file"] >= 80, r1
+    assert r1["total"] >= r1["in_file"], r1

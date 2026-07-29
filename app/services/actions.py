@@ -66,6 +66,12 @@ CATALOG: dict[str, Spec] = {
     "source.candidates_pruned": Spec(
         "sources", NOTICE, "候选池自动清理", 20,
         "被清掉的只是「已初评判定不相关且长期没再出现」的候选;若再次被搜到会重新进池"),
+    "source.engines_tuned": Spec(
+        "sources", NOTICE, "找源引擎自动调优", 0,
+        "系统按自检结果自动增减了可用搜索引擎;想固定某几个可在设置页手改「主动找源:用哪些搜索引擎」"),
+    "source.seeds_loaded": Spec(
+        "sources", NOTICE, "种子源清单自动载入", 30,
+        "新增的是配置文件里的内置源;不需要的在数据源页删除即可"),
     "source.prospect_empty": Spec(
         "sources", HIGH, "主动找源一无所获", 0,
         "看结论里的原因:引擎被反爬就在设置页换搜索引擎/开浏览器渲染;"

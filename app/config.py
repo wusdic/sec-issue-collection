@@ -143,6 +143,11 @@ class Settings:
     prospect_enabled: bool = os.getenv("PROSPECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     # 默认带上搜狗微信:用户要的执法通报(网警/网信办)大多发在公众号里,只搜网页会漏掉一大类
     prospect_engines: str = os.getenv("PROSPECT_ENGINES", "bing_search,sogou_wechat,baidu_search")
+    # 候选引擎池:自动调优每轮把池子里每个都测一遍——掉线的踢出、恢复的加回来,
+    # 不必人工先点自检再去改上面的列表
+    prospect_engines_all: str = os.getenv("PROSPECT_ENGINES_ALL",
+                                          "bing_search,sogou_wechat,baidu_search")
+    prospect_autotune: bool = os.getenv("PROSPECT_AUTOTUNE", "true").lower() in ("1", "true", "yes", "on")
     # 公众号文章要抓一次才知道属于哪个号,单轮最多解析这么多条(每条一次网络请求)
     prospect_wechat_resolve_max: int = int(os.getenv("PROSPECT_WECHAT_RESOLVE_MAX", "30"))
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
@@ -173,6 +178,8 @@ class Settings:
     autopilot_prospect_days: int = int(os.getenv("AUTOPILOT_PROSPECT_DAYS", "7"))
     autopilot_grade_days: int = int(os.getenv("AUTOPILOT_GRADE_DAYS", "1"))
     autopilot_candidates_days: int = int(os.getenv("AUTOPILOT_CANDIDATES_DAYS", "1"))
+    autopilot_engines_days: int = int(os.getenv("AUTOPILOT_ENGINES_DAYS", "3"))
+    autopilot_seeds_days: int = int(os.getenv("AUTOPILOT_SEEDS_DAYS", "7"))
 
     # 浏览器渲染内存保护:同一浏览器实例连续渲染这么多页后回收重启,防长跑内存膨胀。0=不回收
     render_recycle_after: int = int(os.getenv("RENDER_RECYCLE_AFTER", "300"))

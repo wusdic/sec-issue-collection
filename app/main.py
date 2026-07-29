@@ -22,6 +22,17 @@ def _startup():
     db = SessionLocal()
     try:
         load_from_db(db)
+        # 启动即把内置种子源清单载入(幂等:已有的不动,只补新的)。
+        # 升级后新增的内置源不该还要人去跑一次 CLI;自动运维里也有同名任务按周期兜底。
+        try:
+            from app.models import NeedProfile
+            from app.services import profiles
+            if db.get(NeedProfile, "sec_events"):
+                profiles.load_seed_sources(db, "sec_events",
+                                           profiles.default_sec_events_paths()["sources"])
+                db.commit()
+        except Exception:  # noqa: BLE001 种子载入失败不阻断启动
+            db.rollback()
         # 启动即自动校正源键并查重合并(同采集目标的重复源自动并一),无需人工扫描
         from app.services import discovery
         try:

@@ -93,6 +93,16 @@ EDITABLE = [
     ("autopilot_locate_max", "自动定位:每轮最多几个站", "自动运维", "int", False, "默认 10"),
     ("autopilot_prospect_days", "自动找源周期(天)", "自动运维", "int", False, "默认 7"),
     ("autopilot_dedup_days", "自动查重整理周期(天)", "自动运维", "int", False, "默认 7"),
+    ("autopilot_seeds_days", "内置种子源载入周期(天)", "自动运维", "int", False,
+     "多久把配置文件里的内置源清单载入一次(幂等,只补新的)。升级后不用人跑 CLI。默认 7"),
+    ("autopilot_engines_days", "找源引擎自检周期(天)", "自动运维", "int", False,
+     "多久自检一次搜索引擎并自动只保留可用的(被反爬的踢掉、恢复的加回来)。默认 3"),
+    ("prospect_autotune", "找源引擎自动调优", "找源与覆盖", "bool", False,
+     "开启后系统按自检结果自动增减「主动找源:用哪些搜索引擎」,不必人工先自检再改配置。"
+     "关掉则完全按你手填的列表跑。默认开"),
+    ("prospect_engines_all", "找源引擎候选池", "找源与覆盖", "str", False,
+     "自动调优每轮把这个池子里每个引擎都测一遍;可用的写进上面的『用哪些搜索引擎』。"
+     "默认 bing_search,sogou_wechat,baidu_search"),
     ("autopilot_candidates_days", "候选池自动处理周期(天)", "自动运维", "int", False,
      "多久跑一次「补初评 + 达标入库 + 清理无关候选」。默认 1(每天),候选池不需要人去点"),
     ("candidate_prune_relevance", "候选清理:相关度低于多少算无关", "找源与覆盖", "float", False,

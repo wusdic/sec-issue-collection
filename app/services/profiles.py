@@ -101,8 +101,18 @@ def load_keyword_set(db: Session, need_id: str, path: str | Path) -> KeywordSet:
     return ks
 
 
+def count_seed_sources(path: str | Path) -> int:
+    """内置种子源清单里一共写了多少个源(不看库里有没有)。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return 0
+    return len(data.get("sources") or [])
+
+
 def load_seed_sources(db: Session, need_id: str, path: str | Path) -> int:
-    """种子源导入:按 (adapter, entry_url) 幂等 upsert,serves_needs 合并。"""
+    """种子源导入:按 (adapter, entry_url) 幂等 upsert,serves_needs 合并。返回新增条数。"""
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     count = 0

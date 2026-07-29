@@ -449,6 +449,55 @@ def selftest(db, query: str = "网警 处罚") -> dict:
     return out
 
 
+def all_engine_names() -> list[str]:
+    """候选引擎池:自动调优时会把池子里每个都测一遍(掉线的踢掉、恢复的加回来)。"""
+    raw = str(getattr(settings, "prospect_engines_all", "") or "")
+    names = [x.strip() for x in raw.split(",") if x.strip()]
+    if not names:
+        names = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",")
+                 if x.strip()]
+    return names
+
+
+def autotune_engines(db, query: str = "网警 处罚") -> dict:
+    """自动调优搜索引擎:测一遍候选池,把 prospect_engines 设为当前可用的那些。
+
+    人不该每次都先点自检、再去设置页手改引擎列表。这里每轮自己测:
+    - 掉线/被反爬的引擎自动踢出,不再白耗几十次请求;
+    - 之前踢掉的下轮仍会重测,恢复了自动加回来(反爬是临时的,不能一棒子打死)。
+    一个都不可用时保持原样不动——宁可空跑也不要把找源彻底关掉。
+    """
+    from app.services import settings_service
+    pool = all_engine_names()
+    prev = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",") if x.strip()]
+    old_all = getattr(settings, "prospect_engines", "")
+    try:
+        settings.prospect_engines = ",".join(pool)      # 临时全量,才能把踢掉的也测到
+        r = selftest(db, query)
+    finally:
+        settings.prospect_engines = old_all
+    usable = r["usable"]
+    detail = {e["engine"]: ("可用" if e["ok"] else ("验证页/反爬" if e["blocked"] else e["hint"][:60]))
+              for e in r["engines"]}
+    out = {"tested": pool, "usable": usable, "before": prev, "detail": detail, "changed": False}
+    if not usable:
+        out["note"] = "所有引擎都不可用,保持原配置不动(下轮再测);建议开启浏览器渲染"
+        return out
+    if sorted(usable) != sorted(prev):
+        settings_service.save(db, {"prospect_engines": ",".join(usable)})
+        out["changed"] = True
+        added, removed = sorted(set(usable) - set(prev)), sorted(set(prev) - set(usable))
+        out["note"] = ("引擎列表已自动调整:"
+                       + ("加回 " + "、".join(added) + ";" if added else "")
+                       + ("停用 " + "、".join(removed) if removed else "")).rstrip(";")
+        from app.services import actions
+        actions.record(db, "source.engines_tuned", out["note"],
+                       detail={"usable": usable, "before": prev, "detail": detail})
+    else:
+        out["note"] = f"引擎无变化,当前可用:{'、'.join(usable)}"
+    return out
+
+
 def _diagnose_empty(eng, query: str, page: int, ed: dict, st: dict):
     """页面抓到了但 0 条结果:重抓一次看它到底返回了什么(验证页?还是结构变了?)。"""
     try:

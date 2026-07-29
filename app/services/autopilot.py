@@ -19,6 +19,9 @@ _running = threading.Event()
 
 # 各任务的默认周期(天),可用 settings.autopilot_*_days 覆盖
 TASKS = [
+    # 顺序即执行顺序:先把内置源补齐、再挑好可用引擎,后面的找源才不会白跑
+    ("seeds", "载入内置种子源清单(升级后自动补新源)", "autopilot_seeds_days", 7),
+    ("engines", "找源引擎自检并自动只留可用的", "autopilot_engines_days", 3),
     ("dedup", "整理源键与查重合并", "autopilot_dedup_days", 7),
     ("locate", "给根域源精准定位栏目", "autopilot_locate_days", 7),
     ("health", "源体检 + 停用源复检恢复", "autopilot_health_days", 3),
@@ -141,7 +144,38 @@ def _do_candidates(db, need_id: str) -> dict:
             "trial_names": [c.get("name") or c["identity_key"] for c in auto[:20]]}
 
 
-_ACTIONS = {"dedup": _do_dedup, "locate": _do_locate, "health": _do_health,
+def _do_seeds(db, need_id: str) -> dict:
+    """把配置文件里的内置种子源载入库(幂等)。
+
+    升级后新增的内置源不该还要人去跑一次 CLI —— 载入是幂等的,已有的不动、只补新的。
+    """
+    from app.services import profiles
+    paths = profiles.default_sec_events_paths()
+    in_file = profiles.count_seed_sources(paths["sources"])
+    before = db.query(Source).count()
+    profiles.load_seed_sources(db, need_id, paths["sources"])
+    db.commit()
+    added = db.query(Source).count() - before
+    if added:
+        from app.services import actions
+        actions.record(db, "source.seeds_loaded",
+                       f"内置种子源清单自动载入:新增 {added} 个源", need_id=need_id, count=added)
+        db.commit()
+    return {"in_file": in_file, "added": added, "total": before + added}
+
+
+def _do_engines(db, need_id: str) -> dict:
+    """自检所有候选搜索引擎,自动把 prospect_engines 设成当前可用的那些。"""
+    from app.services import fetcher, prospect
+    if not getattr(settings, "prospect_autotune", True):
+        return {"skipped": "引擎自动调优已关闭"}
+    with fetcher.render_session():
+        r = prospect.autotune_engines(db)
+    db.commit()
+    return r
+
+
+_ACTIONS = {"seeds": _do_seeds, "engines": _do_engines, "dedup": _do_dedup, "locate": _do_locate, "health": _do_health,
             "prospect": _do_prospect, "grade": _do_grade, "candidates": _do_candidates}
 
 
