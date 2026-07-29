@@ -217,7 +217,9 @@ class SearchEngineAdapter(BaseAdapter):
     # 反爬/验证页特征:命中即判定"这一页不是结果页",避免把验证页当成"0 条结果"
     _BLOCK_MARKERS = ("百度安全验证", "网络不给力", "请输入验证码", "安全验证", "滑动验证",
                       "unusual traffic", "verify you are human", "captcha", "拒绝访问",
-                      "访问被拒绝", "请开启JavaScript", "为了您的账号安全")
+                      "访问被拒绝", "请开启JavaScript", "为了您的账号安全",
+                      # 搜狗:"此验证码用于确认这些请求是您的正常行为而不是自动程序发出的"
+                      "VerifyCode", "确认这些请求是您的正常行为", "不是自动程序发出")
 
     def looks_blocked(self, html: str | None) -> bool:
         head = (html or "")[:8000]
@@ -270,6 +272,10 @@ class SearchEngineAdapter(BaseAdapter):
         fr = fetcher.fetch(self.build_url(query, page, time_filter),
                            render=self.config.get("render", False))
         if not fr.ok:
+            return None
+        if self.looks_blocked(fr.html):
+            # 验证页/反爬拦截:必须当成"抓取失败",否则通用兜底会把页面上的导航链接
+            # 当成搜索结果吐出来——实测搜狗被拦一次就产生 139 条全是 sogou.com 的假结果
             return None
         return self.parse(fr.html) or []
 

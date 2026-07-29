@@ -134,6 +134,9 @@ class SourceProbe(Base):
     relevance: Mapped[float] = mapped_column(Float, default=0.0)      # 0-1
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     sample_titles: Mapped[list] = mapped_column(JSON, default=list)
+    # 站点/号的名字(抓首页时顺手取的 <title>)。候选展示名要用"渠道名",
+    # 而不是搜索结果的文章标题——否则候选池里会出现"什么是网警?-安康市公安局"这种名字
+    site_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     probed_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     ok: Mapped[bool] = mapped_column(Boolean, default=True)           # False=抓不到/评不了
 

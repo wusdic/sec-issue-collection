@@ -624,3 +624,84 @@ def test_admit_baijiahao_candidate_gets_usable_entry(db, need):
     db.flush()
     out = admit_candidate("bjh:2024", need_id=need.id, db=db, user=user)
     assert out["entry_url"] == "https://author.baidu.com/home?app_id=2024"
+
+
+# ---------------- ⑪ 验证页不能变成假结果 / 号名要可用 / 候选名要是渠道名 ----------------
+
+def test_blocked_page_returns_none_not_junk():
+    """搜狗被拦一次就吐出 139 条全是 sogou.com 的假结果——验证页必须当成抓取失败。"""
+    from app.services import adapters
+    a = adapters.SogouWechatAdapter(prospect._Shim())
+    blocked = ("<html><body>搜狗搜索 返回首页 IP：1.2.3.4 VerifyCode：7f12 "
+               "此验证码用于确认这些请求是您的正常行为而不是自动程序发出的"
+               '<a href="https://www.sogou.com/">搜狗首页导航</a></body></html>')
+    assert a.looks_blocked(blocked) is True
+    import app.services.adapters as _ad
+    orig = _ad.fetcher.fetch
+    try:
+        _ad.fetcher.fetch = lambda *x, **k: _ad.fetcher.FetchResult("u", "u", 200, blocked)
+        assert a.search_page("网警 处罚", 0) is None      # 不是 []、更不是一堆导航链接
+    finally:
+        _ad.fetcher.fetch = orig
+
+
+def test_raw_biz_id_not_used_as_account(db, need, monkeypatch):
+    """搜狗有时给 gh_81a05c27673f 这种原始 ID:不可读也没法按号名采,必须解析成真名。"""
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            return [DiscoveredItem(url="https://weixin.sogou.com/link?url=AAA", title="网警通报",
+                                   wechat_account="gh_81a05c27673f")]
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_resolve_redirect",
+                        lambda u: "https://mp.weixin.qq.com/s/XYZ")
+    monkeypatch.setattr(prospect, "_wechat_account", lambda u: "平安北京")
+    r = prospect.run_once(db, need.id)
+    assert "mp:平安北京" in r["new_keys"]
+    assert not any(k.startswith("mp:gh_") for k in r["new_keys"])
+
+
+def test_unresolvable_biz_id_not_admitted(db, need, monkeypatch):
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            return [DiscoveredItem(url="https://mp.weixin.qq.com/s/XYZ", title="x",
+                                   wechat_account="gh_aaaaaaaaaa")]
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_wechat_account", lambda u: "gh_aaaaaaaaaa")
+    r = prospect.run_once(db, need.id)
+    assert not r["new_keys"] and r["stats"]["wechat_unresolved"] == 1
+
+
+def test_candidate_name_prefers_channel_not_article_title(db, need):
+    """候选池里不该出现"什么是网警?-安康市公安局"这种文章标题当渠道名。"""
+    from app.services import discovery
+    discovery.record_evidence(db, "https://ankang-ga.cn/a", "source_search",
+                              display_name="什么是 网警 ?-安康市公安局")
+    db.flush()
+    assert discovery.candidate_name(db, "ankang-ga.cn") == "安康市公安局"
+    # 初评拿到站点标题后,优先用它
+    db.add(SourceProbe(identity_key="ankang-ga.cn", relevance=0.8, ok=True,
+                       site_title="安康市公安局网络安全保卫支队"))
+    db.flush()
+    assert discovery.candidate_name(db, "ankang-ga.cn") == "安康市公安局网络安全保卫支队"
+
+
+def test_wechat_candidate_can_be_probed(db, monkeypatch):
+    """公众号没有首页可抓 → 此前永远初评不了、永远进不了库。改用搜狗按号取文章标题。"""
+    monkeypatch.setattr(prospect, "_wechat_titles",
+                        lambda acct, n: ["网警通报某公司数据泄露", "依法查处一批违法违规App"])
+
+    class _LLM:
+        def complete_json(self, system, user, retries=2):
+            return {"relevance": 0.88, "reason": "持续发执法通报"}
+
+    monkeypatch.setattr("app.services.llm.get_screen_llm", lambda: _LLM())
+    row = prospect.probe_one(db, "mp:平安北京", force=True)
+    assert row.ok and row.relevance == 0.88

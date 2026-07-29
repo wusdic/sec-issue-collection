@@ -152,6 +152,11 @@ def _resolve_redirect(url: str) -> str:
         return url
 
 
+import re as _re
+
+_RAW_BIZ_ID = _re.compile(r"^gh_[0-9a-zA-Z]{8,}$")
+
+
 def _wechat_account(url: str) -> str | None:
     """公众号文章 → 它属于哪个号(抓一次文章解析)。失败返回 None。"""
     try:
@@ -180,8 +185,8 @@ def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
             return None, "wechat_over_budget", {}
         budget["wechat"] = budget.get("wechat", 0) + 1
         acct = _wechat_account(url)
-        if not acct:
-            return None, "wechat_unresolved", {}
+        if not acct or _RAW_BIZ_ID.match(acct):
+            return None, "wechat_unresolved", {}   # 解析不出真名的号采不了,不入池
         return f"mp:{acct}", "", {"kind": "wechat", "account": acct}
     key = url_tools.identity_key_for(url)
     if not key:
@@ -241,6 +246,10 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                         # 搜狗微信的结果页自带公众号名:直接拿来用,不必逐条还原临时链再抓文章
                         # (此前 790 条搜狗结果全被当成跳转链,受配额限制只还原了几十条,绝大多数白丢)
                         acct = (getattr(it, "wechat_account", None) or "").strip()
+                        if acct and _RAW_BIZ_ID.match(acct):
+                            # 搜狗有时给的是原始号 ID(gh_81a05c27673f)而不是号名。这种 ID
+                            # 既不可读、也没法用"按号名检索"去采,必须解析成真名才有用。
+                            acct = ""       # 走下面的跳转链还原 + 文章解析拿真实号名
                         if acct:
                             key = f"mp:{acct}"
                             why_skip = _why_known(db, key)
@@ -459,6 +468,8 @@ def explain(r: dict) -> str:
 
 # ---------------- 候选源 LLM 相关度初评 ----------------
 
+_SITE_TITLES: dict[str, str] = {}     # 初评时顺手记下的站点标题,用作候选的展示名
+
 _PROBE_SYS = (
     "你在评估一个网站/公众号是否值得作为『国内企业网络安全事件』的持续采集源。"
     "依据给出的站点名与最近文章标题样本,判断它是否持续产出与国内安全事件"
@@ -469,17 +480,40 @@ _PROBE_SYS = (
 )
 
 
+def _wechat_titles(account: str, limit: int) -> list[str]:
+    """公众号没有可抓的首页 → 用搜狗按号检索取该号最近文章标题作为初评样本。
+
+    不做这一步,公众号候选就永远初评不了、永远拿不到相关度分,也就永远过不了单通道闸门
+    ——而公众号恰恰是执法通报最集中的一类渠道。
+    """
+    try:
+        from app.services.adapters import SogouWechatAdapter
+
+        class _S:
+            adapter_config = {"account": account, "render": "auto"}
+            name, entry_url, kind = "probe", None, "query"
+
+        items = SogouWechatAdapter(_S()).search_page("", 0) or []
+        return [i.title for i in items if i.title][:limit]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _sample_titles(key: str, limit: int) -> list[str]:
     """抓候选站首页,取正文链接文字作为最近文章标题样本。"""
     if key.startswith("mp:"):
-        return []          # 公众号没有可直接抓的首页,交给搜狗渠道另行判断
-    fr = fetcher.fetch(f"https://{key}/", render="auto")
-    if not fr.ok:
+        return _wechat_titles(key[3:], limit)
+    plat = url_tools.platform_entry_url(key)
+    fr = fetcher.fetch(plat or f"https://{key}/", render="auto")
+    if not fr.ok and not plat:
         fr = fetcher.fetch(f"http://{key}/")
     if not fr.ok:
         return []
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(fr.html or "", "lxml")
+    t = soup.find("title")
+    if t:
+        _SITE_TITLES[key] = " ".join(t.get_text(" ", strip=True).split())[:80]
     base_dom = url_tools.registered_domain(urlparse(fr.final_url or key).netloc)
     out, seen = [], set()
     for a in soup.find_all("a", href=True):
@@ -520,6 +554,8 @@ def probe_one(db, key: str, force: bool = False) -> SourceProbe | None:
         db.add(row)
     row.relevance, row.reason, row.ok = rel, reason, ok
     row.sample_titles, row.probed_at = titles[:12], datetime.utcnow()
+    if _SITE_TITLES.get(key):
+        row.site_title = _SITE_TITLES.pop(key)      # 渠道名,给候选池当展示名
     db.flush()
     return row
 

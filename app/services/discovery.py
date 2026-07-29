@@ -108,10 +108,34 @@ def candidate_score(db: Session, identity_key: str, llm_relevance: float = 0.0) 
     )
 
 
+# 搜索结果标题里常见的站名分隔符:取最后一段通常就是站名("XX通报_湖南省互联网..." → 站名)
+_TITLE_SPLIT = _re.compile(r"\s*[_|\-–—»·]\s*")
+
+
 def candidate_name(db: Session, key: str) -> str:
-    """候选的展示名:优先用证据里带的名字(公众号名/结果标题),没有就用键本身。"""
+    """候选的展示名:要的是**渠道名**,不是某篇文章的标题。
+
+    优先级:初评时抓到的站点 <title> → 证据里的名字(公众号名可靠;网站的多是文章标题,
+    退而取其中的站名段)→ 键本身。此前直接用文章标题,候选池里会出现
+    "什么是网警?-安康市公安局""湘西州2026年上半年网络生态治理情况通报_湖南省互联网违法和不良..."
+    这种一看不知道是什么渠道的名字。
+    """
+    from app.models import SourceProbe
+    probe = db.get(SourceProbe, key)
+    if probe and (probe.site_title or "").strip():
+        return probe.site_title.strip()[:80]
     rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
-    return next((r.display_name for r in rows if r.display_name), key)
+    raw = next((r.display_name for r in rows if r.display_name), None)
+    if not raw:
+        return key
+    if key.startswith(("mp:", "bjh:", "wb:")):
+        return raw[:80]                       # 平台号:证据里的名字就是号名,直接用
+    # 网站:从文章标题里挑最像站名的一段(最后一段、长度适中、不含标点句式)
+    parts = [p.strip() for p in _TITLE_SPLIT.split(raw) if 2 <= len(p.strip()) <= 30]
+    for p in reversed(parts):
+        if not _re.search(r"[?？!!。,,]", p):
+            return p[:80]
+    return key
 
 
 def create_from_candidate(db: Session, key: str, need_id: str, score: float | None = None) -> Source:
