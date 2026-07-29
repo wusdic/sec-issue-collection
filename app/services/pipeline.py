@@ -15,6 +15,7 @@ from app.models import (
 )
 from app.services import archive, columns, dedup, diagnostics, discovery, fetcher, reputation, url_tools
 from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
+from app.services.errors import error_headline
 from app.services.events import create_draft
 from app.services.extraction import extract_record, load_record_schema, screen_document
 from app.services.profiles import get_active_dictionaries
@@ -161,6 +162,14 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
 
     # 去重后存储(广采薄存):首发存完整原文(含图片附件),转载/重复副本只薄存文本,省空间
     if do_archive:
+        # 先提交释放 SQLite 写锁:存档要逐个下载图片/附件(单篇最多 archive_max_assets 个),
+        # 若攥着上面 INSERT 打开的写事务去做这些网络 I/O,一页 80 篇能占锁好几分钟,
+        # 其他并行 worker 全部在写锁上等到 busy_timeout 超时 → "database is locked" 整批崩。
+        committed = _safe_commit(db)
+        doc = db.get(RawDocument, doc.id) if committed else None
+        if doc is None:      # 提交失败=本篇已回滚,别再拿失效实例去存档/写库
+            diagnostics.record("note", f"存档前提交失败,跳过本篇:{url}")
+            return None
         primary_ref = None
         if not doc.is_primary and doc.cluster_id:
             cluster = db.get(DocCluster, doc.cluster_id)
@@ -170,6 +179,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
                                     primary_snapshot_id=primary_ref)
         doc.snapshot_id = snap.snapshot_id
         db.flush()
+        source = db.get(Source, source.id) or source   # 提交后按 id 重取,保证后续计数写在活实例上
 
     # D1/D3 发布方伴生登记
     if item.wechat_account:
@@ -510,6 +520,11 @@ def _root_fallback(db, need, source, run, queries, behavior, max_pages,
     sibling = _site_search_sibling(db, source, domain)
     if sibling is None:
         return 0
+    # 建完立刻提交:否则这条 INSERT 会把 SQLite 写锁一直攥到下一次提交,
+    # 而后面是几十次搜索引擎网络往返,期间其他并行 worker 全部卡死在写锁上(database is locked)。
+    _safe_commit(db)
+    sibling = db.get(Source, sibling.id) or sibling
+    run = db.get(CrawlRun, run.id) or run      # 回滚后按 id 重取,避免用到已失效的实例
     diagnostics.record("note",
                        f"源「{source.name}」未定位到相关栏目 → 转站内检索 site:{domain}(不抓根页,避免首页噪声)")
     found = _run_queries(db, need, sibling, run, get_adapter(sibling), queries, behavior,
@@ -609,7 +624,7 @@ def crawl_source(db: Session, need: NeedProfile, source: Source,
                 source.lifecycle = "retired"
                 run.error += f"[连续 {source.fail_streak} 轮无产出,已自动停用]" 
     except Exception as e:  # noqa: BLE001 单源失败不拖垮批次
-        err = str(e)[:500]
+        err = error_headline(e, 500)
         # 先回滚:失败可能来自 flush(唯一约束/锁超时),会话已中毒,不回滚则后续写全部抛
         # PendingRollbackError,真实错因被掩盖、fail_streak 也白加。
         try:

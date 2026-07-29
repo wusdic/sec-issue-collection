@@ -14,6 +14,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import CrawlJob, CrawlLog, KeywordSet, NeedProfile, RawDocument, Source
 from app.services import diagnostics, discovery, leads, pipeline
+from app.services.errors import error_headline
 from app.services.scheduler import expand_queries
 
 _CANCEL: set[int] = set()  # 请求取消的 job_id
@@ -41,6 +42,23 @@ def inflight() -> list[dict]:
 
 def _log(db: Session, job_id: int, level: str, source: str | None, message: str):
     db.add(CrawlLog(job_id=job_id, level=level, source=source, message=(message or "")[:2000]))
+
+
+def _tick(db: Session, job_id: int) -> CrawlJob | None:
+    """进度记账提交:失败也绝不抛。
+
+    此前循环里是裸 db.commit():某个 worker 偶尔占锁久一点,主线程这一下就抛
+    OperationalError("database is locked"),整批采集当场判死——哪怕所有源本身都好好的。
+    进度计数属于记账,丢一次无所谓,不该毁掉整批。回滚后按 id 重取 job 继续用。
+    """
+    try:
+        db.commit()
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    return db.get(CrawlJob, job_id)
 
 
 def has_running(db: Session, need_id: str) -> CrawlJob | None:
@@ -156,7 +174,7 @@ def _crawl_one(need_id: str, queries, max_pages: int, src_id: int, rec) -> dict:
                 "elapsed": _t.time() - t0}
     except Exception as e:  # noqa: BLE001 单源失败不终止整批
         wdb.rollback()
-        return {"name": _nm, "status": "failed", "error": str(e)[:200],
+        return {"name": _nm, "status": "failed", "error": error_headline(e, 300),
                 "found": 0, "new": 0, "skipped": 0, "failed": 0, "elapsed": _t.time() - t0}
     finally:
         with _INFLIGHT_LOCK:
@@ -191,7 +209,7 @@ def _process_one(need_id: str, doc_id: int, rec) -> dict:
                     wdb.commit()
         except Exception:  # noqa: BLE001
             wdb.rollback()
-        return {"action": "error", "error": str(e)[:200], "doc_id": doc_id, "publisher": pub}
+        return {"action": "error", "error": error_headline(e, 300), "doc_id": doc_id, "publisher": pub}
     finally:
         wdb.close()
 
@@ -253,7 +271,7 @@ def _run(job_id: int):
                         _warned.add(f["source_id"])
                         _log(db, job_id, "warn", f["name"],
                              f"该源已运行 {f['elapsed']:.0f}s 仍未完成,可能卡住(超出单源上限 {slow_th}s)")
-                        db.commit()
+                        job = _tick(db, job_id) or job
                 res = fut.result()
                 lvl = "info" if res["status"] == "ok" else "error"
                 if res.get("elapsed", 0) >= max(30, int(getattr(settings, "source_time_budget_seconds", 180) or 180)):
@@ -265,7 +283,7 @@ def _run(job_id: int):
                 _log(db, job_id, lvl, res["name"], msg)
                 job.new_docs += res["new"]
                 job.done_sources += 1
-                db.commit()
+                job = _tick(db, job_id) or job
                 if job_id in _CANCEL:
                     canceled = True
                     break
@@ -318,7 +336,7 @@ def _run(job_id: int):
                     job.dropped_docs += 1
                     _log(db, job_id, "info", pub, f"[过滤] {r.get('screen_reason') or a} ← {title}")
                 job.done_docs += 1
-                db.commit()
+                job = _tick(db, job_id) or job
                 if job_id in _CANCEL:
                     p_canceled = True
                     job.status = "canceled"
@@ -365,8 +383,9 @@ def _run(job_id: int):
              f"采集完成:新入库 {job.new_docs} 篇,相关 {job.kept_docs} 篇,过滤 {job.dropped_docs} 篇,"
              f"生成事件 {job.new_events} 条")
         db.commit()
-    except Exception:  # noqa: BLE001 兜底记录完整栈
+    except Exception as e:  # noqa: BLE001 兜底记录完整栈
         tb = traceback.format_exc()
+        head = error_headline(e)
         # 必须先回滚:异常可能来自 commit/写锁,会话已中毒,此时直接 db.get 会再抛
         # PendingRollbackError 使本函数崩溃 → 任务永远停在 running,页面"开始采集"被永久占用。
         try:
@@ -378,15 +397,15 @@ def _run(job_id: int):
             if job:
                 job.status = "failed"
                 job.finished_at = datetime.utcnow()
-                job.error = tb[-500:]
-            _log(db, job_id, "error", None, f"任务失败:\n{tb[:1500]}")
+                job.error = head        # 页面只显示这一行,必须是"真正的原因",不能是栈头
+            _log(db, job_id, "error", None, f"任务失败:{head}\n\n完整栈:\n{tb[-2500:]}")
             db.commit()
         except Exception:  # noqa: BLE001 最后兜底:换新会话也要把任务标记成失败,绝不留僵尸 running
             try:
                 db.rollback()
             except Exception:  # noqa: BLE001
                 pass
-            _force_fail_job(job_id, tb)
+            _force_fail_job(job_id, head)
     finally:
         try:
             _diag.__exit__(None, None, None)   # 关闭诊断会话(flush 留痕)

@@ -243,3 +243,50 @@ def admin_user(db):
                     password_hash=hash_password("x"), role="admin")
         db.add(u); db.flush()
     return u
+
+
+# ---------------- ④ 存档期间不得攥着 SQLite 写锁 ----------------
+
+def test_no_write_lock_held_during_archive(db, need, monkeypatch):
+    """存档要逐个下载图片/附件(网络 I/O)。若此时还攥着写锁,并行采集会集体
+    "database is locked"。这里在存档时刻用另一条连接探测:能写 = 锁已释放。"""
+    from sqlalchemy import create_engine, event, text
+
+    from app.config import settings as st
+    from app.services import archive, pipeline
+    from app.services.adapters import DiscoveredItem
+
+    if not st.database_url.startswith("sqlite"):
+        pytest.skip("仅 SQLite 有单写者写锁问题")
+
+    probe = create_engine(st.database_url, connect_args={"check_same_thread": False})
+
+    @event.listens_for(probe, "connect")
+    def _fast_timeout(conn, _):
+        cur = conn.cursor(); cur.execute("PRAGMA busy_timeout=300"); cur.close()
+
+    seen = {"locked": None}
+
+    def fake_archive(_db, url, **k):
+        try:      # 另一条连接尝试写:主会话若持锁,这里会等到 300ms 超时后抛
+            with probe.begin() as c:
+                c.execute(text("CREATE TABLE IF NOT EXISTS _lock_probe (id INTEGER PRIMARY KEY)"))
+                c.execute(text("INSERT INTO _lock_probe (id) VALUES (NULL)"))
+            seen["locked"] = False
+        except Exception as e:  # noqa: BLE001
+            seen["locked"] = f"{type(e).__name__}: {e}"[:120]
+        from app.models import ArchiveManifest
+        m = ArchiveManifest(snapshot_id="probe-snap", final_url=url, status="L-D", storage_path="")
+        _db.add(m); _db.flush()
+        return m
+
+    monkeypatch.setattr(archive, "archive_page", fake_archive)
+    monkeypatch.setattr(pipeline.fetcher, "fetch",
+                        lambda u, **k: pipeline.fetcher.FetchResult(u, u, 200, "<p>正文内容足够长用于建档</p>"))
+    src = Source(name="锁探测源", kind="page", adapter="generic_list", credibility="S3", tier="B",
+                 lifecycle="active", serves_needs=[need.id], entry_url="https://lockprobe.cn/col/")
+    db.add(src); db.flush(); db.commit()
+    item = DiscoveredItem(url="https://lockprobe.cn/col/2026-07/01/a.htm", title="某公司数据泄露事件通报")
+    pipeline.ingest_item(db, need, src, item, None, do_archive=True, stats={})
+    probe.dispose()
+    assert seen["locked"] is False, f"存档期间写锁未释放:{seen['locked']}"

@@ -850,7 +850,8 @@ function renderJob(job, inflight){
     <div style="font-size:13px;margin-top:6px">新入库 <b>${job.new_docs}</b> ·
       <span style="color:var(--ok)">相关 ${job.kept_docs}</span> ·
       <span class="muted">过滤 ${job.dropped_docs}</span> · 生成事件 <b>${job.new_events}</b></div>
-    ${job.error?`<div class="pill bad" style="margin-top:6px">错误:${esc(job.error.slice(0,300))}</div>`:""}
+    ${job.error?`<div class="pill bad" style="margin-top:6px;display:block;white-space:pre-wrap;line-height:1.5">错误:${esc(job.error)}</div>
+      <div class="sub" style="margin-top:4px">完整调用栈见下方「运行日志」里的 error 行;需要我分析就用「下载诊断日志」。</div>`:""}
   </div>`;
 }
 async function runCrawl(){
