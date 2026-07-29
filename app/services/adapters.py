@@ -322,15 +322,27 @@ class SogouWechatAdapter(SearchEngineAdapter):
             return f"{acct} {query}" if query else acct
         return super()._augment(query)
 
+    # 号名所在的链接:搜狗改过版,老版是 a.account,新版只给 id="..._account_0"。
+    # 只认 a.account 时 732 条结果全都拿不到号名,只能逐条去还原跳转链——配额一超就整批白丢。
+    _ACCT_SEL = "a.account, a[id*='_account_'], div.s-p a[href*='profile'], div.s-p > a"
+
+    @staticmethod
+    def _acct_text(li) -> str | None:
+        for a in li.select(SogouWechatAdapter._ACCT_SEL):
+            t = a.get_text(" ", strip=True)
+            # 号名不会是一句话,也不会是"更多""展开"这类控件文案
+            if t and 1 < len(t) <= 32 and not t.startswith(("更多", "展开", "http")):
+                return t
+        return None
+
     def parse(self, html: str) -> list[DiscoveredItem]:
         soup = BeautifulSoup(html, "lxml")
         want = (self.config.get("account") or "").strip()
         out = []
         for li in soup.select("ul.news-list li"):
             a = li.select_one("h3 a")
-            account = li.select_one("a.account")
             if a and a.get("href"):
-                acct_name = account.get_text(strip=True) if account else None
+                acct_name = self._acct_text(li)
                 # 限定了公众号时,只保留确实来自该号的结果(搜狗会返回其他号的相近内容)
                 if want and acct_name and acct_name != want:
                     continue

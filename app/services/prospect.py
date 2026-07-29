@@ -167,6 +167,25 @@ def _wechat_account(url: str) -> str | None:
         return None
 
 
+_CJK = _re.compile(r"[一-鿿]")
+# 国内渠道的常见后缀:命中就不看标题语言(有些政务站标题被引擎截成英文)
+_CN_TLD = (".cn", ".com.cn", ".gov.cn", ".org.cn", ".net.cn", ".edu.cn", ".中国")
+
+
+def _looks_domestic(url: str, title: str | None) -> bool:
+    """这条结果像不像"国内中文渠道"。
+
+    我们喂的全是中文找源词,搜索引擎却会跨语言给出 Thesaurus.com 这类纯英文站。
+    判定放得很松——域名是 .cn 系,或标题里有一个汉字,就算数——只挡明显的语言噪声。
+    """
+    if url_tools.platform_account(url):
+        return True          # 公众号/百家号/微博号:身份是"号"不是站,标题短且常是英文,不参与语言判定
+    host = (urlparse(url).netloc or "").lower()
+    if host.endswith(_CN_TLD):
+        return True
+    return bool(_CJK.search(title or ""))
+
+
 def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
     """搜索结果 URL → (候选源标识键, 丢弃原因, 额外信息)。
 
@@ -211,12 +230,18 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
           # 丢弃原因细分:"已是现有源"和"被拉黑"是两回事,混成一个数字等于没说
           "already_source": 0, "blacklisted": 0, "engine_self": 0, "invalid_name": 0,
           "wechat_unresolved": 0, "wechat_over_budget": 0, "redirect_over_budget": 0,
+          "redirect_cached": 0, "non_chinese": 0,
           "new_wechat": 0, "new_platform_account": 0, "column_hints": 0}
     dropped: dict[str, int] = {}      # 被丢弃的域名 → 次数(给人看"到底丢了什么")
     budget: dict[str, int] = {}
     col_hints: dict[str, set] = {}    # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目
     edetail: dict[str, dict] = {e[0]: {"engine": e[0], "pages": 0, "items": 0, "errors": 0}
                                 for e in engines}
+    # 引擎在本轮内被反爬打死就别再喂词了:实测百度连错 148 次仍每个词都试一遍,
+    # 纯耗时且拖慢其它引擎。连错到阈值就本轮停用,下一轮(或引擎自检)再给机会。
+    fail_streak: dict[str, int] = {name: 0 for name, _ in engines}
+    streak_cap = int(getattr(settings, "prospect_engine_fail_streak", 8) or 0)
+    redirect_cache: dict[str, str] = {}   # 同一条跳转链只还原一次
     new_keys, resolved_used = set(), 0
     total = max(1, len(queries) * max(1, len(engines)))
     done = 0
@@ -224,13 +249,22 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
         for ename, eng in engines:
             if _cancel.is_set():
                 break
+            if streak_cap and fail_streak.get(ename, 0) >= streak_cap:
+                edetail[ename].setdefault("stopped", f"连续失败 {streak_cap} 次,本轮停用")
+                done += 1
+                continue
             try:
                 for page in range(pages):
                     items = eng.search_page(q, page)
                     if items is None:
                         st["fetch_fail"] += 1
                         edetail[ename]["errors"] += 1
+                        if page == 0:
+                            # 只有第一页就抓不到才算"这个引擎不行"。翻页翻到头也返回 None,
+                            # 把它算进连败会把正常引擎误熔断
+                            fail_streak[ename] = fail_streak.get(ename, 0) + 1
                         break               # 抓不到(403/反爬/网络)
+                    fail_streak[ename] = 0
                     st["pages"] += 1
                     edetail[ename]["pages"] += 1
                     if not items:
@@ -267,14 +301,25 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                             continue
                         if url_tools.is_search_redirect(url):
                             st["redirect"] += 1
-                            if resolve_cap and resolved_used >= resolve_cap:
+                            cached = redirect_cache.get(url)
+                            if cached is not None:
+                                st["redirect_cached"] += 1
+                                url = cached
+                            elif resolve_cap and resolved_used >= resolve_cap:
                                 st["redirect_over_budget"] += 1
                                 continue     # 还原有配额,超了就跳过(否则一轮几百次请求)
-                            resolved_used += 1
-                            url = _resolve_redirect(url)
+                            else:
+                                resolved_used += 1
+                                url = _resolve_redirect(url)
+                                redirect_cache[it.url] = url
                             if url_tools.is_search_redirect(url):
                                 continue     # 还原失败(JS 跳转/需登录)
                             st["resolved"] += 1
+                        if not _looks_domestic(url, it.title):
+                            # 中文词搜出来的纯英文外站(Thesaurus.com 之类)是引擎的跨语言噪声,
+                            # 不该占候选池名额,也不值得再花一次 LLM 初评
+                            st["non_chinese"] += 1
+                            continue
                         key, why, extra = _candidate(url, budget)
                         if not key:
                             st[why if why in st else "bad_url"] += 1
@@ -311,7 +356,8 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
             done += 1
             if on_progress:
                 on_progress(done, total, f"{ename} · {q}",
-                            {"queries": len(queries), "engines": len(engines)})
+                            {"queries": len(queries), "engines": len(engines),
+                             "unit": f"({len(queries)} 词 × {len(engines)} 引擎)"})
         try:
             db.commit()
         except Exception:  # noqa: BLE001
@@ -552,6 +598,8 @@ def explain(r: dict) -> str:
             parts.append(f"{st['engine_self']} 条指向搜索引擎自身")
         if st.get("wechat_unresolved"):
             parts.append(f"{st['wechat_unresolved']} 条公众号文章解析不出所属号(公众号页需浏览器渲染)")
+        if st.get("non_chinese"):
+            parts.append(f"{st['non_chinese']} 条是纯英文外站(跨语言噪声)")
         why = ";".join(parts) or "全部被去重/校验规则挡下"
         return f"抓到 {st.get('raw_items', 0)} 条结果,但没有新渠道:{why}"
     extra = []
@@ -715,7 +763,7 @@ def start(need_id: str) -> dict:
         _cancel.clear()
         _state.clear()
         _state.update({"running": True, "phase": "准备", "total": 0, "done": 0,
-                       "current": "", "need_id": need_id, "hits": 0, "new_candidates": 0,
+                       "current": "", "unit": "", "need_id": need_id, "hits": 0, "new_candidates": 0,
                        "probed": 0, "auto_trial": 0, "trial_names": [],
                        "started_at": datetime.utcnow().isoformat(timespec="seconds"),
                        "finished_at": None, "canceled": False})
@@ -750,9 +798,11 @@ def _run(need_id: str):
 
             if not _cancel.is_set():
                 _set(phase="候选源相关度初评(LLM)", done=0, total=0, current="")
+                # 注意:这里不能把 queries/engines 清零——那是本轮找源的成绩单,
+                # 清零会让结束后的汇总永远显示"找源词 0 条"。进度分母改用 unit 单独控制。
                 p = probe_pending(db, need_id,
                                   on_progress=lambda d, t, c: _set(done=d, total=t, current=c,
-                                                                   queries=0, engines=0))
+                                                                   unit=""))
                 scores = llm_scores(db)
                 _set(probed=p.get("probed", 0),
                      new_candidates_detail=[

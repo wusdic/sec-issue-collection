@@ -153,7 +153,9 @@ class Settings:
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
     prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "150"))      # 单轮最多跑多少条找源词
     # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条
-    prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "200"))
+    prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "400"))
+    # 某引擎在本轮内连续失败到这个次数就停用,不再拿剩下的词去撞反爬(0=不停用)
+    prospect_engine_fail_streak: int = int(os.getenv("PROSPECT_ENGINE_FAIL_STREAK", "8"))
     # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个
     prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "8"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)

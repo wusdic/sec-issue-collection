@@ -774,3 +774,126 @@ def test_subdomain_sites_are_distinct_sources():
     # www 与非 www 仍然合并
     assert source_keys("page", "https://www.cac.gov.cn/")[1] == \
            source_keys("page", "https://cac.gov.cn/")[1]
+
+
+# ---------------- ⑦ 找源损耗:号名解析、跳转链去重、引擎熔断、跨语言噪声 ----------------
+
+def test_sogou_account_read_from_new_markup():
+    """搜狗改版后号名只在 id="..._account_0" 上;只认 a.account 会让整批结果拿不到号名,
+    只能逐条还原跳转链——实测 732 条搜狗结果因此全走还原、配额一超就白丢。"""
+    from app.services.adapters import SogouWechatAdapter
+    html = """<ul class="news-list">
+      <li><div class="txt-box"><h3><a href="/link?url=AAA">网警通报某案</a></h3>
+        <div class="s-p"><a id="sogou_vr_11002401_account_0" href="/profile?src=x">江苏网警</a>
+        <span class="s2">2026-01-01</span></div></div></li>
+    </ul>"""
+    items = SogouWechatAdapter(prospect._Shim()).parse(html)
+    assert len(items) == 1 and items[0].wechat_account == "江苏网警"
+
+
+def test_sogou_account_ignores_control_text():
+    """s-p 里也可能先出现"更多"这类控件文案,不能当成号名。"""
+    from app.services.adapters import SogouWechatAdapter
+    html = """<ul class="news-list">
+      <li><h3><a href="/link?url=B">某通报</a></h3>
+        <div class="s-p"><a href="#">更多</a><a id="x_account_1" href="/profile">浙江网警</a></div></li>
+    </ul>"""
+    items = SogouWechatAdapter(prospect._Shim()).parse(html)
+    assert items[0].wechat_account == "浙江网警"
+
+
+def test_same_redirect_resolved_once(db, need, monkeypatch):
+    """同一条跳转链在多个词下重复出现,只该发一次请求——否则配额被重复链吃光。"""
+    monkeypatch.setattr(settings, "prospect_resolve_max", 10)
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url="https://www.baidu.com/link?url=SAME", title="同一条结果")]
+
+    calls = {"n": 0}
+
+    def fake_resolve(url):
+        calls["n"] += 1
+        return "https://dedup-site.cn/a"
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚", "网信办 通报", "公安 处罚"])
+    monkeypatch.setattr(prospect, "_resolve_redirect", fake_resolve)
+    r = prospect.run_once(db, need.id)
+    assert calls["n"] == 1, "重复的跳转链应命中缓存"
+    assert r["stats"]["redirect"] == 3 and r["stats"]["redirect_cached"] == 2
+    assert r["stats"]["redirect_over_budget"] == 0
+
+
+def test_engine_stops_after_failure_streak(db, need, monkeypatch):
+    """被反爬打死的引擎不该把剩下的词全撞一遍(实测百度连错 148 次仍每词都试)。"""
+    monkeypatch.setattr(settings, "prospect_engine_fail_streak", 3)
+
+    class _Dead:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            _Dead.tries = getattr(_Dead, "tries", 0) + 1
+            return None
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("baidu_search", _Dead())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: [f"词{i}" for i in range(20)])
+    r = prospect.run_once(db, need.id)
+    assert _Dead.tries == 3, f"连错 3 次后应停用,实际试了 {_Dead.tries} 次"
+    detail = {e["engine"]: e for e in r["engine_detail"]}
+    assert "停用" in detail["baidu_search"].get("stopped", "")
+
+
+def test_engine_streak_resets_on_success(db, need, monkeypatch):
+    """偶发失败不该把引擎熔断掉:成功一次就清零。"""
+    monkeypatch.setattr(settings, "prospect_engine_fail_streak", 2)
+
+    class _Flaky:
+        n = 0
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            _Flaky.n += 1
+            if _Flaky.n % 2:
+                return None                      # 一次失败
+            return [DiscoveredItem(url=f"https://flaky-{_Flaky.n}.cn/a", title="安全通报")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _Flaky())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: [f"词{i}" for i in range(8)])
+    r = prospect.run_once(db, need.id)
+    detail = {e["engine"]: e for e in r["engine_detail"]}
+    assert "stopped" not in detail["bing_search"]
+    assert r["stats"]["raw_items"] == 4
+
+
+def test_english_only_results_dropped(db, need, monkeypatch):
+    """中文找源词却搜出 Thesaurus.com 这类纯英文站,是引擎的跨语言噪声,不该占候选池名额。"""
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url="https://www.thesaurus.com/browse/police", title="Thesaurus.com"),
+                DiscoveredItem(url="https://ankang-ga.gov.cn/wj/1.html", title="安康市公安局 网警通报")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["non_chinese"] == 1
+    assert all("thesaurus" not in k for k in r["new_keys"])
+    assert any("ankang" in k for k in r["new_keys"])
+
+
+def test_cn_domain_kept_even_with_english_title(db, need, monkeypatch):
+    """.cn 系域名即使标题被引擎截成英文也要留下——语言判定只挡明显噪声,不能误伤政务站。"""
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url="https://cyberpolice.hn.gov.cn/list.html", title="Report Center")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["non_chinese"] == 0 and r["new_keys"]

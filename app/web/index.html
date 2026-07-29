@@ -885,8 +885,8 @@ function renderProspect(h){
   const bar=`<div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:4px 0">
       <div style="height:100%;width:${pct}%;background:var(--brand);transition:width .3s"></div></div>`;
   if(h.running){
-    const unit = (h.queries&&h.engines)
-      ? `<span class="muted" title="进度分母 = 找源词 ${h.queries} 条 × 引擎 ${h.engines} 个">(${h.queries} 词 × ${h.engines} 引擎)</span>` : "";
+    const unit = h.unit
+      ? `<span class="muted" title="进度分母 = 找源词 ${h.queries} 条 × 引擎 ${h.engines} 个">${esc(h.unit)}</span>` : "";
     box.innerHTML=`<b>🧭 主动找源中</b> ${esc(h.phase||"")} ${total?`${done}/${total}(${pct}%)${unit}`:""}
       <button class="ghost sm" style="margin-left:8px" onclick="cancelProspect()">取消</button>${bar}
       <span class="muted">当前:${esc(h.current||"")}</span>`;
@@ -902,14 +902,16 @@ function renderProspect(h){
       <div class="sub" style="margin-top:4px">${h.engine_detail.map(e=>
         `<div style="margin:3px 0"><span class="pill ${e.errors&&!e.pages?'bad':(e.blocked?'warn':'')}">${esc(e.engine)}</span>
            成功 ${e.pages} 页、结果 ${e.items} 条、失败 ${e.errors} 次${e.blocked?`、验证页 ${e.blocked} 次`:""}
+           ${e.stopped?`<span class="pill warn">${esc(e.stopped)}</span>`:""}
            ${e.last_error?`<span class="muted">· ${esc(e.last_error)}</span>`:""}
            ${e.sample?`<div class="muted mono" style="font-size:11px;margin-left:8px">返回内容样本:${esc(e.sample)}</div>`:""}</div>`).join("")}</div>
-      <div class="sub" style="margin-top:4px">结果去向:跳转链 ${st.redirect||0}(还原成功 ${st.resolved||0})｜
+      <div class="sub" style="margin-top:4px">结果去向:跳转链 ${st.redirect||0}(还原成功 ${st.resolved||0}${st.redirect_cached?`、命中缓存 ${st.redirect_cached}`:""})｜
         通用大平台丢弃 ${st.platform||0}｜已是现有源 ${st.already_source||0}｜已拉黑 ${st.blacklisted||0}｜
         指向搜索引擎自身 ${st.engine_self||0}｜链接不可用 ${st.bad_url||0}
         ${st.redirect_over_budget?`｜<span class="pill warn">跳转链因配额跳过 ${st.redirect_over_budget}</span>`:""}
         ${st.column_hints?`｜<b>从已有源补到栏目 ${st.column_hints}</b>`:""}
         ${st.wechat_unresolved?`｜公众号解析失败 ${st.wechat_unresolved}`:""}
+        ${st.non_chinese?`｜纯英文外站丢弃 ${st.non_chinese}`:""}
         ${st.new_wechat?`｜<b>新公众号 ${st.new_wechat}</b>`:""}
         ${st.new_platform_account?`｜<b>新平台号 ${st.new_platform_account}</b>`:""}</div>
       ${(h.dropped_top&&h.dropped_top.length)?`<div class="sub" style="margin-top:4px">丢弃最多的渠道(看看是不是误伤):
