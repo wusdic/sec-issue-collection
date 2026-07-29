@@ -99,7 +99,10 @@ EDITABLE = [
     ("prospect_weekday", "主动找源:周几跑", "找源与覆盖", "int", False,
      "每日自动化里周几触发一次主动找源。0=周一 … 6=周日。默认 0"),
     ("prospect_engines", "主动找源:用哪些搜索引擎", "找源与覆盖", "str", False,
-     "逗号分隔的适配器名,默认 baidu_search,bing_search"),
+     "逗号分隔的适配器名。默认 bing_search,sogou_wechat,baidu_search —— 执法通报(网警/网信办)"
+     "大多发在公众号里,只搜网页会漏掉一大类;百度反爬较狠,常返回验证页,可视情况去掉"),
+    ("prospect_wechat_resolve_max", "主动找源:单轮解析几个公众号", "找源与覆盖", "int", False,
+     "搜到的公众号文章要抓一次才知道属于哪个号,每条一次网络请求,按此值封顶。默认 30"),
     ("prospect_pages_per_query", "主动找源:每词翻几页", "找源与覆盖", "int", False, "默认 2"),
     ("prospect_query_cap", "主动找源:单轮检索词上限", "找源与覆盖", "int", False,
      "基础找源词 + 覆盖空白自动生成的方向词,合计最多跑这么多条。默认 40"),

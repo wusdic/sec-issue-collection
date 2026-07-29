@@ -134,7 +134,10 @@ class Settings:
 
     # 主动找源(D5):用"找源专用检索词"定期去搜索引擎捞新渠道,而不是只等已采内容引用
     prospect_enabled: bool = os.getenv("PROSPECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "baidu_search,bing_search")
+    # 默认带上搜狗微信:用户要的执法通报(网警/网信办)大多发在公众号里,只搜网页会漏掉一大类
+    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "bing_search,sogou_wechat,baidu_search")
+    # 公众号文章要抓一次才知道属于哪个号,单轮最多解析这么多条(每条一次网络请求)
+    prospect_wechat_resolve_max: int = int(os.getenv("PROSPECT_WECHAT_RESOLVE_MAX", "30"))
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
     prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "40"))       # 单轮最多跑多少条找源词
     # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条

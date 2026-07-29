@@ -68,10 +68,12 @@ def summary(db, need_id: str, days: int | None = None) -> dict:
     }
 
 
-# 每个空白行业生成的找源词模板:目标是找"渠道",不是找单条事件
-_Q_TPL = ["{ind} 网络安全 事件 通报 公众号",
-          "{ind} 数据泄露 案例 网站",
-          "{ind} 行业 安全 监管 处罚 公告"]
+# 每个空白行业生成的找源词:**只两词**。此前是 "{ind} 网络安全 事件 通报 公众号" 这种五词长串,
+# 搜索引擎按 AND 收紧后几乎搜不到东西——词越多召回越窄,找源恰恰需要广度。
+_Q_TPL = ["{ind} 数据泄露", "{ind} 网络安全 通报", "{ind} 信息安全 处罚"]
+# 行业名取短:词表里的"医疗卫生/交通物流"在语料里不如"医疗/物流"常见
+_SHORT = {"医疗卫生": "医疗", "交通物流": "物流", "文化传媒": "传媒",
+          "批发零售": "零售", "住宿餐饮": "餐饮", "信息技术服务": "IT服务"}
 
 
 def prospect_queries(db, need_id: str, days: int | None = None, per_industry: int = 2) -> list[str]:
@@ -80,6 +82,7 @@ def prospect_queries(db, need_id: str, days: int | None = None, per_industry: in
     for c in industry_coverage(db, need_id, days):
         if not c["gap"]:
             continue
+        ind = _SHORT.get(c["industry"], c["industry"])
         for tpl in _Q_TPL[:per_industry]:
-            out.append(tpl.format(ind=c["industry"]))
+            out.append(tpl.format(ind=ind))
     return out

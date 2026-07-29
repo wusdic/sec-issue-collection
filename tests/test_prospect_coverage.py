@@ -114,8 +114,9 @@ def test_coverage_marks_empty_industries(db, need, monkeypatch):
 def test_coverage_generates_prospect_queries(db, need, monkeypatch):
     monkeypatch.setattr(settings, "coverage_min_events", 3)
     qs = coverage.prospect_queries(db, need.id)
-    assert any("医疗卫生" in q for q in qs)               # 空白行业 → 生成该方向找源词
-    assert all("公众号" in q or "网站" in q or "公告" in q for q in qs)   # 找的是渠道不是事件
+    assert any("医疗" in q for q in qs)                   # 空白行业 → 生成该方向找源词(行业名取短)
+    # 词越多召回越窄,找源要的是广度:每条不超过 3 个词
+    assert all(len(q.split()) <= 3 for q in qs), qs
 
 
 def test_coverage_summary_lists_silent_sources(db, need):
@@ -353,3 +354,111 @@ def test_empty_page_reports_blocked_reason(db, need, monkeypatch):
     r = prospect.run_once(db, need.id)
     assert r["stats"]["blocked_pages"] >= 1
     assert "验证页" in r["note"] and "浏览器渲染" in r["note"]
+
+
+# ---------------- ⑦ 关键词策略:短词组合,别把召回压死 ----------------
+
+def test_combo_queries_are_two_words():
+    """「网信办 处罚 解读 公众号」几乎搜不到,「网警 处罚」能捞到一批号——找源词必须短。"""
+    qs = prospect.combo_queries()
+    assert qs, "配方没生成任何组合词"
+    assert all(len(q.split()) <= 2 for q in qs), [q for q in qs if len(q.split()) > 2]
+    assert "网警 处罚" in qs and "网信办 通报" in qs
+
+
+def test_combo_queries_spread_both_dimensions():
+    """截断时主体和动作两个维度都要均匀,不能整轮都配同一个动作。"""
+    qs = [q for q in prospect.combo_queries()[:20] if len(q.split()) == 2]
+    subjects = {q.split()[0] for q in qs}
+    verbs = {q.split()[1] for q in qs}
+    assert len(subjects) >= 8 and len(verbs) >= 8, (subjects, verbs)
+
+
+def test_coverage_queries_rank_before_generic_combos(db, need, monkeypatch):
+    """cap 截断时,"缺哪块补哪块"的方向词优先级高于通用组合词。"""
+    monkeypatch.setattr(settings, "prospect_query_cap", 12)
+    monkeypatch.setattr(coverage, "prospect_queries", lambda *a, **k: ["医疗 数据泄露"])
+    qs = prospect.build_queries(db, need.id)
+    assert "医疗 数据泄露" in qs and len(qs) == 12
+
+
+# ---------------- ⑧ 平台号(公众号/百家号/微博)不该被当成大平台丢掉 ----------------
+
+class _PlatformEngine:
+    def __init__(self, *_a, **_k): pass
+    def search_page(self, q, page, tf=None):
+        if page > 0:
+            return None
+        return [DiscoveredItem(url="https://mp.weixin.qq.com/s/5XUyLv7701cgN0qfLxhEdQ?click_id=1",
+                               title="网警通报某公司数据泄露"),
+                DiscoveredItem(url="https://author.baidu.com/home?from=bjh_article&app_id=1807",
+                               title="某安全作者"),
+                DiscoveredItem(url="https://zhihu.com/q/1", title="知乎回答不要")]
+
+
+def test_wechat_and_baijiahao_become_account_candidates(db, need, monkeypatch):
+    """公众号文章按注册域会退化成 qq.com 被丢掉——而这正是最该收的一类源。"""
+    from app.models import SourceDiscoveryEvidence
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _PlatformEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_wechat_account", lambda url: "网安宣传")
+    r = prospect.run_once(db, need.id)
+    assert "mp:网安宣传" in r["new_keys"]          # 识别成"某个号"
+    assert "bjh:1807" in r["new_keys"]             # 百家号作者页同理
+    assert r["stats"]["new_wechat"] == 1 and r["stats"]["new_platform_account"] == 1
+    assert r["stats"]["platform"] == 1             # 只有知乎被当大平台丢掉
+    keys = {e.identity_key for e in db.query(SourceDiscoveryEvidence)
+            .filter_by(channel="source_search").all()}
+    assert "qq.com" not in keys and "baidu.com" not in keys
+
+
+def test_wechat_resolve_budget(db, need, monkeypatch):
+    monkeypatch.setattr(settings, "prospect_wechat_resolve_max", 0)   # 0=不解析
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _PlatformEngine())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    calls = {"n": 0}
+    monkeypatch.setattr(prospect, "_wechat_account",
+                        lambda url: (calls.__setitem__("n", calls["n"] + 1), "x")[1])
+    r = prospect.run_once(db, need.id)
+    assert calls["n"] == 1        # cap=0 表示不限,仍会解析(0 视为无上限)
+    assert "bjh:1807" in r["new_keys"]
+
+
+def test_platform_account_becomes_usable_source(db, need, monkeypatch):
+    """百家号候选达标入库后,入口应是该号主页(可直接采),而不是 https://bjh:1807/。"""
+    from app.services import discovery
+    monkeypatch.setattr(settings, "discovery_auto_trial_threshold", 0.1)
+    discovery.record_evidence(db, None, "source_search", display_name="某安全作者",
+                              platform_key="bjh:9911")
+    discovery.record_evidence(db, None, "citation", display_name="某安全作者",
+                              platform_key="bjh:9911")
+    discovery.evaluate_candidates(db, need.id)
+    s = db.query(Source).filter_by(site_key="bjh:9911").one()
+    assert s.entry_url == "https://author.baidu.com/home?app_id=9911"
+    assert s.kind == "page" and s.adapter == "generic_list"
+    assert s.identity_key == "bjh:9911"
+
+
+def test_drop_reasons_are_itemised(db, need, monkeypatch):
+    """"已是现有源"和"已拉黑"是两回事,混成一个数字等于没说。"""
+    from app.models import SourceBlacklist
+    db.add(Source(name="已有源", kind="page", adapter="generic_list", credibility="S3", tier="B",
+                  lifecycle="active", serves_needs=[need.id], entry_url="https://known-x.cn/c/",
+                  site_key="known-x.cn"))
+    db.add(SourceBlacklist(identity_key="banned-x.cn", reason="测试"))
+    db.flush()
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            if page:
+                return None
+            return [DiscoveredItem(url="https://known-x.cn/a", title="已有源的文章"),
+                    DiscoveredItem(url="https://banned-x.cn/a", title="拉黑站的文章")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_search", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["already_source"] == 1 and r["stats"]["blacklisted"] == 1
+    assert {d["key"] for d in r["dropped_top"]} == {"known-x.cn", "banned-x.cn"}
+    assert "已有的源" in r["note"] and "已拉黑" in r["note"]

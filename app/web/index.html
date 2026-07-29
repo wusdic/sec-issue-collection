@@ -898,7 +898,13 @@ function renderProspect(h){
            ${e.last_error?`<span class="muted">· ${esc(e.last_error)}</span>`:""}
            ${e.sample?`<div class="muted mono" style="font-size:11px;margin-left:8px">返回内容样本:${esc(e.sample)}</div>`:""}</div>`).join("")}</div>
       <div class="sub" style="margin-top:4px">结果去向:跳转链 ${st.redirect||0}(还原成功 ${st.resolved||0})｜
-        通用大平台丢弃 ${st.platform||0}｜已是现有源/已拉黑 ${st.known_or_blocked||0}｜链接不可用 ${st.bad_url||0}</div>
+        通用大平台丢弃 ${st.platform||0}｜已是现有源 ${st.already_source||0}｜已拉黑 ${st.blacklisted||0}｜
+        指向搜索引擎自身 ${st.engine_self||0}｜链接不可用 ${st.bad_url||0}
+        ${st.wechat_unresolved?`｜公众号解析失败 ${st.wechat_unresolved}`:""}
+        ${st.new_wechat?`｜<b>新公众号 ${st.new_wechat}</b>`:""}
+        ${st.new_platform_account?`｜<b>新平台号 ${st.new_platform_account}</b>`:""}</div>
+      ${(h.dropped_top&&h.dropped_top.length)?`<div class="sub" style="margin-top:4px">丢弃最多的渠道(看看是不是误伤):
+        ${h.dropped_top.map(d=>`<span class="pill">${esc(d.key)} ×${d.count}</span>`).join(" ")}</div>`:''}
       </details>`:''}
     ${(h.trial_names&&h.trial_names.length)?`<div class="sub" style="margin-top:4px">本轮入库(S4 试运行,待人工定级):
       ${h.trial_names.map(n=>`<span class="pill info">${esc(n)}</span>`).join(" ")}</div>`:''}`;

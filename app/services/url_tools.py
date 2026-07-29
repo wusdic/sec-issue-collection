@@ -65,6 +65,50 @@ def identity_key_for(url: str, wechat_account: str | None = None) -> str:
     return registered_domain(host)
 
 
+# 平台号:一大批优质安全内容发在平台账号里(公众号/百家号/微博),
+# 按注册域算身份会全部退化成 qq.com / baidu.com / weibo.com 并被"通用大平台"规则丢掉——
+# 而这恰恰是最该收的一类源。这里把它们识别成"某个号",而不是"某个站"。
+_BJH_AUTHOR_RE = re.compile(r"(?:^|\.)author\.baidu\.com$")
+_WB_USER_RE = re.compile(r"^/(?:u|p)/(\d{5,})")
+
+
+def platform_account(url: str) -> dict | None:
+    """识别平台内的"账号/作者"页,返回 {kind, key, entry_url, needs_resolve}。
+
+    - 公众号文章 mp.weixin.qq.com/s/... → 需要抓一次文章才知道是哪个号(needs_resolve=True);
+    - 百家号作者页 author.baidu.com/home?app_id=N → bjh:N,主页本身就是文章列表,可直接采;
+    - 微博用户页 weibo.com/u/N → wb:N。
+    不是平台号页则返回 None。
+    """
+    if not url or not url.startswith("http"):
+        return None
+    p = urlparse(url)
+    host = (p.netloc or "").lower()
+    if host in ("mp.weixin.qq.com",) and (p.path or "").startswith("/s"):
+        return {"kind": "wechat", "key": None, "entry_url": url, "needs_resolve": True}
+    if _BJH_AUTHOR_RE.search(host):
+        app_id = dict(parse_qsl(p.query or "")).get("app_id", "").strip()
+        if app_id.isdigit():
+            return {"kind": "baijiahao", "key": f"bjh:{app_id}",
+                    "entry_url": f"https://author.baidu.com/home?app_id={app_id}",
+                    "needs_resolve": False}
+    if host.endswith("weibo.com") or host.endswith("weibo.cn"):
+        m = _WB_USER_RE.match(p.path or "")
+        if m:
+            return {"kind": "weibo", "key": f"wb:{m.group(1)}",
+                    "entry_url": f"https://weibo.com/u/{m.group(1)}", "needs_resolve": False}
+    return None
+
+
+def platform_entry_url(key: str) -> str | None:
+    """平台号键 → 可直接采集的入口页(公众号无固定入口,走搜狗按号检索)。"""
+    if key.startswith("bjh:"):
+        return f"https://author.baidu.com/home?app_id={key[4:]}"
+    if key.startswith("wb:"):
+        return f"https://weibo.com/u/{key[3:]}"
+    return None
+
+
 def source_keys(kind: str, entry_url: str | None, adapter_config: dict | None = None,
                 wechat_account: str | None = None) -> tuple[str | None, str | None]:
     """算一个源的 (site_key, identity_key)。

@@ -41,16 +41,21 @@ def _valid_subject(name: str | None) -> bool:
 
 def record_evidence(db: Session, url: str | None, channel: str,
                     display_name: str | None = None, wechat_account: str | None = None,
-                    doc_id: int | None = None, was_cluster_primary: bool = False) -> str | None:
-    """登记一次候选源证据(D1-D6 通道统一入口)。返回 identity_key,已注册/黑名单返回 None。"""
-    if not url and not wechat_account:
+                    doc_id: int | None = None, was_cluster_primary: bool = False,
+                    platform_key: str | None = None) -> str | None:
+    """登记一次候选源证据(D1-D6 通道统一入口)。返回 identity_key,已注册/黑名单返回 None。
+
+    platform_key:百家号/微博等"平台内的号"(bjh:/wb:)。按注册域算它们会退化成
+    baidu.com/weibo.com 并被通用大平台规则丢掉,故由调用方直接给出号级身份键。
+    """
+    if not url and not wechat_account and not platform_key:
         return None
     # 公众号/引文主体名做校验:纯日期/数字/过短的不当候选源(F5)
     if wechat_account and not _valid_subject(wechat_account):
         return None
-    if not url and display_name and not _valid_subject(display_name):
+    if not url and not platform_key and display_name and not _valid_subject(display_name):
         return None
-    key = url_tools.identity_key_for(url or "", wechat_account)
+    key = platform_key or url_tools.identity_key_for(url or "", wechat_account)
     if not key or key in ("baidu.com", "bing.com", "sogou.com", "weibo.com"):
         return None  # C3 未还原的搜索引擎域名不计
     if db.get(SourceBlacklist, key):
@@ -128,17 +133,23 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
             rows = db.query(SourceDiscoveryEvidence).filter_by(identity_key=key).all()
             display = next((r.display_name for r in rows if r.display_name), key)
             is_mp = key.startswith("mp:")
-            entry = None if is_mp else f"https://{key}/"
-            _sk, ident = url_tools.source_keys(
-                "query" if is_mp else "page", entry,
-                {"account": key[3:]} if is_mp else {})
+            plat_entry = url_tools.platform_entry_url(key)   # bjh:/wb: → 该号的主页(就是文章列表)
+            entry = None if is_mp else (plat_entry or f"https://{key}/")
+            if is_mp:
+                ident, kind, adapter, cfg = key, "query", "sogou_wechat", {"account": key[3:]}
+            elif plat_entry:
+                # 平台号主页多为 JS 渲染,用通用列表适配器 + auto 渲染;身份键就是号本身
+                ident, kind, adapter, cfg = key, "page", "generic_list", {"render": "auto"}
+            else:
+                _sk, ident = url_tools.source_keys("page", entry, {})
+                kind, adapter, cfg = "page", "generic_rss", {}
             db.add(Source(
                 name=f"[候选]{display}",
                 identity_key=ident, site_key=key, discovery_score=score,
                 entry_url=entry,
-                kind="query" if is_mp else "page",
-                adapter="sogou_wechat" if is_mp else "generic_rss",
-                adapter_config={"account": key[3:]} if is_mp else {},
+                kind=kind,
+                adapter=adapter,
+                adapter_config=cfg,
                 credibility="S4",  # 候选一律 S4,转正人工定级
                 lifecycle="trial", serves_needs=[need_id],
                 discovered_from="discovery", trial_started_at=datetime.utcnow(),

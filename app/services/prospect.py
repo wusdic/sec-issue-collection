@@ -52,20 +52,57 @@ def base_queries() -> list[str]:
         return []
 
 
-def build_queries(db, need_id: str) -> list[str]:
-    """本轮要跑的找源词 = 人工维护的基础词 + 覆盖度空白自动生成的方向词。
+def _recipes() -> dict:
+    try:
+        with open(settings.config_dir / "discovery.yaml", encoding="utf-8") as f:
+            return (yaml.safe_load(f) or {}).get("query_recipes", {}) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
 
-    后者让"缺哪块就去找哪块的源"成为闭环,而不是每周重复搜同样的词。
+
+def combo_queries() -> list[str]:
+    """按配方生成 **2 词** 找源组合:主体×动作、事件×动作、渠道词。
+
+    词堆太多会把召回压死——搜索引擎对多词是 AND 收紧,「网信办 处罚 解读 公众号」几乎搜不到,
+    而「网警 处罚」能捞到一批典型执法通报号。所以这里刻意只组两词,用组合数换广度。
+    交叉顺序做了打散(不是先把"网警"配完所有动作),保证在 max_combos 截断时主体覆盖面仍均匀。
     """
-    qs = base_queries()
+    r = _recipes()
+    subj = [str(x).strip() for x in r.get("subject_terms") or [] if str(x).strip()]
+    act = [str(x).strip() for x in r.get("action_terms") or [] if str(x).strip()]
+    ev = [str(x).strip() for x in r.get("event_terms") or [] if str(x).strip()]
+    ch = [str(x).strip() for x in r.get("channel_terms") or [] if str(x).strip()]
+    out: list[str] = list(ch)
+    # 对角轮转:同一轮里每个主体配到的动作各不相同(而不是整轮都配"处罚"),
+    # 这样被 max_combos 截断时,主体和动作两个维度的覆盖都是均匀的。
+    for pool in (subj, ev):
+        if not pool or not act:
+            continue
+        for k in range(len(act)):
+            for i, s in enumerate(pool):
+                out.append(f"{s} {act[(i + k) % len(act)]}")
+    cap = int(r.get("max_combos", 60) or 60)
+    return out[:cap] if cap > 0 else out
+
+
+def build_queries(db, need_id: str) -> list[str]:
+    """本轮要跑的找源词 = 固定短词 + 配方生成的 2 词组合 + 覆盖度空白方向词。
+
+    覆盖空白词让"缺哪块就去找哪块的源"成为闭环,而不是每周重复搜同样的词。
+    """
+    # 顺序即优先级(cap 截断时靠后的会被丢掉):
+    # 固定短词 → 覆盖空白方向词(缺哪块补哪块,最该优先) → 通用组合词
+    qs = list(base_queries())
     try:
         from app.services import coverage
         qs += coverage.prospect_queries(db, need_id)
     except Exception:  # noqa: BLE001 覆盖度算不出来不该挡住找源
         pass
+    qs += combo_queries()
     seen, out = set(), []
     for q in qs:
-        if q not in seen:
+        q = " ".join(q.split())
+        if q and q not in seen:
             seen.add(q)
             out.append(q)
     cap = int(getattr(settings, "prospect_query_cap", 0) or 0)
@@ -115,16 +152,43 @@ def _resolve_redirect(url: str) -> str:
         return url
 
 
-def _candidate_key(url: str) -> tuple[str | None, str]:
-    """搜索结果 URL → (候选源标识键, 丢弃原因)。键为 None 时原因说明为什么没要它。"""
+def _wechat_account(url: str) -> str | None:
+    """公众号文章 → 它属于哪个号(抓一次文章解析)。失败返回 None。"""
+    try:
+        from app.services import wechat
+        info = wechat.resolve_account(url)
+        return info.get("account") if info.get("ok") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
+    """搜索结果 URL → (候选源标识键, 丢弃原因, 额外信息)。
+
+    关键点:公众号文章 / 百家号作者页 / 微博用户页要识别成"某个号",不能按注册域退化成
+    qq.com / baidu.com / weibo.com —— 那样会被"通用大平台"规则整批丢掉,而这恰恰是
+    最该收的一类源(用户要的执法通报大多发在公众号里)。
+    """
     if not url or not url.startswith("http"):
-        return None, "bad_url"
+        return None, "bad_url", {}
+    plat = url_tools.platform_account(url)
+    if plat:
+        if not plat["needs_resolve"]:
+            return plat["key"], "", {"kind": plat["kind"], "entry_url": plat["entry_url"]}
+        cap = int(getattr(settings, "prospect_wechat_resolve_max", 30) or 0)
+        if cap and budget.get("wechat", 0) >= cap:
+            return None, "wechat_over_budget", {}
+        budget["wechat"] = budget.get("wechat", 0) + 1
+        acct = _wechat_account(url)
+        if not acct:
+            return None, "wechat_unresolved", {}
+        return f"mp:{acct}", "", {"kind": "wechat", "account": acct}
     key = url_tools.identity_key_for(url)
     if not key:
-        return None, "bad_url"
+        return None, "bad_url", {}
     if key in _SKIP_HOSTS:
-        return None, "platform"          # 知乎/CSDN/门户等通用大平台,不作为专业源
-    return key, ""
+        return None, "platform", {}      # 知乎/CSDN/门户等通用大平台,不作为专业源
+    return key, "", {}
 
 
 def run_once(db, need_id: str, on_progress=None) -> dict:
@@ -138,8 +202,13 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     pages = max(1, int(getattr(settings, "prospect_pages_per_query", 1) or 1))
     resolve_cap = int(getattr(settings, "prospect_resolve_max", 60) or 0)
     st = {"pages": 0, "fetch_fail": 0, "raw_items": 0, "redirect": 0, "resolved": 0,
-          "platform": 0, "bad_url": 0, "known_or_blocked": 0,
-          "empty_pages": 0, "blocked_pages": 0}
+          "platform": 0, "bad_url": 0, "empty_pages": 0, "blocked_pages": 0,
+          # 丢弃原因细分:"已是现有源"和"被拉黑"是两回事,混成一个数字等于没说
+          "already_source": 0, "blacklisted": 0, "engine_self": 0, "invalid_name": 0,
+          "wechat_unresolved": 0, "wechat_over_budget": 0,
+          "new_wechat": 0, "new_platform_account": 0}
+    dropped: dict[str, int] = {}      # 被丢弃的域名 → 次数(给人看"到底丢了什么")
+    budget: dict[str, int] = {}
     edetail: dict[str, dict] = {e[0]: {"engine": e[0], "pages": 0, "items": 0, "errors": 0}
                                 for e in engines}
     new_keys, resolved_used = set(), 0
@@ -177,17 +246,32 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                             if url_tools.is_search_redirect(url):
                                 continue     # 还原失败(JS 跳转/需登录)
                             st["resolved"] += 1
-                        key, why = _candidate_key(url)
+                        key, why, extra = _candidate(url, budget)
                         if not key:
                             st[why if why in st else "bad_url"] += 1
+                            if why == "platform":
+                                d = url_tools.identity_key_for(url)
+                                dropped[d] = dropped.get(d, 0) + 1
+                            continue
+                        why_skip = _why_known(db, key)
+                        if why_skip:
+                            st[why_skip] += 1
+                            dropped[key] = dropped.get(key, 0) + 1
                             continue
                         # 复用统一入口:黑名单/已注册/主体名校验/去重全都走同一套规则
-                        k = discovery.record_evidence(db, url, "source_search",
-                                                      display_name=(it.title or "")[:80])
+                        k = discovery.record_evidence(
+                            db, None if extra.get("kind") == "wechat" else url, "source_search",
+                            display_name=(extra.get("account") or (it.title or ""))[:80],
+                            wechat_account=extra.get("account"),
+                            platform_key=key if extra.get("kind") in ("baijiahao", "weibo") else None)
                         if k:
                             new_keys.add(k)
+                            if extra.get("kind") == "wechat":
+                                st["new_wechat"] += 1
+                            elif extra.get("kind"):
+                                st["new_platform_account"] += 1
                         else:
-                            st["known_or_blocked"] += 1
+                            st["invalid_name"] += 1
             except Exception as e:  # noqa: BLE001 单条词失败不影响整轮
                 edetail[ename]["errors"] += 1
                 edetail[ename].setdefault("last_error", f"{type(e).__name__}: {e}"[:160])
@@ -200,9 +284,22 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
             db.rollback()
     out = {"queries": len(queries), "engines": [e[0] for e in engines],
            "hits": st["raw_items"], "new_keys": sorted(new_keys),
-           "stats": st, "engine_detail": list(edetail.values())}
+           "stats": st, "engine_detail": list(edetail.values()),
+           "dropped_top": sorted(({"key": k, "count": n} for k, n in dropped.items()),
+                                 key=lambda x: -x["count"])[:20]}
     out["note"] = explain(out)
     return out
+
+
+def _why_known(db, key: str) -> str | None:
+    """这个候选键为什么不用再收:已是现有源 / 已拉黑 / 是搜索引擎自己。返回统计字段名。"""
+    if key in ("baidu.com", "bing.com", "sogou.com", "weibo.com", "google.com"):
+        return "engine_self"
+    if db.get(SourceBlacklist, key):
+        return "blacklisted"
+    if db.query(Source).filter_by(site_key=key).first():
+        return "already_source"
+    return None
 
 
 def _diagnose_empty(eng, query: str, page: int, ed: dict, st: dict):
@@ -246,12 +343,24 @@ def explain(r: dict) -> str:
             parts.append(f"{st['redirect']} 条是搜索引擎跳转链且还原失败")
         if st.get("platform"):
             parts.append(f"{st['platform']} 条落在通用大平台(知乎/CSDN/门户等,不作专业源)")
-        if st.get("known_or_blocked"):
-            parts.append(f"{st['known_or_blocked']} 条已是现有源或已拉黑")
+        if st.get("already_source"):
+            parts.append(f"{st['already_source']} 条来自已有的源(说明这些词搜到的还是老渠道,"
+                         "该换更细的找源词或换引擎)")
+        if st.get("blacklisted"):
+            parts.append(f"{st['blacklisted']} 条已拉黑")
+        if st.get("engine_self"):
+            parts.append(f"{st['engine_self']} 条指向搜索引擎自身")
+        if st.get("wechat_unresolved"):
+            parts.append(f"{st['wechat_unresolved']} 条公众号文章解析不出所属号(公众号页需浏览器渲染)")
         why = ";".join(parts) or "全部被去重/校验规则挡下"
         return f"抓到 {st.get('raw_items', 0)} 条结果,但没有新渠道:{why}"
+    extra = []
+    if st.get("new_wechat"):
+        extra.append(f"其中公众号 {st['new_wechat']} 个")
+    if st.get("new_platform_account"):
+        extra.append(f"平台号(百家号/微博){st['new_platform_account']} 个")
     return (f"抓到 {st.get('raw_items', 0)} 条结果,还原跳转链 {st.get('resolved', 0)} 条,"
-            f"新增候选渠道 {len(r['new_keys'])} 个")
+            f"新增候选渠道 {len(r['new_keys'])} 个" + ("(" + "、".join(extra) + ")" if extra else ""))
 
 
 # ---------------- 候选源 LLM 相关度初评 ----------------
@@ -387,7 +496,8 @@ def _run(need_id: str):
                          on_progress=lambda d, t, c: _set(done=d, total=t, current=c))
             _set(hits=r["hits"], new_candidates=len(r["new_keys"]), engines=r["engines"],
                  note=r.get("note", ""), stats=r.get("stats", {}),
-                 engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0))
+                 engine_detail=r.get("engine_detail", []), queries=r.get("queries", 0),
+                 dropped_top=r.get("dropped_top", []))
             if not r["new_keys"]:
                 # 一无所获必须留痕:否则"主动找源"会长期静默空转,没人知道它其实一直没用
                 from app.services import actions
