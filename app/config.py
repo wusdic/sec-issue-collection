@@ -148,6 +148,17 @@ class Settings:
     coverage_window_days: int = int(os.getenv("COVERAGE_WINDOW_DAYS", "90"))
     coverage_min_events: int = int(os.getenv("COVERAGE_MIN_EVENTS", "3"))
 
+    # 源库自动运维(自动驾驶):到点自己做整理/定位/体检/找源/定级,不用人按按钮
+    autopilot_enabled: bool = os.getenv("AUTOPILOT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    autopilot_hour: int = int(os.getenv("AUTOPILOT_HOUR", "4"))        # 每天几点(UTC)检查一次到期任务
+    autopilot_dedup_days: int = int(os.getenv("AUTOPILOT_DEDUP_DAYS", "7"))
+    autopilot_locate_days: int = int(os.getenv("AUTOPILOT_LOCATE_DAYS", "7"))
+    autopilot_locate_max: int = int(os.getenv("AUTOPILOT_LOCATE_MAX", "10"))    # 每轮最多定位几个站
+    autopilot_health_days: int = int(os.getenv("AUTOPILOT_HEALTH_DAYS", "3"))
+    autopilot_health_max: int = int(os.getenv("AUTOPILOT_HEALTH_MAX", "25"))    # 每轮最多体检几个源
+    autopilot_prospect_days: int = int(os.getenv("AUTOPILOT_PROSPECT_DAYS", "7"))
+    autopilot_grade_days: int = int(os.getenv("AUTOPILOT_GRADE_DAYS", "1"))
+
     # 浏览器渲染内存保护:同一浏览器实例连续渲染这么多页后回收重启,防长跑内存膨胀。0=不回收
     render_recycle_after: int = int(os.getenv("RENDER_RECYCLE_AFTER", "300"))
 

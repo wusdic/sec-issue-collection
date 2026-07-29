@@ -45,6 +45,33 @@ scoring:
   auto_trial_threshold: 8.0   # ≥8 自动建 trial 源(14天试运行)
   trial_days: 14
 
+# ---------- 试运行源自动定级/自动淘汰(services/grading.py) ----------
+# 目标是尽量不用人工点"转正"。规则只用客观可验证的事实与试运行期实际产出:
+#   S1 只给域名本身能证明官方身份的(.gov.cn 等政务域名 + 下面这份名录);
+#   S3 给试运行达标的媒体源(S3 不能支撑"已确认"金额,自动给不突破发布红线);
+#   S2(企业自披露)能支撑已确认金额,属红线,机器只给建议不自动执行。
+grading:
+  auto_grade_enabled: true
+  trial_days: 14                  # 试运行满这么多天才下结论
+  promote_min_docs: 5             # 试运行期至少产出这么多篇才够样本
+  promote_min_relevant_ratio: 0.3 # 产出中被判为相关的比例达标 → 自动转正 S3
+  retire_min_docs: 20             # 样本达到这么多篇才允许判"噪声源"
+  retire_max_relevant_ratio: 0.05 # 相关率低到这个程度 → 自动淘汰
+  # 非 .gov.cn 但同样权威的官方机构/法定披露平台(注册域即可)
+  official_domains:
+    - cert.org.cn                 # 国家互联网应急中心 CNCERT
+    - cnvd.org.cn                 # 国家信息安全漏洞共享平台
+    - cnnvd.org.cn                # 国家信息安全漏洞库
+    - sse.com.cn                  # 上交所
+    - szse.cn                     # 深交所
+    - bse.cn                      # 北交所
+    - cninfo.com.cn               # 巨潮资讯(法定信息披露平台)
+    - court.gov.cn                # 中国裁判文书网
+    - creditchina.gov.cn          # 信用中国
+    - pbc.gov.cn                  # 人民银行
+    - nfra.gov.cn                 # 金融监管总局
+    - csrc.gov.cn                 # 证监会
+
 # ---------- LLM 相关度初评抽样 ----------
 llm_relevance_probe:
   pages: [首页, 最近文章列表]

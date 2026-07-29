@@ -139,56 +139,84 @@ def start(need_id: str) -> dict:
     return status()
 
 
+def pick(db, need_id: str, limit: int | None = None, stale_days: int | None = None) -> list[Source]:
+    """本轮该体检哪些源:生效源(可按"最久没测过"限量)+ 到期该复检的自动停用源。
+
+    limit 让自动运维可以每轮只测一部分,摊到多天里跑完,不必一次几十分钟。
+    """
+    srcs = [s for s in db.query(Source).filter(Source.lifecycle.in_(["active", "trial"])).all()
+            if need_id in (s.serves_needs or [])]
+    if stale_days:
+        cut = datetime.utcnow() - timedelta(days=stale_days)
+        srcs = [s for s in srcs if not s.last_success_at or s.last_success_at < cut]
+    srcs.sort(key=lambda s: (s.last_success_at is not None, s.last_success_at or datetime.min, s.id))
+    if limit and limit > 0:
+        srcs = srcs[:limit]
+    return srcs + recheck_due(db, need_id)      # 误杀自愈:到期的自动停用源一并复检
+
+
+def check_one(db, s: Source) -> dict:
+    """体检一个源:试抓一次并把成败计入健康(带冗余度);能出数据的停用源自动恢复。"""
+    from app.api.routes import test_fetch_source
+    was_retired = s.lifecycle == "retired"
+    r = test_fetch_source(s.id, q=None, mark=True, db=db, _=None)
+    good = bool(r.get("ok")) and int(r.get("count") or 0) > 0
+    revived = good and was_retired and s.lifecycle != "retired"
+    return {"id": s.id, "name": s.name, "ok": good, "count": r.get("count", 0),
+            "retired": bool(r.get("retired")), "revived": revived,
+            "watching": bool(r.get("watching")),
+            "hint": (r.get("health_note") or r.get("hint") or r.get("error")
+                     or ("复检通过,已自动恢复" if revived else ""))}
+
+
+def run_batch(db, need_id: str, limit: int | None = None, on_result=None,
+              should_stop=None) -> dict:
+    """同步跑一批体检(页面后台任务与自动运维共用这一份)。返回汇总计数与明细。"""
+    srcs = pick(db, need_id, limit)
+    out = {"total": len(srcs), "done": 0, "ok": 0, "fail": 0,
+           "retired": 0, "revived": 0, "watching": 0, "results": []}
+    for s in srcs:
+        if should_stop and should_stop():
+            out["canceled"] = True
+            break
+        try:
+            r = check_one(db, s)
+        except Exception as e:  # noqa: BLE001 单源异常不终止体检
+            r = {"id": s.id, "name": s.name, "ok": False, "count": 0, "retired": False,
+                 "revived": False, "watching": False, "hint": f"{type(e).__name__}: {e}"[:160]}
+        out["ok" if r["ok"] else "fail"] += 1
+        for k in ("retired", "revived", "watching"):
+            if r.get(k):
+                out[k] += 1
+        out["results"].append(r)
+        out["done"] += 1
+        if on_result:
+            on_result(r, out)
+    return out
+
+
 def _run(need_id: str):
     db = SessionLocal()
     try:
-        srcs = [s for s in db.query(Source).filter(Source.lifecycle.in_(["active", "trial"])).all()
-                if need_id in (s.serves_needs or [])]
-        # 误杀自愈:到期的自动停用源一并复检,能出数据就自动恢复(见 _record 的 ok 分支)
-        due = recheck_due(db, need_id)
-        srcs += due
-        _set(total=len(srcs), rechecking=len(due))
-        from app.api.routes import test_fetch_source
-        for s in srcs:
-            if _cancel.is_set():
-                _set(canceled=True)
-                break
-            _set(current=s.name)
-            try:
-                was_retired = s.lifecycle == "retired"
-                r = test_fetch_source(s.id, q=None, mark=True, db=db, _=None)
-                good = bool(r.get("ok")) and int(r.get("count") or 0) > 0
-                revived = good and was_retired and s.lifecycle != "retired"
-                with _lock:
-                    _state["ok" if good else "fail"] += 1
-                    if r.get("retired"):
-                        _state["retired"] += 1
-                    if revived:
-                        _state["revived"] = _state.get("revived", 0) + 1
-                    if r.get("watching"):
-                        _state["watching"] = _state.get("watching", 0) + 1
-                    _state["results"].append({
-                        "id": s.id, "name": s.name, "ok": good,
-                        "count": r.get("count", 0), "retired": bool(r.get("retired")),
-                        "revived": revived, "watching": bool(r.get("watching")),
-                        "hint": (r.get("health_note") or r.get("hint")
-                                 or r.get("error") or ("复检通过,已自动恢复" if revived else ""))})
-            except Exception as e:  # noqa: BLE001 单源异常不终止体检
-                with _lock:
-                    _state["fail"] += 1
-                    _state["results"].append({"id": s.id, "name": s.name, "ok": False,
-                                              "count": 0, "retired": False,
-                                              "hint": f"{type(e).__name__}: {e}"[:160]})
+        srcs = pick(db, need_id)
+        _set(total=len(srcs), rechecking=len(recheck_due(db, need_id)))
+
+        def _tick(r, agg):
             with _lock:
-                _state["done"] += 1
+                _state.update({k: agg[k] for k in ("done", "ok", "fail", "retired",
+                                                   "revived", "watching")})
+                _state["results"].append(r)
+                _state["current"] = r["name"]
+
+        res = run_batch(db, need_id, on_result=_tick, should_stop=_cancel.is_set)
+        if res.get("canceled"):
+            _set(canceled=True)
     except Exception as e:  # noqa: BLE001
         _set(error=str(e)[:300])
     finally:
         _set(running=False, current="",
              finished_at=datetime.utcnow().isoformat(timespec="seconds"))
         db.close()
-
-
 def restore(db, source_id: int) -> Source:
     """恢复被(误)停用的源:重新启用并清零失败计数,避免刚恢复又被历史计数立刻停用。"""
     src = db.get(Source, source_id)

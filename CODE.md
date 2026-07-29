@@ -34,6 +34,8 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 | `app/services/discovery.py` | 源发现引擎(被动):采集伴生的证据登记/评分/自动 trial/黑名单 |
 | `app/services/prospect.py` | **主动找源(D5)**:找源专用检索词捞新渠道 + 候选源 LLM 相关度初评 |
 | `app/services/coverage.py` | **覆盖度盘点**:哪些行业近期零事件 → 自动生成该方向的找源词 |
+| `app/services/grading.py` | **试运行源自动定级/淘汰**:规则自动转正,红线等级只给建议 |
+| `app/services/autopilot.py` | **源库自动运维**:按周期自己做整理/定位/体检/找源/定级,每步留痕 |
 | `app/services/columns.py` | **采集源精准化**:根域站点自动识别相关栏目 + 三重验证(篇数/结构一致性/内容相关度)+ 落库复用 |
 | `app/services/locate.py` | 批量「精准定位栏目」后台任务(可查进度/可取消) |
 | `app/services/health.py` | 源体检:后台批量试抓、连续失败自动停用、误判恢复 |
@@ -102,6 +104,37 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 ——误杀可自愈。栏目篇数门槛也从 5 降到 3,免得一年发几条的执法通报栏目被挡在门外。
 
 `pytest tests/test_prospect_coverage.py` 覆盖上述全部行为(15 例)。
+
+## 源库自动运维:人只管拍板,其余交给系统
+
+数据源模块原来有五件事全靠人点按钮,不点就不做。`services/autopilot.py` 把它们变成
+按周期自动执行(`daily._autopilot` 每天 `autopilot_hour` 检查一次到期任务):
+
+| 任务 | 默认周期 | 做什么 |
+|---|---|---|
+| dedup | 7 天 | 校正源键、同采集目标的重复源自动并一 |
+| locate | 7 天 | 给还没精准到栏目的根域源定位栏目(每轮限 `autopilot_locate_max` 个) |
+| health | 3 天 | 体检(优先最久没成功的)+ 到期停用源复检恢复(每轮限 `autopilot_health_max` 个) |
+| prospect | 7 天 | 主动找源 + 候选 LLM 初评 + 评分自动入库 |
+| grade | 1 天 | 试运行源自动定级/淘汰 |
+
+每步落一行 `AutoOpsRun`(状态 + 结果摘要 + 失败原因),自动化但不黑箱;一步失败不影响其余步。
+
+**自动定级怎么守住红线**(`grading.decide`,规则在 `config/discovery.yaml` 的 `grading:`):
+
+- **S1 自动给**——但只给"域名本身能证明官方身份"的:`.gov.cn`/`.mil.cn` 政务域名,
+  或 `official_domains` 名录里的官方技术机构/法定披露平台(CNCERT、交易所、巨潮、裁判文书网…)。
+  这是客观事实不是判断,自动给零风险;
+- **S3 自动给**——试运行满 `trial_days` 且产出 ≥ `promote_min_docs`、相关率 ≥
+  `promote_min_relevant_ratio`。S3 支撑不了"已确认"金额,自动化不会突破发布红线;
+- **S2 只给建议**——企业自披露能支撑已确认金额,且"是不是该企业自己的官网"机器判不可靠,
+  故写进 `suggest_credibility` 等人一键确认(`POST /sources/{id}/grade`);
+- **自动淘汰**——产出 ≥ `retire_min_docs` 且相关率 ≤ `retire_max_relevant_ratio` 判为噪声源;
+- **不下结论**——样本不足/未满试运行期 → 延长观察;人工添加的源只升不降,绝不自动淘汰。
+
+`autopilot.human_todo` 汇总"机器判不了、真需要人拍板"的极少数,在数据源页顶部直接列出并
+可一键处理;`GET /autopilot/grading-preview` 可先试算自动定级会怎么判,确认规则符合预期
+再放手。`pytest tests/test_autopilot_grading.py` 覆盖上述全部规则与调度行为(17 例)。
 
 ## 框架泛化的落地证据
 

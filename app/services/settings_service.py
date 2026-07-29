@@ -79,6 +79,21 @@ EDITABLE = [
     ("retired_recheck_days", "停用源自动复检周期(天)", "采集", "int", False,
      "被自动停用的源隔这么多天在体检时复检一次,能出数据就自动恢复(误杀自愈)。默认 14;0=不复检"),
 
+    ("autopilot_enabled", "启用源库自动运维", "自动运维", "bool", False,
+     "开启后系统按周期自己做:整理查重、给根域源定位栏目、体检与停用源复检、主动找源、"
+     "试运行源自动定级/淘汰。不用人按按钮;每步都有执行记录可事后核对。默认开"),
+    ("autopilot_hour", "自动运维时点(UTC)", "自动运维", "int", False,
+     "每天几点检查有哪些维护任务到期。默认 4(≈北京 12 点),建议与采集时点错开"),
+    ("autopilot_grade_days", "自动定级周期(天)", "自动运维", "int", False,
+     "多久跑一次试运行源自动定级/淘汰。默认 1(每天)"),
+    ("autopilot_health_days", "自动体检周期(天)", "自动运维", "int", False, "默认 3"),
+    ("autopilot_health_max", "自动体检:每轮最多测几个源", "自动运维", "int", False,
+     "分摊到多天跑完,避免一次几十分钟。默认 25(优先测最久没成功过的)"),
+    ("autopilot_locate_days", "自动定位栏目周期(天)", "自动运维", "int", False, "默认 7"),
+    ("autopilot_locate_max", "自动定位:每轮最多几个站", "自动运维", "int", False, "默认 10"),
+    ("autopilot_prospect_days", "自动找源周期(天)", "自动运维", "int", False, "默认 7"),
+    ("autopilot_dedup_days", "自动查重整理周期(天)", "自动运维", "int", False, "默认 7"),
+
     ("prospect_enabled", "启用主动找源", "找源与覆盖", "bool", False,
      "开启后每周用『找源专用检索词』去搜索引擎捞新渠道,而不是只等已采文章引用。默认开"),
     ("prospect_weekday", "主动找源:周几跑", "找源与覆盖", "int", False,

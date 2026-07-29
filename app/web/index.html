@@ -415,6 +415,7 @@ async function vSources(){
   const v=document.getElementById("view");
   v.innerHTML=`<h2>数据源</h2>
     <p class="sub">种子源 + 自动发现的候选源。点入口链接可打开原站人工验证;不需要的源可删除/停用。</p>
+    <div id="autoBox"></div>
     ${canEditSrc()?`<div class="card" style="margin:10px 0;padding:14px">
       <h3 style="margin:0 0 10px;font-size:15px">➕ 手动添加数据源</h3>
       <div class="toolbar" style="flex-wrap:wrap;gap:8px">
@@ -450,6 +451,7 @@ async function vSources(){
     <div id="testAllProgress" class="sub" style="margin-bottom:8px"></div>`:''}
     <div id="srcTable">加载中…</div>`;
   loadSources();
+  loadAutopilot();
   if(canEditSrc()){ pollHealth(); pollLocate(); pollProspect(); }   // 切回本页时自动接上正在跑的后台任务进度
 }
 async function loadSources(){
@@ -617,6 +619,97 @@ async function locateCols(id,name){
     loadSources();
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }
+/* ---- 源库自动运维:系统按周期自己维护源库,这里只是让人看见它做了什么 ---- */
+async function loadAutopilot(){
+  const box=document.getElementById("autoBox"); if(!box) return;
+  try{
+    const a=await api(`/autopilot?need_id=${NEED}`);
+    const rows=a.plan.map(p=>`<tr>
+      <td>${esc(p.label)}</td>
+      <td class="muted">每 ${p.every_days} 天</td>
+      <td class="muted">${p.last_run?esc(p.last_run.replace("T"," ").slice(0,16)):"从未"}</td>
+      <td>${p.due?'<span class="pill warn">待跑</span>':`<span class="muted">${esc(String(p.next_run).replace("T"," ").slice(0,16))}</span>`}</td>
+      <td class="muted" style="font-size:12px">${esc(summarize(p.last_summary))}</td></tr>`).join("");
+    const todo=a.human_todo||{};
+    const n=todo.total||0;
+    box.innerHTML=`<div class="card" style="padding:12px;margin:8px 0">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <b>🤖 源库自动运维</b>
+        <span class="pill ${a.enabled?'ok':'warn'}">${a.enabled?'已开启':'已关闭'}</span>
+        <span class="muted">每天 ${a.hour_utc}:00 UTC 检查到期任务,自己做整理/定位栏目/体检/找源/定级,不用人按按钮</span>
+        ${a.running?'<span class="pill info">正在运行</span>':''}
+        ${canEditSrc()?`<button class="ghost sm" onclick="runAutopilot(false)">立刻跑到期任务</button>
+          <button class="ghost sm" onclick="runAutopilot(true)">全部跑一遍</button>
+          <button class="ghost sm" onclick="previewGrading()">自动定级会怎么判?</button>`:''}
+      </div>
+      <div style="max-height:220px;overflow:auto;margin-top:8px"><table><thead><tr>
+        <th>维护任务</th><th>周期</th><th>上次</th><th>下次</th><th>上次结果</th>
+      </tr></thead><tbody>${rows}</tbody></table></div>
+      ${n?`<div style="margin-top:8px;padding:8px;border-left:3px solid var(--brand)">
+        <b>需要你拍板的 ${n} 项</b> <span class="muted">(其余都已自动处理;这些是机器判不了的)</span>
+        ${(todo.suggest_credibility||[]).map(x=>`<div style="margin:4px 0">
+          <a href="${esc(x.entry_url||"#")}" target="_blank" rel="noopener">${esc(x.name)}</a>
+          <span class="muted">${esc(x.reason)}</span>
+          ${canEditSrc()?`<button class="ghost sm" onclick="gradeSrc(${x.id},'${esc(x.suggest)}')">采纳 ${esc(x.suggest)}</button>
+            <button class="ghost sm" title="企业自披露级,可支撑"已确认"金额,机器不自动给" onclick="gradeSrc(${x.id},'S2')">定为 S2</button>
+            <button class="ghost sm" onclick="delSource(${x.id},'${esc(x.name).replace(/'/g,"")}')">不要这个源</button>`:''}
+        </div>`).join("")}
+        ${(todo.manual_assist||[]).length?`<div class="muted" style="margin-top:4px">半自动源(需人工粘贴结果):${todo.manual_assist.map(esc).join("、")}</div>`:''}
+      </div>`:`<div class="sub" style="margin-top:6px"><span class="pill ok">无需人工介入</span> 自动化已处理完当前所有源库维护事项</div>`}
+      ${(a.recent&&a.recent.length)?`<details style="margin-top:6px"><summary class="muted">最近 ${a.recent.length} 条自动运维记录</summary>
+        <ul style="margin:4px 0;padding-left:18px;font-size:12px">${a.recent.map(r=>
+          `<li><span class="muted">${esc(r.started_at.replace("T"," ").slice(5,16))}</span>
+           <span class="pill ${r.status==="done"?"ok":(r.status==="failed"?"bad":"")}">${esc(r.status)}</span>
+           ${esc(r.label)} <span class="muted">${esc(summarize(r.summary))}${r.status==="failed"?" · "+esc(r.note||""):""}</span></li>`).join("")}</ul></details>`:''}
+    </div>`;
+  }catch(e){ box.innerHTML=""; }
+}
+function summarize(s){
+  if(!s||typeof s!=="object") return "";
+  const keep=["updated","merged","located","columns","no_column","ok","fail","retired","revived",
+              "new_candidates","probed","auto_trial","promoted","suggested","extended","queries","hits"];
+  const zh={updated:"整理",merged:"合并",located:"定位站",columns:"栏目",no_column:"未识别",
+            ok:"能出数据",fail:"抓不到",retired:"停用",revived:"复活",new_candidates:"新候选",
+            probed:"初评",auto_trial:"自动入库",promoted:"转正",suggested:"待人工",extended:"继续观察",
+            queries:"检索词",hits:"结果"};
+  return keep.filter(k=>s[k]!==undefined&&s[k]!==0).map(k=>`${zh[k]||k} ${s[k]}`).join("、")
+    || (s.skipped?String(s.skipped):"");
+}
+async function runAutopilot(force){
+  if(force && !confirm("不管周期,把全部维护任务跑一遍(整理查重/定位栏目/体检/找源/自动定级)?\n耗时可能较长,在服务端后台跑。")) return;
+  try{
+    const r=await api(`/autopilot/run?need_id=${NEED}&force=${force?"true":"false"}`,{method:"POST"});
+    toast(r.started?"自动运维已在后台启动":(r.note||"已有任务在跑"));
+    setTimeout(loadAutopilot,3000);
+  }catch(e){ alert("启动失败:"+e.message); }
+}
+async function previewGrading(){
+  const box=document.getElementById("covBox");
+  box.innerHTML=`<span class="muted">试算中…</span>`;
+  try{
+    const g=await api(`/autopilot/grading-preview?need_id=${NEED}`);
+    if(g.skipped){ box.innerHTML=`<span class="pill warn">${esc(g.skipped)}</span>`; return; }
+    const zh={promote:"自动转正",retire:"自动淘汰",suggest:"交人工",extend:"继续观察"};
+    box.innerHTML=`<div class="card" style="padding:12px">
+      <b>自动定级试算(不落库)</b> <span class="muted">转正 ${g.promoted}｜淘汰 ${g.retired}｜交人工 ${g.suggested}｜继续观察 ${g.extended}</span>
+      <table style="margin-top:6px"><thead><tr><th>源</th><th>处置</th><th>等级</th>
+        <th style="text-align:right">产出</th><th style="text-align:right">相关率</th><th>理由</th></tr></thead>
+      <tbody>${g.results.map(r=>`<tr><td>${esc(r.name)}</td>
+        <td><span class="pill ${r.action==="promote"?"ok":(r.action==="retire"?"bad":"")}">${esc(zh[r.action]||r.action)}</span></td>
+        <td>${esc(r.credibility||"—")}</td><td style="text-align:right">${r.docs_total}</td>
+        <td style="text-align:right">${r.relevant_ratio}</td>
+        <td class="muted" style="font-size:12px">${esc(r.reason)}</td></tr>`).join("")}</tbody></table></div>`;
+  }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+async function gradeSrc(id,cred){
+  if(!confirm(`把这个源定为 ${cred} 并转正?\n\n注意:S1/S2 可以支撑事件里的"已确认"金额并允许发布,请确认来源确实是官方通报或该企业自己的披露。`)) return;
+  try{
+    await api(`/sources/${id}/grade`,{method:"POST",body:JSON.stringify({credibility:cred})});
+    toast(`已定级 ${cred}`);
+    loadSources(); loadAutopilot();
+  }catch(e){ alert("定级失败:"+e.message); }
+}
+
 /* ---- 主动找源(D5:去搜索引擎捞新渠道 + LLM 相关度初评 + 评分自动入库) ---- */
 let PROS_POLL=null;
 function prosStopPoll(){ if(PROS_POLL){ clearInterval(PROS_POLL); PROS_POLL=null; } }

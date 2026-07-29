@@ -397,6 +397,23 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
 
+class AutoOpsRun(Base):
+    """自动运维每一步的执行记录(源库自维护:查重/定位栏目/体检/找源/自动定级)。
+
+    目标是把源库维护从"人工按按钮"变成"系统按周期自己做";这张表让人能事后核对
+    系统究竟做了什么、做对没有,而不是黑箱自动化。
+    """
+    __tablename__ = "auto_ops_run"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
+    task: Mapped[str] = mapped_column(String(32), index=True)   # dedup/locate/health/prospect/grade
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running/done/failed/skipped
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class CrawlJob(Base):
     """一次采集任务的持久化状态与进度(后台异步执行,任何页面/刷新可查)。"""
     __tablename__ = "crawl_job"

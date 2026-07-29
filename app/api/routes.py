@@ -319,6 +319,61 @@ def coverage_summary(need_id: str = "sec_events", days: int | None = None,
     return coverage.summary(db, need_id, days)
 
 
+@api.get("/autopilot")
+def autopilot_state(need_id: str = "sec_events", db: Session = Depends(get_session),
+                    _: AppUser = Depends(current_user)):
+    """源库自动运维总览:各维护任务的周期/上次跑/下次跑、最近执行记录、还剩什么要人处理。"""
+    from app.services import autopilot
+    return {"enabled": bool(getattr(settings, "autopilot_enabled", True)),
+            "hour_utc": int(getattr(settings, "autopilot_hour", 4) or 4),
+            "running": autopilot.is_running(),
+            "plan": autopilot.plan(db, need_id),
+            "recent": autopilot.recent(db, need_id),
+            "human_todo": autopilot.human_todo(db, need_id)}
+
+
+@api.post("/autopilot/run")
+def autopilot_run(need_id: str = "sec_events", force: bool = False,
+                  _: AppUser = Depends(require_roles("analyst"))):
+    """立刻跑一轮自动运维(force=不管周期,全部任务都跑一遍)。后台执行,立即返回。"""
+    from app.services import autopilot
+    return autopilot.start_async(need_id, force)
+
+
+@api.get("/autopilot/grading-preview")
+def grading_preview(need_id: str = "sec_events", db: Session = Depends(get_session),
+                    _: AppUser = Depends(current_user)):
+    """自动定级会怎么判(不落库),用来确认规则符合预期再放手交给它。"""
+    from app.services import grading
+    return grading.auto_grade(db, need_id, dry_run=True)
+
+
+class GradeIn(BaseModel):
+    credibility: str
+    accept_suggestion: bool = False
+
+
+@api.post("/sources/{source_id}/grade")
+def grade_source(source_id: int, body: GradeIn, db: Session = Depends(get_session),
+                 user: AppUser = Depends(require_roles("analyst"))):
+    """人工定级(自动定级判不了的少数情况:主要是该不该给 S2——S2 能支撑已确认金额,属红线)。"""
+    if body.credibility not in ("S1", "S2", "S3", "S4"):
+        raise HTTPException(422, "可信度须为 S1-S4")
+    src = db.get(Source, source_id)
+    if not src:
+        raise HTTPException(404, "源不存在")
+    discovery_svc.promote(db, source_id, body.credibility, user.id)
+    cfg = dict(src.adapter_config or {})
+    cfg.pop("suggest_credibility", None)
+    cfg.pop("suggest_reason", None)
+    src.adapter_config = cfg
+    db.add(AuditLog(user_id=user.id, action="source.grade", target=str(source_id),
+                    detail={"credibility": body.credibility}))
+    db.commit()
+    return {"id": src.id, "name": src.name, "credibility": src.credibility,
+            "lifecycle": src.lifecycle}
+
+
 @api.get("/sources/duplicates")
 def source_duplicates(need_id: str | None = None, db: Session = Depends(get_session),
                       _: AppUser = Depends(current_user)):
