@@ -246,13 +246,17 @@ class SearchEngineAdapter(BaseAdapter):
     # 页脚模板链:ICP 备案、增值电信业务许可证、公安网备、违法信息举报。
     # 搜索引擎自己的页面底部就有这一串,通用抽链一旦把它们当结果,就会出现
     # "300 页全部成功、900 条结果"而其实一条真结果都没有——实测必应正是如此。
-    _FOOTER_HOSTS = ("beian.miit.gov.cn", "dxzhgl.miit.gov.cn", "beian.gov.cn",
-                     "beian.cac.gov.cn", "jubao.cac.gov.cn", "12377.cn", "12321.cn",
-                     "12318.gov.cn", "miitbeian.gov.cn")
+    # 逐个域名去列举是打地鼠:上一版列了 beian.gov.cn,必应换成 beian.mps.gov.cn
+    # (公安网备的新地址)就又漏了 300 条。改成认前缀:备案类站点一律叫 beian.*。
+    _FOOTER_HOSTS = ("dxzhgl.miit.gov.cn", "jubao.cac.gov.cn", "12377.cn", "12321.cn",
+                     "12318.gov.cn", "miitbeian.gov.cn", "gov.cn/icp")
+    _FOOTER_PREFIX = ("beian.", "jubao.", "icp.")
 
     @classmethod
     def _is_footer_link(cls, href: str) -> bool:
         host = urlparse(href).netloc.lower().removeprefix("www.")
+        if host.startswith(cls._FOOTER_PREFIX):
+            return True
         return any(host == h or host.endswith("." + h) for h in cls._FOOTER_HOSTS)
 
     def _parse_generic(self, soup) -> list[DiscoveredItem]:
@@ -330,8 +334,25 @@ class BingRSSAdapter(SearchEngineAdapter):
     RSS 口是纯 XML、不依赖 JS、也不随网页版改版失配,作为找源主力比 HTML 版可靠得多。
     """
     name = "bing_rss"
-    base_tpl = "https://cn.bing.com/search?q={q}&format=rss&first={page}1"
+    # cn.bing.com 不认 format=rss,照样返回 HTML 搜索页(实测样本就是必应网页版的页脚),
+    # RSS 口在全局站点上。所以这里必须用 www.bing.com。
+    base_tpl = "https://www.bing.com/search?q={q}&format=rss&first={page}1"
     own_hosts = ("bing.com", "microsoft.com", "msn.com")
+
+    def search_page(self, query: str, page: int, time_filter: str | None = None):
+        """拿回来的必须真是 feed。
+
+        返回 HTML 时旧实现只会解析出 0 条,被记成"这一页成功但没结果"——于是 151 页
+        全部"成功"、实际一条真结果都没有,连熔断都不会触发。这种情况要当抓取失败上报。
+        """
+        fr = fetcher.fetch(self.build_url(query, page, time_filter),
+                           render=self.config.get("render", False))
+        if not fr.ok:
+            return None
+        head = (fr.html or "")[:2000].lower()
+        if "<rss" not in head and "<feed" not in head:
+            return None          # 不是 feed:当抓取失败,别伪装成"没结果"
+        return self.parse(fr.html) or []
 
     def parse(self, html: str) -> list[DiscoveredItem]:
         soup = BeautifulSoup(html or "", "xml")
@@ -346,6 +367,27 @@ class BingRSSAdapter(SearchEngineAdapter):
             out.append(DiscoveredItem(url=href,
                                       title=(title.get_text(" ", strip=True) if title else "")[:200]))
         return out
+
+
+class DuckDuckGoHTMLAdapter(SearchEngineAdapter):
+    """DuckDuckGo 的 HTML 版结果页。
+
+    百度/搜狗对这台机器已经完全拒绝(各 0 页 8 次失败),必应网页版只吐页脚。
+    这个口不依赖 JS、结果链接是直链,是少数还能用纯 httpx 打通的通用引擎,
+    中文查询也支持。留在候选池里由引擎自检决定要不要用。
+    """
+    name = "ddg_html"
+    base_tpl = "https://html.duckduckgo.com/html/?q={q}&s={page}0"
+    result_selector = "a.result__a"
+    own_hosts = ("duckduckgo.com",)
+
+
+class So360SearchAdapter(SearchEngineAdapter):
+    """360 搜索。国内引擎里反爬相对宽松的一个,同样进候选池等自检裁决。"""
+    name = "so360_search"
+    base_tpl = "https://www.so.com/s?q={q}&pn={page}"
+    result_selector = "h3.res-title a"
+    own_hosts = ("so.com", "360.cn", "360.com")
 
 
 class SogouWechatAdapter(SearchEngineAdapter):
@@ -434,7 +476,7 @@ _REGISTRY: dict[str, type[BaseAdapter]] = {
     a.name: a for a in [
         GenericRSSAdapter, GenericListAdapter,
         BaiduSearchAdapter, BingSearchAdapter, BingRSSAdapter, SogouWechatAdapter,
-        WeiboSearchAdapter,
+        WeiboSearchAdapter, DuckDuckGoHTMLAdapter, So360SearchAdapter,
         RansomwareLiveAdapter,
     ]
 }

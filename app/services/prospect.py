@@ -86,6 +86,26 @@ def combo_queries() -> list[str]:
     return out[:cap] if cap > 0 else out
 
 
+def _query_ok(q: str) -> bool:
+    """这条词值不值得发出去。
+
+    单独跑的 2 字词(入侵/爬虫/内鬼)在中文里太歧义,搜索引擎回的是百度百科、汉语字典、
+    测速网这类东西——实测捞回来的 5 个候选全是这一类。这批词是为了给"限定词增益"
+    提供基线才加的,但基线也得是个有区分度的词,所以单词至少要 3 个汉字;
+    组成 2 词组合后语境已经收窄,2 字词照旧可用。
+
+    词数上限不在这里管(那是变异环节的规则,见 query_evolution.mutate)——
+    人工维护的固定词表里本来就有几条刻意写成 3 词的。
+    """
+    q = " ".join((q or "").split())
+    if not q:
+        return False
+    n = len(_CJK_ALL.findall(q))
+    if len(q.split()) == 1:
+        return n >= _MIN_SOLO_CJK or len(q) >= 5     # 英文缩写(APT/CVE)按字符长度放行
+    return n >= _MIN_QUERY_CJK or len(q) >= 4
+
+
 def seed_queries(db, need_id: str) -> list[str]:
     """词表的原料池:固定短词 + 覆盖空白方向词 + 配方生成的 2 词组合。
 
@@ -117,13 +137,13 @@ def build_queries(db, need_id: str) -> list[str]:
     搜索引擎按 AND 收紧,召回反而更差。进化机制按四类配额混词:利用高产词、跑锚点基线
     (增益的分母)、探索新词、复活歇着的词,让词表按实际产出自己变好、自己变宽。
     """
-    seed = seed_queries(db, need_id)
+    seed = [q for q in seed_queries(db, need_id) if _query_ok(q)]
     cap = int(getattr(settings, "prospect_query_cap", 0) or 0) or len(seed)
     if not getattr(settings, "query_evolution_enabled", True):
         return seed[:cap]
     try:
         from app.services import query_evolution
-        out = query_evolution.plan(db, need_id, cap, seed=seed)
+        out = [q for q in query_evolution.plan(db, need_id, cap, seed=seed) if _query_ok(q)]
         db.commit()
         return out
     except Exception:  # noqa: BLE001 进化机制出问题不该让找源整个停摆
@@ -159,19 +179,32 @@ def _engines():
 _SKIP_HOSTS = {"baidu.com", "bing.com", "sogou.com", "google.com", "so.com", "zhihu.com",
                "weibo.com", "douyin.com", "bilibili.com", "csdn.net", "jianshu.com",
                "163.com", "qq.com", "sina.com.cn", "sina.cn", "sohu.com", "toutiao.com",
-               "baijiahao.baidu.com"}
+               "baijiahao.baidu.com", "duckduckgo.com",
+               # 百科/导航/工具站:引擎在查询退化成宽泛词时最爱返回这一类,
+               # 它们永远不会是"持续产出安全事件报道的渠道"
+               "baike.baidu.com", "baike.com", "wikipedia.org", "zhidao.baidu.com",
+               "hao123.com", "2345.com", "speedtest.cn", "zdic.net", "guoxuedashi.net",
+               "dict.cn", "youdao.com", "iciba.com", "so.360.cn", "quark.cn"}
+
+_MIN_QUERY_CJK = 2   # 少于两个汉字的词等于"什么都没问",引擎只会回百科/导航站
+_MIN_SOLO_CJK = 3    # 单独跑的词还要更严:2 字词太歧义(「入侵」「爬虫」搜回来的是百科
 
 # 页脚模板链:ICP 备案、公安网备、违法有害信息举报——几乎每个中文站底部都有一串。
 # 它们不是搜索结果,一旦被通用抽链兜底扫进来,就会在统计里堆成"结果最多的域名",
 # 把真正的召回情况整个盖住。
-_BOILERPLATE_HOSTS = ("beian.miit.gov.cn", "beian.gov.cn", "beian.cac.gov.cn",
-                      "12377.cn", "12321.cn", "12318.gov.cn", "jubao.cac.gov.cn")
+# 逐个域名列举是打地鼠:列了 beian.gov.cn,必应换成 beian.mps.gov.cn 就又漏 300 条。
+# 备案/举报类站点一律是 beian.* / jubao.* 前缀,按前缀认。
+_BOILERPLATE_HOSTS = ("dxzhgl.miit.gov.cn", "12377.cn", "12321.cn", "12318.gov.cn",
+                      "miitbeian.gov.cn")
+_BOILERPLATE_PREFIX = ("beian.", "jubao.", "icp.")
 _BOILERPLATE_PATHS = ("/icp/", "/beian", "/portal/registersysteminfo")
 
 
 def _is_boilerplate(url: str) -> bool:
     u = (url or "").lower()
     host = (urlparse(u).netloc or "").removeprefix("www.")
+    if host.startswith(_BOILERPLATE_PREFIX):
+        return True
     if any(host == h or host.endswith("." + h) for h in _BOILERPLATE_HOSTS):
         return True
     return any(p in u for p in _BOILERPLATE_PATHS)
@@ -206,6 +239,7 @@ def _wechat_account(url: str) -> str | None:
 
 
 _CJK = _re.compile(r"[一-鿿]")
+_CJK_ALL = _re.compile(r"[一-鿿]")     # 数汉字个数用(_query_ok)
 # 国内渠道的常见后缀:命中就不看标题语言(有些政务站标题被引擎截成英文)
 _CN_TLD = (".cn", ".com.cn", ".gov.cn", ".org.cn", ".net.cn", ".edu.cn", ".中国")
 

@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # 本版本内置的找源引擎池。用户库里存过一次 prospect_engines_all 之后就再也不会更新,
 # 所以实际池子取"存的值 ∪ 这里",升级新加的引擎才一定会被自检测到。
-SHIPPED_ENGINES = "bing_rss,bing_search,sogou_wechat,baidu_search"
+SHIPPED_ENGINES = "bing_rss,ddg_html,so360_search,sogou_wechat,bing_search,baidu_search"
 
 
 def _load_dotenv(path: Path):

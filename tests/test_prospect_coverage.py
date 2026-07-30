@@ -1091,10 +1091,120 @@ def test_bing_rss_parses_items():
 def test_bing_rss_url_uses_rss_format():
     from app.services.adapters import BingRSSAdapter
     u = BingRSSAdapter(prospect._Shim()).build_url("网警 处罚", 1, None)
-    assert "format=rss" in u and u.startswith("https://cn.bing.com/search?")
+    # cn.bing.com 不认 format=rss(照样回 HTML 搜索页),RSS 口在全局站点上
+    assert "format=rss" in u and u.startswith("https://www.bing.com/search?")
 
 
 def test_bing_rss_registered_and_in_default_pool():
     from app.services.adapters import _REGISTRY
     assert "bing_rss" in _REGISTRY
     assert "bing_rss" in settings.prospect_engines_all
+
+
+# ---------------- ⑩ 页脚链按前缀认、RSS 必须真是 feed、退化查询不发 ----------------
+
+def test_footer_hosts_matched_by_prefix():
+    """逐个域名列举是打地鼠:列了 beian.gov.cn,必应换成 beian.mps.gov.cn 又漏 300 条。"""
+    from app.services.adapters import SearchEngineAdapter as SEA
+    for u in ("https://beian.mps.gov.cn/#/query/webSearch?code=11010802047360",
+              "https://beian.miit.gov.cn",
+              "https://dxzhgl.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyereport.jsp?num=x",
+              "https://www.beian.gov.cn/portal/registerSystemInfo?recordcode=1",
+              "https://jubao.cac.gov.cn/"):
+        assert SEA._is_footer_link(u), u
+    for u in ("https://www.miit.gov.cn/zwgk/art/2026/1.html",
+              "https://www.mps.gov.cn/n2254098/index.html"):
+        assert not SEA._is_footer_link(u), u        # 正主站不能误伤
+
+
+def test_mps_beian_link_not_a_result(db, need, monkeypatch):
+    """必应 300 页每页只吐一条 beian.mps.gov.cn,那不是结果,不能记成 300 条。"""
+    html = ('<html><body><ol id="b_results"></ol><div id="b_footer">'
+            '<a href="https://beian.mps.gov.cn/#/query/webSearch?code=1">京公网安备11010802047360号</a>'
+            '</div></body></html>')
+    from app.services.adapters import BingSearchAdapter
+    assert BingSearchAdapter(prospect._Shim()).parse(html) == []
+
+
+def test_bing_rss_non_feed_counts_as_failure():
+    """cn.bing.com 不认 format=rss,回的是 HTML 搜索页。旧实现把它记成"这页成功但没结果",
+    于是 151 页全"成功"、一条真结果都没有,连熔断都不触发。必须当抓取失败。"""
+    from app.services.adapters import BingRSSAdapter
+    eng = BingRSSAdapter(prospect._Shim())
+    html = "<html><head><title>搜索 - Microsoft 必应</title></head><body>© 2026 Microsoft</body></html>"
+
+    class _FR:
+        ok, html_, final_url = True, html, "https://www.bing.com/search"
+        def __init__(self): self.html = html
+    import app.services.fetcher as f
+    orig = f.fetch
+    try:
+        f.fetch = lambda *a, **k: _FR()
+        assert eng.search_page("网警 处罚", 0) is None
+    finally:
+        f.fetch = orig
+
+
+def test_bing_rss_real_feed_parses():
+    from app.services.adapters import BingRSSAdapter
+    eng = BingRSSAdapter(prospect._Shim())
+    xml = ('<?xml version="1.0"?><rss version="2.0"><channel>'
+           '<item><title>某地网警通报</title><link>https://feed-ok.gov.cn/n/1.html</link></item>'
+           '</channel></rss>')
+
+    class _FR:
+        ok, final_url = True, "https://www.bing.com/search"
+        def __init__(self): self.html = xml
+    import app.services.fetcher as f
+    orig = f.fetch
+    try:
+        f.fetch = lambda *a, **k: _FR()
+        items = eng.search_page("网警 处罚", 0)
+        assert [i.url for i in items] == ["https://feed-ok.gov.cn/n/1.html"]
+    finally:
+        f.fetch = orig
+
+
+def test_ambiguous_solo_query_not_sent():
+    """单独跑的 2 字词太歧义:实测「入侵」「爬虫」这类锚点基线词捞回来的 5 个候选
+    全是百度百科、汉语字典、测速网。锚点也得是有区分度的词。"""
+    for q in ("网", "", "入侵", "爬虫", "内鬼"):
+        assert not prospect._query_ok(q), q
+    # 3 字以上的单词、以及任何 2 词组合(语境已收窄)照旧允许
+    for q in ("数据泄露", "勒索病毒", "入侵 通报", "爬虫 判决", "网警 处罚",
+              "勒索病毒 应急响应"):
+        assert prospect._query_ok(q), q
+
+
+def test_ambiguous_anchors_dropped_from_seed_pool(db, need):
+    """这三个词是我们自己为了"锚点基线"加进池子的,得在发出去之前就筛掉。"""
+    seeds = prospect.seed_queries(db, need.id)
+    assert "入侵" in seeds                       # 原料池里有
+    kept = prospect.build_queries(db, need.id)
+    assert "入侵" not in kept and "爬虫" not in kept   # 但不会真跑
+
+
+def test_dictionary_and_speedtest_sites_are_skipped(db, need, monkeypatch):
+    """百科/导航/工具站永远不会是"持续产出安全事件报道的渠道",不该进候选池。"""
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url="https://baike.baidu.com/item/网/31877", title="网_百度百科"),
+                DiscoveredItem(url="https://www.speedtest.cn/", title="测速网 - 专业测网速"),
+                DiscoveredItem(url="https://www.hao123.com/", title="上网从这里开始"),
+                DiscoveredItem(url="https://real-sec-x.gov.cn/tb/1.html", title="某地网警通报")]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("bing_rss", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    r = prospect.run_once(db, need.id)
+    assert r["new_keys"] == ["real-sec-x.gov.cn"]
+    assert r["stats"]["platform"] == 3
+
+
+def test_new_engines_registered_in_pool():
+    """百度/搜狗对这台机器已完全拒绝,得给自检更多候选去试。"""
+    from app.services.adapters import _REGISTRY
+    for n in ("ddg_html", "so360_search", "bing_rss"):
+        assert n in _REGISTRY
+        assert n in prospect.all_engine_names()
