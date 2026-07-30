@@ -301,12 +301,21 @@ def cancel_prospect(_: AppUser = Depends(require_roles("analyst"))):
 
 
 @api.post("/sources/prospect/selftest")
-def prospect_selftest(query: str = "网警 处罚", db: Session = Depends(get_session),
+def prospect_selftest(query: str = "网警 处罚", apply: bool = True,
+                      db: Session = Depends(get_session),
                       _: AppUser = Depends(require_roles("analyst"))):
-    """找源路径可行性自检:每个引擎只跑一条词,快速判断这条路通不通(再决定要不要铺词)。"""
+    """找源路径可行性自检:每个引擎只跑一条词,快速判断这条路通不通。
+
+    apply=True(默认)时把结论直接落到引擎列表——自检看完还要人去设置页手改一遍,
+    等于把已经算出来的结论又丢回给人做。不想改配置就传 apply=false。
+    """
     from app.services import fetcher, prospect
     with fetcher.render_session():
-        return prospect.selftest(db, query)
+        r = prospect.selftest(db, query)
+        if apply and getattr(settings, "prospect_autotune", True):
+            r["applied"] = prospect.apply_selftest(db, r)
+            db.commit()
+    return r
 
 
 @api.get("/sources/prospect/queries")

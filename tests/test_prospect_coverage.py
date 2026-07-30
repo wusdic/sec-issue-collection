@@ -296,7 +296,7 @@ def test_all_platform_results_explained(db, need, monkeypatch):
 
 
 def test_no_engine_configured_explained(db, need, monkeypatch):
-    monkeypatch.setattr(prospect, "_engines", lambda: [])
+    monkeypatch.setattr(prospect, "_engines", lambda *a, **k: [])
     monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["x"])
     assert "没有可用的搜索引擎" in prospect.run_once(db, need.id)["note"]
 
@@ -717,14 +717,16 @@ def test_selftest_reports_per_engine(db, monkeypatch):
         def __init__(self, *_a, **_k): pass
         def build_url(self, q, page, tf): return "https://good.engine/s"
         def looks_blocked(self, html): return False
-        def parse(self, html): return [DiscoveredItem(url="https://real-sec.cn/a", title="某通报")]
+        # 标题要带上查询词:对口结果的标题几乎一定会带,不带的现在会被判"引擎没在搜这个词"
+        def parse(self, html):
+            return [DiscoveredItem(url="https://real-sec.cn/a", title="某地网警依法处罚一批单位")]
 
     class _Blocked(_Good):
         def build_url(self, q, page, tf): return "https://blocked.engine/s"
         def looks_blocked(self, html): return True
 
     monkeypatch.setattr(prospect, "_engines",
-                        lambda: [("good", _Good()), ("blocked", _Blocked())])
+                        lambda *a, **k: [("good", _Good()), ("blocked", _Blocked())])
     monkeypatch.setattr(prospect.fetcher, "fetch",
                         lambda *a, **k: prospect.fetcher.FetchResult("u", "u", 200, "<html>x</html>"))
     r = prospect.selftest(db)
@@ -735,7 +737,7 @@ def test_selftest_reports_per_engine(db, monkeypatch):
 
 
 def test_selftest_all_dead_gives_actionable_advice(db, monkeypatch):
-    monkeypatch.setattr(prospect, "_engines", lambda: [])
+    monkeypatch.setattr(prospect, "_engines", lambda *a, **k: [])
     r = prospect.selftest(db)
     assert not r["usable"] and "铺再多关键词也没用" in r["advice"]
 
@@ -1255,7 +1257,7 @@ def test_selftest_says_render_would_fix(db, monkeypatch):
     class _FR:
         ok, html, final_url, error, status = True, "<html>x</html>", "u", None, 200
 
-    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _E())])
+    monkeypatch.setattr(prospect, "_engines", lambda *a, **k: [("sogou_wechat", _E())])
     monkeypatch.setattr(prospect.fetcher, "fetch", lambda *a, **k: _FR())
     monkeypatch.setattr(prospect, "_resolve_redirect", lambda u: u)
     monkeypatch.setattr(settings, "playwright_enabled", False)
@@ -1295,3 +1297,101 @@ def test_default_engines_exclude_bing_rss():
     但要留在候选池里,恢复了自检会自动加回来。"""
     assert "bing_rss" not in settings.prospect_engines
     assert "bing_rss" in prospect.all_engine_names()
+
+
+# ---------------- ⑫ 切题率:能解析出域名 ≠ 这个引擎在回答我们的问题 ----------------
+
+def test_off_topic_engine_not_usable(db, monkeypatch):
+    """实测必应 RSS 对「网警 处罚」返回日本 IT 咨询公司、加拿大税务局、知乎 IRR 问答,
+    域名全合法所以被判"可用"。返回无关结果比返回空更糟——它们看着像真结果。"""
+    class _E:
+        config = {}
+        def build_url(self, q, page, tf): return "https://www.bing.com/search?format=rss"
+        def looks_blocked(self, html): return False
+        def parse(self, html):
+            return [
+                DiscoveredItem(url="https://itr.co.jp/report", title="企業のIT戦略アドバイザー｜株式会社アイ・ティ・アール"),
+                DiscoveredItem(url="https://canada.ca/cra", title="Check CRA processing times - Canada.ca"),
+                DiscoveredItem(url="https://example-x.cn/a", title="如何通俗地理解内部收益率(IRR)?")]
+
+    class _FR:
+        ok, html, final_url, error, status = True, "<html>x</html>", "u", None, 200
+
+    monkeypatch.setattr(prospect, "_engines", lambda *a, **k: [("bing_rss", _E())])
+    monkeypatch.setattr(prospect.fetcher, "fetch", lambda *a, **k: _FR())
+    r = prospect.selftest(db, "网警 处罚")
+    row = r["engines"][0]
+    assert row["ok"] is False and row["off_topic"] is True
+    assert row["on_topic"] == 0.0
+    assert "和查询词无关" in row["hint"] and "比搜不到更糟" in row["hint"]
+    assert r["usable"] == []
+
+
+def test_on_topic_rate_counts_partial_matches():
+    """中文检索里对口结果的标题几乎一定带查询词;按 2 字滑窗匹配,不要求整词出现。"""
+    assert prospect._on_topic_rate("网警 处罚", ["某地网警依法查处案件"]) == 1.0
+    assert prospect._on_topic_rate("网警 处罚", ["行政处罚决定书"]) == 1.0
+    assert prospect._on_topic_rate("网警 处罚", ["YouTube Creator Awards"]) == 0.0
+    assert prospect._on_topic_rate("数据泄露 通报", ["某公司数据泄露"]) == 1.0
+    assert prospect._on_topic_rate("网警 处罚", ["某地网警通报", "IRR 怎么算"]) == 0.5
+
+
+def test_foreign_sites_rejected_even_with_kanji():
+    """日文标题里也有汉字,光看"有没有汉字"挡不住境外站。"""
+    assert not prospect._looks_domestic("https://itr.co.jp/x", "企業のIT戦略アドバイザー")
+    assert not prospect._looks_domestic("https://canada.ca/cra", "Check CRA processing times")
+    assert prospect._looks_domestic("https://www.miit.gov.cn/x", "Notice")
+    assert prospect._looks_domestic("https://sec-media.com/x", "某地网警通报")
+
+
+def test_off_topic_engine_stopped_mid_run(db, need, monkeypatch):
+    """正式跑里也要拦:整页标题都不带查询词的引擎,本轮直接停用。"""
+    monkeypatch.setattr(settings, "engine_on_topic_min_items", 4)
+
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url=f"https://off-{i}.cn/a", title=f"完全无关的内容{i}")
+                for i in range(5)]
+
+    monkeypatch.setattr(prospect, "_engines", lambda *a, **k: [("bing_rss", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: [f"网警 处罚{i}" for i in range(4)])
+    r = prospect.run_once(db, need.id)
+    detail = {e["engine"]: e for e in r["engine_detail"]}
+    assert "与查询词无关" in detail["bing_rss"].get("stopped", "")
+
+
+def test_selftest_applies_its_own_conclusion(db, monkeypatch):
+    """自检已经算出"哪个能用",再让人去设置页照抄一遍没有意义。"""
+    from app.services import settings_service
+    monkeypatch.setattr(settings, "prospect_engines", "baidu_search")
+    monkeypatch.setattr(settings, "prospect_autotune", True)
+    saved = {}
+    monkeypatch.setattr(settings_service, "save",
+                        lambda _db, upd: saved.update(upd) or list(upd))
+    r = {"usable": ["sogou_wechat", "baidu_search"], "tested": ["sogou_wechat", "baidu_search"],
+         "engines": []}
+    out = prospect.apply_selftest(db, r)
+    assert out["changed"] and out["added"] == ["sogou_wechat"]
+    assert saved["prospect_engines"] == "sogou_wechat,baidu_search"
+
+
+def test_selftest_apply_never_empties(db, monkeypatch):
+    from app.services import settings_service
+    monkeypatch.setattr(settings, "prospect_engines", "baidu_search")
+    monkeypatch.setattr(settings_service, "save",
+                        lambda _db, upd: pytest.fail("全不可用时不该动引擎列表")
+                        if "prospect_engines" in upd else list(upd))
+    out = prospect.apply_selftest(db, {"usable": [], "tested": ["baidu_search"], "engines": []})
+    assert out["changed"] is False and "保持原配置" in out["note"]
+
+
+def test_selftest_covers_whole_pool(db, monkeypatch):
+    """被上次自检踢掉的引擎必须有机会重新证明自己,否则一旦误判就永远回不来。"""
+    asked = {}
+    monkeypatch.setattr(settings, "prospect_engines", "baidu_search")
+    monkeypatch.setattr(prospect, "_engines",
+                        lambda names=None: asked.setdefault("names", list(names or [])) and [])
+    prospect.selftest(db, "网警 处罚")
+    assert "sogou_wechat" in asked["names"] and "bing_rss" in asked["names"]

@@ -162,6 +162,11 @@ class Settings:
     prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "150"))      # 单轮最多跑多少条找源词
     # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条
     prospect_resolve_max: int = int(os.getenv("PROSPECT_RESOLVE_MAX", "400"))
+    # 引擎相关度闸门:结果标题里带查询词的比例低于此值,判定"这个引擎没在搜我们的词"。
+    # 实测必应 RSS 对「网警 处罚」返回日本 IT 咨询公司/加拿大税务局,域名却都合法——
+    # 不看相关度是拦不住的,而无关结果比没结果更糟(看着像真结果,会混进候选池)。
+    engine_on_topic_min: float = float(os.getenv("ENGINE_ON_TOPIC_MIN", "0.3"))
+    engine_on_topic_min_items: int = int(os.getenv("ENGINE_ON_TOPIC_MIN_ITEMS", "20"))
     # 某引擎在本轮内连续失败到这个次数就停用,不再拿剩下的词去撞反爬(0=不停用)
     prospect_engine_fail_streak: int = int(os.getenv("PROSPECT_ENGINE_FAIL_STREAK", "8"))
     # 两次搜索请求之间的间隔(秒),连错时按 2 倍退避,封顶 30 秒。0=不等

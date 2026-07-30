@@ -1053,15 +1053,17 @@ async function prospectSelftest(){
   try{
     const r=await api(`/sources/prospect/selftest?query=${encodeURIComponent("网警 处罚")}`,{method:"POST"});
     box.innerHTML=`<div class="card" style="padding:12px">
-      <b>🔎 找源路径自检</b> <span class="muted">测试词「${esc(r.query)}」,每个引擎只跑 1 条</span>
+      <b>🔎 找源路径自检</b> <span class="muted">测试词「${esc(r.query)}」,候选池里每个引擎跑 1 条;结论会自动写回引擎列表(被误判踢掉的也有机会回来)</span>
       <div style="margin:6px 0">${r.engines.map(e=>`<div style="margin:4px 0">
-        <span class="pill ${e.ok?'ok':(e.blocked?'warn':'bad')}">${esc(e.engine)}</span>
-        ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":(e.blocked_by?`解析出 ${e.items} 条,差最后一步`:"不可用"))}
+        <span class="pill ${e.ok?'ok':(e.blocked||e.blocked_by?'warn':'bad')}">${esc(e.engine)}</span>
+        ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":(e.blocked_by?`解析出 ${e.items} 条,差最后一步`:(e.off_topic?`解析出 ${e.items} 条,但答的不是这个问题`:"不可用")))}
+        ${e.on_topic!=null?`<span class="muted" title="结果标题里带查询词的比例。整批都不带,说明这个引擎压根没在搜我们给的词">切题率 ${e.on_topic}</span>`:""}
         <span class="${e.blocked_by?'pill warn':'muted'}">· ${esc(e.hint)}</span>
         ${(e.samples&&e.samples.length)?`<div class="muted" style="font-size:12px;margin-left:14px">
           ${e.samples.map(x=>`${esc(x.title)} → <b>${esc(x.key||("丢弃:"+x.drop))}</b>`).join("<br>")}</div>`:""}
       </div>`).join("")}</div>
       <div class="${(r.render_would_fix&&r.render_would_fix.length)?'pill warn':(r.usable.length?'pill ok':'pill bad')}" style="display:block;white-space:pre-wrap">${esc(r.advice)}</div>
+      ${r.applied?`<div class="sub" style="margin-top:4px">${r.applied.changed?`<b>已按自检结果自动调整引擎列表:</b>${esc(r.applied.note)}`:`<span class="muted">引擎列表未改动(${esc(r.applied.note)})</span>`}</div>`:""}
     </div>`;
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }

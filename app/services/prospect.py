@@ -165,10 +165,12 @@ class _Shim:
         self.kind = "query"
 
 
-def _engines():
+def _engines(names: list[str] | None = None):
     from app.services.adapters import _REGISTRY
+    if names is None:
+        names = str(getattr(settings, "prospect_engines", "") or "").split(",")
     out = []
-    for name in str(getattr(settings, "prospect_engines", "") or "").split(","):
+    for name in names:
         name = name.strip()
         cls = _REGISTRY.get(name)
         if cls:
@@ -253,17 +255,27 @@ _CJK = _re.compile(r"[一-鿿]")
 _CJK_ALL = _re.compile(r"[一-鿿]")     # 数汉字个数用(_query_ok)
 # 国内渠道的常见后缀:命中就不看标题语言(有些政务站标题被引擎截成英文)
 _CN_TLD = (".cn", ".com.cn", ".gov.cn", ".org.cn", ".net.cn", ".edu.cn", ".中国")
+# 明确是境外的国家顶级域。我们只做国内事件,这些站不可能是对口渠道。
+# 光看"标题里有没有汉字"判不出来——日文标题里也有汉字(「企業のIT戦略アドバイザー」),
+# 实测必应 RSS 就是这么把一家日本 IT 咨询公司和加拿大税务局塞进候选池的。
+# 刻意不含 .hk/.tw/.mo:那是中国的地区域名,不按境外处理。
+_FOREIGN_TLD = (".jp", ".kr", ".ca", ".us", ".uk", ".de", ".fr", ".au", ".in", ".ru",
+                ".br", ".sg", ".my", ".th", ".vn", ".id", ".ph", ".nz", ".it", ".es",
+                ".nl", ".se", ".ch", ".il", ".za", ".pl", ".tr", ".mx", ".ar")
 
 
 def _looks_domestic(url: str, title: str | None) -> bool:
     """这条结果像不像"国内中文渠道"。
 
     我们喂的全是中文找源词,搜索引擎却会跨语言给出 Thesaurus.com 这类纯英文站。
-    判定放得很松——域名是 .cn 系,或标题里有一个汉字,就算数——只挡明显的语言噪声。
+    判定放得很松——域名是 .cn 系,或标题里有一个汉字,就算数——只挡明显的语言噪声;
+    但境外国家域名一律不收,因为日文/韩文标题同样含汉字,躲得过语言判定。
     """
     if url_tools.platform_account(url):
         return True          # 公众号/百家号/微博号:身份是"号"不是站,标题短且常是英文,不参与语言判定
     host = (urlparse(url).netloc or "").lower()
+    if host.endswith(_FOREIGN_TLD):
+        return False
     if host.endswith(_CN_TLD):
         return True
     return bool(_CJK.search(title or ""))
@@ -348,6 +360,8 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     # 实测 941 条结果里 905 条是现有源、其中 904 条只来自 miit/mps 两个域——不排掉等于整轮空转。
     hog: dict[str, dict[str, int]] = {name: {} for name, _ in engines}
     excl: dict[str, list[str]] = {name: [] for name, _ in engines}
+    topic_min = float(getattr(settings, "engine_on_topic_min", 0.3))
+    topic_min_n = int(getattr(settings, "engine_on_topic_min_items", 20))
     hog_at = int(getattr(settings, "prospect_exclude_after_hits", 25) or 0)
     hog_max = int(getattr(settings, "prospect_exclude_max_sites", 6) or 0)
     new_keys, resolved_used = set(), 0
@@ -362,6 +376,13 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                 break
             if streak_cap and fail_streak.get(ename, 0) >= streak_cap:
                 edetail[ename].setdefault("stopped", f"连续失败 {streak_cap} 次,本轮停用")
+                done += 1
+                continue
+            ed0 = edetail[ename]
+            if (ed0.get("topic_total", 0) >= topic_min_n
+                    and ed0["topic_hit"] / ed0["topic_total"] < topic_min):
+                ed0.setdefault("stopped",
+                               f"结果与查询词无关(命中率 {ed0['topic_hit']}/{ed0['topic_total']}),本轮停用")
                 done += 1
                 continue
             eq = q + "".join(f" -site:{h}" for h in excl[ename])
@@ -387,6 +408,13 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                         _diagnose_empty(eng, q, page, edetail[ename], st)
                         break
                     edetail[ename]["items"] += len(items)
+                    # 引擎在不在回答我们的问题:整页标题都不带查询词 = 它搜的不是这个词。
+                    # 必应 RSS 实测就是这样(搜「网警 处罚」回日本 IT 咨询公司),而这种
+                    # 结果域名都合法,不看相关度是拦不住的。
+                    ed = edetail[ename]
+                    ed["topic_hit"] = ed.get("topic_hit", 0) + sum(
+                        1 for i in items if _on_topic_rate(q, [i.title]) > 0)
+                    ed["topic_total"] = ed.get("topic_total", 0) + len(items)
                     # 留几条真实结果样本:上一轮"必应 900 条全落在两个已有域"这种情况,
                     # 光看统计数字判不出是真结果还是页脚模板链,有样本就一眼看穿
                     for s in items[:2]:
@@ -602,14 +630,39 @@ def _why_known(db, key: str) -> str | None:
     return None
 
 
+def _on_topic_rate(query: str, titles: list) -> float:
+    """结果标题里有多少比例真的提到了查询词。
+
+    判"这个引擎在不在回答我们的问题"最便宜也最硬的信号。中文检索里,对口结果的标题
+    几乎一定会带上查询词本身(搜「网警 处罚」回来的是「某地网警依法查处…」);
+    整批都不带,就说明引擎压根没在搜这个词。
+    按 2 字滑窗匹配,避免"网警"必须整词出现才算命中。
+    """
+    terms = [t for t in (query or "").split() if t]
+    grams: set[str] = set()
+    for t in terms:
+        if len(t) <= 2:
+            grams.add(t)
+        else:
+            grams.update(t[i:i + 2] for i in range(len(t) - 1))
+    if not grams:
+        return 1.0
+    ts = [str(x or "") for x in titles]
+    if not ts:
+        return 0.0
+    return sum(1 for x in ts if any(g in x for g in grams)) / len(ts)
+
+
 def selftest(db, query: str = "网警 处罚") -> dict:
     """找源路径可行性自检:每个引擎只跑一条词,报告这条路到底通不通。
 
     先验证路径再铺关键词——否则铺了几百个词,发现引擎全被反爬,白跑几十分钟。
     每个引擎给出:抓没抓到、是不是验证页、解析出几条、还原后落到哪些域名、可用与否 + 建议。
     """
-    out = {"query": query, "engines": [], "usable": [], "advice": ""}
-    for name, eng in _engines():
+    # 测整个候选池,不只是当前在用的那几个:被上一次自检踢掉的引擎(反爬是临时的)
+    # 和升级新加的引擎都必须有机会重新证明自己,否则一旦误判就永远回不来。
+    out = {"query": query, "engines": [], "usable": [], "tested": [], "advice": ""}
+    for name, eng in _engines(all_engine_names()):
         row = {"engine": name, "ok": False, "blocked": False, "items": 0,
                "samples": [], "hint": ""}
         try:
@@ -628,19 +681,36 @@ def selftest(db, query: str = "网警 处罚") -> dict:
                                    "(必应网页版就是这样)。开「启用浏览器渲染/截图」,"
                                    "或改用 bing_rss —— 纯 XML 口,不依赖 JS 也不随改版失配")
                 else:
+                    row["on_topic"] = round(_on_topic_rate(query, [i.title for i in items]), 2)
                     for it in items[:5]:
                         u = it.url
                         acct = (getattr(it, "wechat_account", None) or "").strip()
                         if not acct and url_tools.is_search_redirect(u):
                             u = _resolve_redirect(u)
-                        key, why, _x = _candidate(u, {"wechat": 10 ** 6})
+                        # 走和正式跑一样的过滤链,否则自检的结论预测不了真实行为
+                        if not acct and _is_boilerplate(u):
+                            key, why = None, "boilerplate"
+                        elif not acct and not _looks_domestic(u, it.title):
+                            key, why = None, "non_chinese"
+                        else:
+                            key, why, _x = _candidate(u, {"wechat": 10 ** 6})
                         row["samples"].append(
                             {"title": (it.title or "")[:60],
                              "key": (f"mp:{acct}" if acct else (key or "")),
                              "drop": "" if (acct or key) else why})
                     row["ok"] = any(x["key"] for x in row["samples"])
                     drops = [x["drop"] for x in row["samples"] if x["drop"]]
-                    if row["ok"]:
+                    if row["on_topic"] < float(getattr(settings, "engine_on_topic_min", 0.3)):
+                        # 能解析出域名 ≠ 这个引擎在回答我们的问题。实测必应 RSS 对
+                        # 「网警 处罚」返回的是日本 IT 咨询公司、加拿大税务局、知乎 IRR 问答,
+                        # 却因为域名合法被判成"可用"——返回无关内容比返回空更糟,
+                        # 那些结果看着像真结果,会一路混进候选池。
+                        row["ok"] = False
+                        row["off_topic"] = True
+                        row["hint"] = (f"结果和查询词无关(命中率仅 {row['on_topic']}):"
+                                       f"搜「{query}」却返回了别的主题。这种引擎比搜不到更糟——"
+                                       "无关结果看着像真结果,会混进候选池。不要用它")
+                    elif row["ok"]:
                         row["hint"] = "可用:能解析出结果且能定位到具体渠道"
                     elif drops.count("redirect_unresolved") >= max(1, len(drops) // 2):
                         # 这一类不是"引擎不行":搜回来的内容对得上,只是卡在跳转页拿不到最终链接。
@@ -659,6 +729,7 @@ def selftest(db, query: str = "网警 处罚") -> dict:
         except Exception as e:  # noqa: BLE001
             row["hint"] = f"{type(e).__name__}: {e}"[:160]
         out["engines"].append(row)
+        out["tested"].append(name)
         if row["ok"]:
             out["usable"].append(name)
     # 卡在跳转/公众号解析的引擎单独列出来:它们是"差一步"而不是"不行",
@@ -679,6 +750,33 @@ def selftest(db, query: str = "网警 处罚") -> dict:
                          "①开启「启用浏览器渲染/截图」(对验证页和跳转页最有效);"
                          "②或确认这台机器能正常访问搜索引擎。")
     return out
+
+
+def apply_selftest(db, r: dict) -> dict:
+    """把一次自检的结论落到在用引擎列表上。
+
+    自检已经把"哪个能用"算出来了,还要人去设置页照抄一遍没有意义。
+    保底同 autotune:一个都不可用时保持原样不动,宁可空跑也不要把找源彻底关掉。
+    """
+    from app.services import settings_service
+    usable = list(r.get("usable") or [])
+    prev = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",") if x.strip()]
+    tested = list(r.get("tested") or [e["engine"] for e in r.get("engines") or []])
+    if tested:
+        settings_service.save(db, {"prospect_engines_tuned": ",".join(sorted(set(tested)))})
+    if not usable:
+        return {"changed": False, "note": "一个都不可用,保持原配置不动"}
+    if sorted(usable) == sorted(prev):
+        return {"changed": False, "note": f"引擎无变化:{'、'.join(usable)}"}
+    settings_service.save(db, {"prospect_engines": ",".join(usable)})
+    added, removed = sorted(set(usable) - set(prev)), sorted(set(prev) - set(usable))
+    note = ("按自检结果调整引擎:"
+            + ("加回 " + "、".join(added) + ";" if added else "")
+            + ("停用 " + "、".join(removed) if removed else "")).rstrip(";")
+    from app.services import actions
+    actions.record(db, "source.engines_tuned", note,
+                   detail={"usable": usable, "before": prev, "detail": r.get("engines")})
+    return {"changed": True, "note": note, "added": added, "removed": removed}
 
 
 def all_engine_names() -> list[str]:
@@ -727,12 +825,7 @@ def autotune_engines(db, query: str = "网警 处罚") -> dict:
     from app.services import settings_service
     pool = all_engine_names()
     prev = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",") if x.strip()]
-    old_all = getattr(settings, "prospect_engines", "")
-    try:
-        settings.prospect_engines = ",".join(pool)      # 临时全量,才能把踢掉的也测到
-        r = selftest(db, query)
-    finally:
-        settings.prospect_engines = old_all
+    r = selftest(db, query)      # selftest 本身就测整池,不必再临时改配置
     usable = r["usable"]
     detail = {e["engine"]: ("可用" if e["ok"] else ("验证页/反爬" if e["blocked"] else e["hint"][:60]))
               for e in r["engines"]}
