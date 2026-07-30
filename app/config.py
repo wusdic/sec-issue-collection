@@ -145,10 +145,10 @@ class Settings:
 
     # 主动找源(D5):用"找源专用检索词"定期去搜索引擎捞新渠道,而不是只等已采内容引用
     prospect_enabled: bool = os.getenv("PROSPECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")
-    # 默认带上搜狗微信:用户要的执法通报(网警/网信办)大多发在公众号里,只搜网页会漏掉一大类
-    # bing_rss 排在最前:必应网页版结果由 JS 注入,不渲染时抓回来的 HTML 里没有结果链接,
-    # RSS 口是纯 XML、不依赖 JS、也不随网页版改版失配
-    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "bing_rss,sogou_wechat,baidu_search")
+    # 默认只留实测搜得回对口内容的两个:搜狗微信(执法通报大多发在公众号里)+ 百度。
+    # bing_rss 实测返回的是和查询无关的内容(YouTube 帮助页之类),不能进默认列表;
+    # 它和其它引擎都留在候选池里,由引擎自检定期重测,恢复了会自动加回来。
+    prospect_engines: str = os.getenv("PROSPECT_ENGINES", "sogou_wechat,baidu_search")
     # 候选引擎池:自动调优每轮把池子里每个都测一遍——掉线的踢出、恢复的加回来,
     # 不必人工先点自检再去改上面的列表
     prospect_engines_all: str = os.getenv("PROSPECT_ENGINES_ALL", SHIPPED_ENGINES)

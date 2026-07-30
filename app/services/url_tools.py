@@ -21,7 +21,12 @@ _MULTI_SUFFIXES = {
     "com.hk", "org.hk", "co.jp", "co.uk",
 }
 
-_SEARCH_REDIRECT_HOSTS = {"www.baidu.com", "baidu.com", "link.zhihu.com", "weixin.sogou.com", "sogou.com"}
+# 各引擎的中间跳转域名。360(so.com)、必应、DuckDuckGo 也都用跳转链,漏了它们就会把
+# "跳转链没还原"误判成"这条结果落在通用大平台",进而把好引擎判成不可用。
+_SEARCH_REDIRECT_HOSTS = {"www.baidu.com", "baidu.com", "link.zhihu.com",
+                          "weixin.sogou.com", "sogou.com", "so.com", "www.so.com",
+                          "bing.com", "cn.bing.com", "www.bing.com",
+                          "duckduckgo.com", "html.duckduckgo.com", "sm.cn"}
 
 
 def normalize_url(url: str) -> str:
@@ -210,6 +215,7 @@ def is_search_redirect(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return any(host == h or host.endswith("." + h) for h in _SEARCH_REDIRECT_HOSTS) and (
         "/link" in url or "/url" in url or "url=" in url or "/lnk" in url
+        or "/ck/a" in url or "?m=" in url or "&m=" in url or "/l/?" in url
     )
 
 

@@ -186,6 +186,10 @@ _SKIP_HOSTS = {"baidu.com", "bing.com", "sogou.com", "google.com", "so.com", "zh
                "hao123.com", "2345.com", "speedtest.cn", "zdic.net", "guoxuedashi.net",
                "dict.cn", "youdao.com", "iciba.com", "so.360.cn", "quark.cn"}
 
+# 搜索引擎自家域名:结果停在这里只说明跳转链没还原,和"落在通用大平台"是两回事
+_ENGINE_HOSTS = {"baidu.com", "bing.com", "sogou.com", "so.com", "google.com",
+                 "duckduckgo.com", "sm.cn", "quark.cn"}
+
 _MIN_QUERY_CJK = 2   # 少于两个汉字的词等于"什么都没问",引擎只会回百科/导航站
 _MIN_SOLO_CJK = 3    # 单独跑的词还要更严:2 字词太歧义(「入侵」「爬虫」搜回来的是百科
 
@@ -217,8 +221,15 @@ def _resolve_redirect(url: str) -> str:
     搜索引擎自己——这正是"搜索结果 0 条"的头号原因。跟一次跳转拿到真实站点。
     """
     try:
-        fr = fetcher.fetch(url, timeout=min(10.0, float(settings.fetch_timeout)))
-        return fr.final_url or url
+        # render="auto":搜狗/360 的跳转页是一段 JS(把真实地址拼出来再 location.href),
+        # 纯 httpx 只会停在 sogou.com/so.com —— 实测自检里搜狗那批网警通报全折在这一步。
+        # 未开浏览器渲染时 auto 自动降级为 httpx,零额外开销。
+        fr = fetcher.fetch(url, timeout=min(10.0, float(settings.fetch_timeout)), render="auto")
+        if fr.final_url and not url_tools.is_search_redirect(fr.final_url):
+            return fr.final_url
+        # 没跳走但页面里带着真实永久链接(搜狗的公众号跳转页就是这样)
+        perm = url_tools.extract_wechat_permalink(fr.html or "")
+        return perm or fr.final_url or url
     except Exception:  # noqa: BLE001
         return url
 
@@ -282,6 +293,13 @@ def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
     key = url_tools.identity_key_for(url)
     if not key:
         return None, "bad_url", {}
+    if key in _ENGINE_HOSTS and url_tools.is_search_redirect(url):
+        # 还是一条没还原成功的跳转链,不是"这条结果落在通用大平台"。混成一个原因会
+        # 得出完全错误的结论:自检曾把搜狗判成"不可用",而它其实正正好好搜回了一批
+        # 网警通报,只是卡在跳转页拿不到最终链接。
+        # (注意要看 URL 本身是不是跳转链——baike.baidu.com 归一化后也叫 baidu.com,
+        #  但它是真结果、只是没价值,那属于"大平台"而不是"还原失败"。)
+        return None, "redirect_unresolved", {}
     if key in _SKIP_HOSTS:
         return None, "platform", {}      # 知乎/CSDN/门户等通用大平台,不作为专业源
     return key, "", {}
@@ -314,6 +332,7 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
           "already_source": 0, "blacklisted": 0, "engine_self": 0, "invalid_name": 0,
           "wechat_unresolved": 0, "wechat_over_budget": 0, "redirect_over_budget": 0,
           "redirect_cached": 0, "non_chinese": 0, "boilerplate": 0, "excluded_sites": 0,
+          "redirect_unresolved": 0,
           "new_wechat": 0, "new_platform_account": 0, "column_hints": 0}
     dropped: dict[str, int] = {}      # 被丢弃的域名 → 次数(给人看"到底丢了什么")
     budget: dict[str, int] = {}
@@ -431,7 +450,7 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                         key, why, extra = _candidate(url, budget)
                         if not key:
                             st[why if why in st else "bad_url"] += 1
-                            if why == "platform":
+                            if why in ("platform", "redirect_unresolved"):
                                 d = url_tools.identity_key_for(url)
                                 dropped[d] = dropped.get(d, 0) + 1
                             continue
@@ -620,20 +639,45 @@ def selftest(db, query: str = "网警 处罚") -> dict:
                              "key": (f"mp:{acct}" if acct else (key or "")),
                              "drop": "" if (acct or key) else why})
                     row["ok"] = any(x["key"] for x in row["samples"])
-                    row["hint"] = ("可用:能解析出结果且能定位到具体渠道" if row["ok"] else
-                                   "解析出结果了,但都落不到有效渠道(可能全是大平台或跳转链还原失败)")
+                    drops = [x["drop"] for x in row["samples"] if x["drop"]]
+                    if row["ok"]:
+                        row["hint"] = "可用:能解析出结果且能定位到具体渠道"
+                    elif drops.count("redirect_unresolved") >= max(1, len(drops) // 2):
+                        # 这一类不是"引擎不行":搜回来的内容对得上,只是卡在跳转页拿不到最终链接。
+                        # 之前把它和"落在通用大平台"混成一句,自检因此把搜狗判成不可用——
+                        # 而搜狗恰恰是唯一能搜到网警通报公众号的引擎。
+                        row["blocked_by"] = "redirect"
+                        row["hint"] = ("引擎本身好的:搜回来的结果内容对得上,但都卡在它自家的跳转页、"
+                                       "还原不出真实链接(搜狗/360 的跳转页要跑 JS)。"
+                                       "开设置页的「启用浏览器渲染/截图」即可,不要把这个引擎去掉")
+                    elif drops.count("wechat_unresolved"):
+                        row["blocked_by"] = "wechat"
+                        row["hint"] = ("搜到的是公众号文章,但解析不出所属号名。"
+                                       "开「启用浏览器渲染/截图」后公众号页才打得开")
+                    else:
+                        row["hint"] = "解析出结果了,但都落在通用大平台/百科导航站,不作专业源"
         except Exception as e:  # noqa: BLE001
             row["hint"] = f"{type(e).__name__}: {e}"[:160]
         out["engines"].append(row)
         if row["ok"]:
             out["usable"].append(name)
-    if out["usable"]:
-        out["advice"] = (f"可用引擎:{'、'.join(out['usable'])}。建议把设置页的「主动找源:用哪些"
-                         f"搜索引擎」只保留这些,再放心铺关键词——不可用的引擎只会白耗请求。")
+    # 卡在跳转/公众号解析的引擎单独列出来:它们是"差一步"而不是"不行",
+    # 结论里必须区分开,否则人会把最该留的引擎删掉
+    out["render_would_fix"] = [e["engine"] for e in out["engines"]
+                               if not e["ok"] and e.get("blocked_by")]
+    fix = out["render_would_fix"]
+    if fix and not getattr(settings, "playwright_enabled", False):
+        out["advice"] = (f"关键结论:{'、'.join(fix)} 搜回来的内容是对的,只差最后一步"
+                         "(跳转页/公众号页要跑 JS)。请先到设置页打开「启用浏览器渲染/截图」"
+                         "再自检一次——这一步的收益比换引擎大得多,别把这些引擎删掉。"
+                         + (f"当前已可直接用的:{'、'.join(out['usable'])}。" if out["usable"] else ""))
+    elif out["usable"]:
+        out["advice"] = (f"可用引擎:{'、'.join(out['usable'])}。引擎列表由「引擎自检并自动只留可用的」"
+                         "每 3 天自动维护,一般不用手改。")
     else:
         out["advice"] = ("所有引擎都不可用,现在铺再多关键词也没用。先解决这一步:"
-                         "①开启「启用浏览器渲染/截图」(对验证页最有效);②或改用别的引擎;"
-                         "③或确认这台机器能正常访问搜索引擎。")
+                         "①开启「启用浏览器渲染/截图」(对验证页和跳转页最有效);"
+                         "②或确认这台机器能正常访问搜索引擎。")
     return out
 
 
@@ -776,6 +820,9 @@ def explain(r: dict) -> str:
                             if st.get("excluded_sites") else ""))
         if st.get("boilerplate"):
             parts.append(f"{st['boilerplate']} 条是备案/举报页脚模板链")
+        if st.get("redirect_unresolved"):
+            parts.append(f"{st['redirect_unresolved']} 条卡在搜索引擎的跳转页没还原出真实站点"
+                         "(搜狗/360 的跳转页要跑 JS,开设置页的『启用浏览器渲染/截图』才拿得到)")
         if st.get("blacklisted"):
             parts.append(f"{st['blacklisted']} 条已拉黑")
         if st.get("engine_self"):

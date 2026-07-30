@@ -6,6 +6,7 @@
 - 新源零适配器:generic_rss 自动探测 RSS;generic_list 用 LLM 生成解析模板;
 - 未实现的站点专用适配器自动回退 generic 链(先 RSS 后 list),保证种子源全部可跑。
 """
+import re
 import time
 from dataclasses import dataclass
 from urllib.parse import quote, urljoin, urlparse
@@ -407,13 +408,38 @@ class SogouWechatAdapter(SearchEngineAdapter):
     # 号名所在的链接:搜狗改过版,老版是 a.account,新版只给 id="..._account_0"。
     # 只认 a.account 时 732 条结果全都拿不到号名,只能逐条去还原跳转链——配额一超就整批白丢。
     _ACCT_SEL = "a.account, a[id*='_account_'], div.s-p a[href*='profile'], div.s-p > a"
+    # 号名不会是这些控件文案;也不会是纯日期/数字
+    _ACCT_BAD = ("更多", "展开", "收起", "查看", "全部", "微信", "订阅", "关注", "http",
+                 "相关", "阅读", "分享")
+    _DATE_LIKE = re.compile(r"^[\d\s\-/:年月日前天小时分钟秒]+$")
 
-    @staticmethod
-    def _acct_text(li) -> str | None:
-        for a in li.select(SogouWechatAdapter._ACCT_SEL):
+    @classmethod
+    def _acct_ok(cls, t: str, title: str) -> bool:
+        if not t or not (1 < len(t) <= 32) or " " in t.strip(" "):
+            return False
+        if t.startswith(cls._ACCT_BAD) or cls._DATE_LIKE.match(t):
+            return False
+        return t not in title            # 标题的片段不是号名
+
+    @classmethod
+    def _acct_text(cls, li, title: str = "") -> str | None:
+        """从一条结果里取公众号名。
+
+        先按选择器找;搜狗改版频繁,选择器全落空时退回"扫这条结果里所有短文本"——
+        实测自检里搜狗把网警通报一条条搜回来了(标题完全对得上),却因为号名取不到,
+        整批只能去还原跳转链、最后全折在 sogou.com 上。号名拿不到就等于这个引擎白跑,
+        所以这里宁可用一个粗但兜得住的办法。
+        """
+        for a in li.select(cls._ACCT_SEL):
             t = a.get_text(" ", strip=True)
-            # 号名不会是一句话,也不会是"更多""展开"这类控件文案
-            if t and 1 < len(t) <= 32 and not t.startswith(("更多", "展开", "http")):
+            if cls._acct_ok(t, title):
+                return t
+        # 兜底:结果块里除标题以外的短文本,第一个像号名的就是它
+        for node in li.find_all(["a", "span", "em", "div"]):
+            if node.find(["a", "span", "em", "div"]):
+                continue                 # 只看叶子节点,避免整块文本
+            t = node.get_text(" ", strip=True)
+            if cls._acct_ok(t, title):
                 return t
         return None
 
@@ -424,13 +450,14 @@ class SogouWechatAdapter(SearchEngineAdapter):
         for li in soup.select("ul.news-list li"):
             a = li.select_one("h3 a")
             if a and a.get("href"):
-                acct_name = self._acct_text(li)
+                title = a.get_text(" ", strip=True)
+                acct_name = self._acct_text(li, title)
                 # 限定了公众号时,只保留确实来自该号的结果(搜狗会返回其他号的相近内容)
                 if want and acct_name and acct_name != want:
                     continue
                 out.append(DiscoveredItem(
                     url=urljoin("https://weixin.sogou.com/", a["href"]),
-                    title=a.get_text(" ", strip=True)[:200],
+                    title=title[:200],
                     wechat_account=acct_name or (want or None),
                 ))
         return out

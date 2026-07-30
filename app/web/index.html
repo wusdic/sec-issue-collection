@@ -917,6 +917,7 @@ function renderProspect(h){
         ${st.wechat_unresolved?`｜公众号解析失败 ${st.wechat_unresolved}`:""}
         ${st.non_chinese?`｜纯英文外站丢弃 ${st.non_chinese}`:""}
         ${st.boilerplate?`｜备案/举报页脚链丢弃 ${st.boilerplate}`:""}
+        ${st.redirect_unresolved?`｜<span class="pill warn" title="搜回来的内容可能是对的,只是卡在搜索引擎自家跳转页,还原不出真实站点。搜狗/360 的跳转页要跑 JS,开设置页的『启用浏览器渲染/截图』即可">跳转页没还原出真站 ${st.redirect_unresolved}</span>`:""}
         ${st.new_wechat?`｜<b>新公众号 ${st.new_wechat}</b>`:""}
         ${st.new_platform_account?`｜<b>新平台号 ${st.new_platform_account}</b>`:""}</div>
       ${(h.query_yield&&h.query_yield.length)?`<div class="sub" style="margin-top:4px">本轮最能干的找源词(有效=去掉页脚/大平台/已有源后还剩的):
@@ -1055,12 +1056,12 @@ async function prospectSelftest(){
       <b>🔎 找源路径自检</b> <span class="muted">测试词「${esc(r.query)}」,每个引擎只跑 1 条</span>
       <div style="margin:6px 0">${r.engines.map(e=>`<div style="margin:4px 0">
         <span class="pill ${e.ok?'ok':(e.blocked?'warn':'bad')}">${esc(e.engine)}</span>
-        ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":"不可用")}
-        <span class="muted">· ${esc(e.hint)}</span>
+        ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":(e.blocked_by?`解析出 ${e.items} 条,差最后一步`:"不可用"))}
+        <span class="${e.blocked_by?'pill warn':'muted'}">· ${esc(e.hint)}</span>
         ${(e.samples&&e.samples.length)?`<div class="muted" style="font-size:12px;margin-left:14px">
           ${e.samples.map(x=>`${esc(x.title)} → <b>${esc(x.key||("丢弃:"+x.drop))}</b>`).join("<br>")}</div>`:""}
       </div>`).join("")}</div>
-      <div class="${r.usable.length?'pill ok':'pill bad'}" style="display:block;white-space:pre-wrap">${esc(r.advice)}</div>
+      <div class="${(r.render_would_fix&&r.render_would_fix.length)?'pill warn':(r.usable.length?'pill ok':'pill bad')}" style="display:block;white-space:pre-wrap">${esc(r.advice)}</div>
     </div>`;
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
 }

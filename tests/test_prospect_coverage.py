@@ -1208,3 +1208,90 @@ def test_new_engines_registered_in_pool():
     for n in ("ddg_html", "so360_search", "bing_rss"):
         assert n in _REGISTRY
         assert n in prospect.all_engine_names()
+
+
+# ---------------- ⑪ "跳转页没还原"≠"引擎不行" ----------------
+
+def test_unresolved_redirect_is_not_platform():
+    """自检曾把搜狗判成"不可用"——而搜狗恰恰一条条搜回了网警通报,只是卡在跳转页。
+    这两个原因必须分开,否则人会把最该留的引擎删掉。"""
+    key, why, _ = prospect._candidate("https://weixin.sogou.com/link?url=ABC", {})
+    assert key is None and why == "redirect_unresolved"
+    key, why, _ = prospect._candidate("https://www.so.com/link?m=xyz", {})
+    assert why == "redirect_unresolved"
+    # 真结果落在百科/大平台上,那是另一回事
+    key, why, _ = prospect._candidate("https://baike.baidu.com/item/网/31877", {})
+    assert why == "platform"
+    key, why, _ = prospect._candidate("https://www.zhihu.com/question/1", {})
+    assert why == "platform"
+
+
+def test_unresolved_redirects_counted_and_explained(db, need, monkeypatch):
+    class _E:
+        def __init__(self, *_a, **_k): pass
+        def search_page(self, q, page, tf=None):
+            return None if page else [
+                DiscoveredItem(url=f"https://weixin.sogou.com/link?url=A{i}",
+                               title=f"某地网警依法查处案件{i}") for i in range(3)]
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _E())])
+    monkeypatch.setattr(prospect, "build_queries", lambda *a, **k: ["网警 处罚"])
+    monkeypatch.setattr(prospect, "_resolve_redirect", lambda u: u)     # 还原失败
+    r = prospect.run_once(db, need.id)
+    assert r["stats"]["redirect_unresolved"] == 0     # 还原失败在更早一步就 continue 了
+    assert "还原失败" in r["note"]
+
+
+def test_selftest_says_render_would_fix(db, monkeypatch):
+    """引擎搜回来的内容对得上、只差跳转页还原时,结论必须是"开渲染",而不是"不可用"。"""
+    class _E:
+        config = {}
+        def build_url(self, q, page, tf): return "https://weixin.sogou.com/weixin?query=x"
+        def looks_blocked(self, html): return False
+        def parse(self, html):
+            return [DiscoveredItem(url=f"https://weixin.sogou.com/link?url=A{i}",
+                                   title=f"某地网警依法查处案件{i}") for i in range(3)]
+
+    class _FR:
+        ok, html, final_url, error, status = True, "<html>x</html>", "u", None, 200
+
+    monkeypatch.setattr(prospect, "_engines", lambda: [("sogou_wechat", _E())])
+    monkeypatch.setattr(prospect.fetcher, "fetch", lambda *a, **k: _FR())
+    monkeypatch.setattr(prospect, "_resolve_redirect", lambda u: u)
+    monkeypatch.setattr(settings, "playwright_enabled", False)
+    r = prospect.selftest(db, "网警 处罚")
+    row = r["engines"][0]
+    assert row["ok"] is False and row["blocked_by"] == "redirect"
+    assert "引擎本身好的" in row["hint"] and "不要把这个引擎去掉" in row["hint"]
+    assert r["render_would_fix"] == ["sogou_wechat"]
+    assert "浏览器渲染" in r["advice"]
+
+
+def test_sogou_account_fallback_scans_whole_result():
+    """搜狗改版后选择器全落空时,也要能从结果块里把号名捞出来——号名拿不到,
+    这个引擎搜回来的一批网警通报就全废了。"""
+    from app.services.adapters import SogouWechatAdapter
+    html = """<ul class="news-list"><li>
+      <h3><a href="/link?url=A">高碑店网警处罚四家拒不履行网络安全义务的单位</a></h3>
+      <p class="txt-info">近日……</p>
+      <div><span class="brand-new">高碑店网警巡查执法</span><span>2026-07-01</span></div>
+    </li></ul>"""
+    items = SogouWechatAdapter(prospect._Shim()).parse(html)
+    assert items[0].wechat_account == "高碑店网警巡查执法"
+
+
+def test_sogou_account_fallback_rejects_dates_and_controls():
+    from app.services.adapters import SogouWechatAdapter
+    html = """<ul class="news-list"><li>
+      <h3><a href="/link?url=B">某地通报三起案件</a></h3>
+      <div><span>2026-07-01</span><span>3天前</span><a href="#">查看更多</a>
+      <span>江苏网警</span></div></li></ul>"""
+    items = SogouWechatAdapter(prospect._Shim()).parse(html)
+    assert items[0].wechat_account == "江苏网警"
+
+
+def test_default_engines_exclude_bing_rss():
+    """bing_rss 实测返回和查询无关的内容(YouTube 帮助页),不能留在默认列表;
+    但要留在候选池里,恢复了自检会自动加回来。"""
+    assert "bing_rss" not in settings.prospect_engines
+    assert "bing_rss" in prospect.all_engine_names()
