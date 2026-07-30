@@ -69,6 +69,10 @@ CATALOG: dict[str, Spec] = {
     "source.engines_tuned": Spec(
         "sources", NOTICE, "找源引擎自动调优", 0,
         "系统按自检结果自动增减了可用搜索引擎;想固定某几个可在设置页手改「主动找源:用哪些搜索引擎」"),
+    "source.to_site_search": Spec(
+        "sources", NOTICE, "抓不到的源自动改走站内检索", 0,
+        "原页面源已停用,同站改由搜索引擎按 site:域名 抓。若想恢复直连,"
+        "在数据源页把原源「恢复启用」即可"),
     "source.queries_evolved": Spec(
         "sources", NOTICE, "找源词自动进化", 0,
         "词表按实际产出自我调整:拖后腿的限定词退出组合池(仍可单独跑),"

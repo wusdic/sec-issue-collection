@@ -371,3 +371,68 @@ def test_autotune_records_tested_pool(db, monkeypatch):
                             {"engine": "baidu_search", "ok": False, "blocked": True, "hint": "验证页"}]})
     prospect.autotune_engines(db)
     assert set(settings.prospect_engines_tuned.split(",")) >= {"bing_rss", "baidu_search"}
+
+
+# ---------------- 自动化取舍:按钮该做的事,系统自己做 ----------------
+
+def test_retired_page_source_auto_converted_to_site_search(db, need, monkeypatch):
+    """体检把页面源判死不该是终点:直连抓不到的,自动改走站内检索借搜索引擎救回来。
+    这一步以前只有人点「抓不到的页面源转站内检索」才会做。"""
+    from app.services import health
+    monkeypatch.setattr(settings, "source_auto_retire_fail_streak", 2)
+    monkeypatch.setattr(settings, "source_quiet_tolerance_days", 0)
+    monkeypatch.setattr(settings, "auto_retire_protect_credibility", "S1")
+    s = Source(name="某省网信办通报", kind="page", adapter="generic_list", credibility="S3",
+               tier="B", lifecycle="active", serves_needs=[need.id],
+               entry_url="https://conv-me.gov.cn/tongbao/", site_key="conv-me.gov.cn",
+               fail_streak=1, created_at=datetime.utcnow() - timedelta(days=90))
+    db.add(s); db.flush()
+    r = health.register_failure(db, s, "403")
+    db.flush()
+    assert r["retired"] is True and r["converted"]["ok"] is True
+    sib = db.query(Source).filter_by(identity_key="site:conv-me.gov.cn").one()
+    assert sib.kind == "query" and sib.lifecycle == "active"
+    assert (sib.adapter_config or {}).get("site") == "conv-me.gov.cn"
+    assert sib.credibility == "S3"          # 继承原源等级,不因为换了抓法就降级
+
+
+def test_auto_convert_can_be_turned_off(db, need, monkeypatch):
+    from app.services import health
+    monkeypatch.setattr(settings, "source_auto_retire_fail_streak", 1)
+    monkeypatch.setattr(settings, "source_quiet_tolerance_days", 0)
+    monkeypatch.setattr(settings, "auto_to_site_search", False)
+    s = Source(name="不转的源", kind="page", adapter="generic_list", credibility="S3", tier="B",
+               lifecycle="active", serves_needs=[need.id],
+               entry_url="https://noconv.gov.cn/x/", site_key="noconv.gov.cn",
+               created_at=datetime.utcnow() - timedelta(days=90))
+    db.add(s); db.flush()
+    r = health.register_failure(db, s, "403")
+    assert r["retired"] is True and "converted" not in r
+    assert db.query(Source).filter_by(identity_key="site:noconv.gov.cn").one_or_none() is None
+
+
+def test_wechat_source_not_converted(db, need, monkeypatch):
+    """公众号源没有站点域名,转站内检索无意义,不能瞎转。"""
+    from app.services import health
+    s = Source(name="某公众号", kind="query", adapter="sogou_wechat", credibility="S3", tier="B",
+               lifecycle="active", serves_needs=[need.id],
+               adapter_config={"account": "某公众号"}, site_key="mp:某公众号",
+               identity_key="mp:某公众号")
+    db.add(s); db.flush()
+    assert health.convert_to_site_search(db, s)["ok"] is False
+
+
+def test_no_usable_engine_becomes_a_human_todo(db, need, monkeypatch):
+    """引擎全线不可用是自动调优也救不回来的:必须变成一条明确的待办顶到人眼前,
+    而不是让主动找源一直静默空跑。"""
+    monkeypatch.setattr(settings, "prospect_engines", "")
+    monkeypatch.setattr(settings, "prospect_enabled", True)
+    todo = autopilot.human_todo(db, need.id)
+    assert todo["blocked"] and "找源引擎" in todo["blocked"][0]
+    assert todo["total"] >= 1
+
+
+def test_engines_present_is_not_a_todo(db, need, monkeypatch):
+    monkeypatch.setattr(settings, "prospect_engines", "baidu_search")
+    todo = autopilot.human_todo(db, need.id)
+    assert todo["blocked"] == []

@@ -142,6 +142,9 @@ class Settings:
     auto_retire_protect_credibility: str = os.getenv("AUTO_RETIRE_PROTECT_CREDIBILITY", "S1,S2")
     # 自动停用的源隔这么多天自动复检一次,能出数据就自动恢复(误杀自愈)。0=不复检
     retired_recheck_days: int = int(os.getenv("RETIRED_RECHECK_DAYS", "14"))
+    # 页面型源被自动停用时,顺手改走"站内检索"(借搜索引擎按 site:域名 抓)。
+    # 搜索引擎能渲染 JS、绕过部分反爬,常能救回政务站;停用不该是终点。
+    auto_to_site_search: bool = os.getenv("AUTO_TO_SITE_SEARCH", "1") not in ("0", "false", "no")
 
     # 主动找源(D5):用"找源专用检索词"定期去搜索引擎捞新渠道,而不是只等已采内容引用
     prospect_enabled: bool = os.getenv("PROSPECT_ENABLED", "true").lower() in ("1", "true", "yes", "on")

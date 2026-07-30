@@ -41,6 +41,49 @@ def register_success(db, src: Source):
     db.flush()
 
 
+def convert_to_site_search(db, src: Source, retire_original: bool = True) -> dict:
+    """把直连抓不到的页面型源改造成「站内检索」——借搜索引擎按 site:域名 抓它。
+
+    搜索引擎的爬虫能渲染 JS、绕过部分反爬,故常能救回政务站这类直连抓不到的源。
+    以前这一步只有人点按钮才会做:体检把源判死、然后就没人管了,一个本来能救回来的
+    权威源就这么躺在停用列表里。现在自动停用时顺手做掉。
+    返回 {ok, id, created, site, note};不适用时 ok=False。
+    """
+    from app.services import url_tools
+    if src.kind != "page" or not (src.entry_url or "").startswith("http"):
+        return {"ok": False, "note": "仅页面型且有入口链接的源可转站内检索"}
+    domain = url_tools.identity_key_for(src.entry_url)
+    if not domain or domain.startswith("mp:"):
+        return {"ok": False, "note": "入口链接解析不出站点域名"}
+    ident = f"site:{domain}"
+    existing = db.query(Source).filter_by(identity_key=ident).one_or_none()
+    if existing:
+        if existing.lifecycle == "retired":
+            existing.lifecycle = "active"
+        # 该检索源可能是"根域源没定位到栏目"时自动建的挂靠源(经父源采集,不独立排期);
+        # 父源要停掉改走它,必须解除挂靠,否则父源一停它就再也不会被采。
+        ecfg = dict(existing.adapter_config or {})
+        if retire_original and ecfg.pop("parent_site_id", None) is not None:
+            existing.adapter_config = ecfg
+        out = {"ok": True, "id": existing.id, "created": False, "site": domain}
+    else:
+        retry = Source(
+            name=f"{src.name}·站内检索", entry_url=None, kind="query",
+            adapter="baidu_search", adapter_config={"site": domain, "list_order": "relevance"},
+            credibility=src.credibility, tier=src.tier, lifecycle="active",
+            serves_needs=list(src.serves_needs or []), identity_key=ident, site_key=domain,
+            discovered_from="search_retry",
+            note=f"由页面型源「{src.name}」直连抓不到,改站内检索兜底")
+        db.add(retry)
+        db.flush()
+        out = {"ok": True, "id": retry.id, "created": True, "site": domain}
+    if retire_original:
+        src.lifecycle = "retired"
+    db.flush()
+    out["note"] = f"已改走站内检索 site:{domain}"
+    return out
+
+
 def register_failure(db, src: Source, reason: str = "") -> dict:
     """本轮没出数据:累加失败计数,但**不轻易停用**。
 
@@ -85,6 +128,16 @@ def register_failure(db, src: Source, reason: str = "") -> dict:
                    need_id=(src.serves_needs or [None])[0], target=src.entry_url or src.name,
                    detail={"source_id": src.id, "fail_streak": src.fail_streak,
                            "quiet_days": quiet, "reason": reason[:200]})
+    # 停用不该是终点:直连抓不到的页面源自动改走站内检索,借搜索引擎把它救回来。
+    # 这一步以前只有人点「抓不到的页面源转站内检索」才会做。
+    if getattr(settings, "auto_to_site_search", True):
+        conv = convert_to_site_search(db, src, retire_original=True)
+        if conv.get("ok"):
+            out["converted"] = conv
+            actions.record(db, "source.to_site_search",
+                           f"「{src.name}」直连抓不到,自动改走站内检索 site:{conv['site']}",
+                           need_id=(src.serves_needs or [None])[0],
+                           target=src.entry_url or src.name, detail=conv)
     out.update(retired=True,
                note=f"连续 {src.fail_streak} 轮无产出且已 {quiet} 天没有成功产出,自动停用"
                     f"({int(getattr(settings, 'retired_recheck_days', 0) or 0)} 天后会自动复检)")

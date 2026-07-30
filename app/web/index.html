@@ -557,11 +557,14 @@ const canEditSrc=()=>["analyst","editor","admin"].includes(ROLE);
 async function vSources(){
   const v=document.getElementById("view");
   v.innerHTML=`<h2>数据源</h2>
-    <p class="sub">种子源 + 自动发现的候选源。点入口链接可打开原站人工验证;不需要的源可删除/停用。</p>
+    <p class="sub">源库是自己维护的:载入内置源、查重合并、定位栏目、体检、找源、词表进化、定级、候选入库
+      都由「源库自动运维」按周期做完。<b>这一页你只需要看两件事</b>——上面的提示(机器判不了的)和
+      下面源清单里的异常;其余按钮都收在「🔬 诊断与观察」里,平时不用点。</p>
     <div id="srcAlert"></div>
     <div id="autoBox"></div>
-    ${canEditSrc()?`<div class="card" style="margin:10px 0;padding:14px">
-      <h3 style="margin:0 0 10px;font-size:15px">➕ 手动添加数据源</h3>
+    ${canEditSrc()?`<details class="card" style="margin:10px 0;padding:14px">
+      <summary style="font-size:15px;font-weight:600;cursor:pointer">➕ 手动添加数据源<span class="muted" style="font-weight:400"> —— 你知道某个渠道、想定向补进来时用</span></summary>
+      <div style="height:8px"></div>
       <div class="toolbar" style="flex-wrap:wrap;gap:8px">
         <input id="nsName" placeholder="名称,如 FreeBuf 资讯" style="min-width:170px">
         <input id="nsUrl" placeholder="入口链接:栏目页/RSS 地址,或直接粘一条公众号文章链接(mp.weixin.qq.com/s/...)" style="min-width:300px;flex:1">
@@ -578,19 +581,30 @@ async function vSources(){
         适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。<br>
         📱 公众号:直接把一条该号的文章链接粘到"入口链接"即可,系统会自动识别出它属于哪个公众号并持续跟踪该号(不是只存这一篇)。</p>
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
-    </div>
-    <div class="toolbar" style="margin:4px 0 10px">
-      <button class="ghost" onclick="prospectSelftest()" id="pstBtn">🔎 找源路径自检</button>
-      <button class="ghost" onclick="prospectAll()" id="prosBtn">🧭 主动找源(搜新渠道)</button>
-      <button class="ghost" onclick="showCandidates()" id="candBtn">🧺 候选池</button>
-      <button class="ghost" onclick="showQueryLab()" id="qlabBtn">🧬 找源词表现</button>
-      <button class="ghost" onclick="showCoverage()" id="covBtn">📊 覆盖度盘点</button>
-      <button class="ghost" onclick="locateAll(false)" id="locBtn">🎯 精准定位栏目(未定位的源)</button>
-      <button class="ghost" onclick="testAllSources()" id="testAllBtn">🩺 一键体检全部源</button>
-      <button class="ghost" onclick="batchToSearch()" id="toSearchBtn">🔁 抓不到的页面源转站内检索</button>
-      <button class="ghost" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
-      <span class="sub">找源路径自检:每个引擎只跑 1 条词,十几秒告诉你这条路通不通、结果能不能落到具体渠道——<b>先自检再铺关键词</b>,不然铺几百个词也是白跑。候选池:已发现但还没建成源的渠道,可看分数/相关度并一键收下。主动找源:用「找源专用检索词」+ 覆盖空白方向去搜索引擎捞新渠道(不必等已采文章引用),再用大模型给候选打相关度分、达标自动入库试运行。覆盖度盘点:看哪些行业近期一条事件都没有,那就是该补源的方向。定位栏目:只填了网站根地址的源会抓到首页要闻(噪声大),这里逐站识别出「执法处罚/安全通报」等相关栏目并落库,之后只抓栏目。体检:逐个试抓,连续失败达阈值自动停用。转站内检索:直连抓不到的页面源改走搜索引擎。扫描同站:按站点归组,同站不同栏目属正常,真重复(同栏目)会标红。</span>
-    </div>
+    </details>
+    <details id="srcDiag" style="margin:4px 0 10px">
+      <summary class="muted">🔬 诊断与观察(平时不用点开:下面这些事自动运维已经在按周期做了)</summary>
+      <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-top:6px">
+        <button class="ghost sm" onclick="prospectSelftest()" id="pstBtn">🔎 找源路径自检</button>
+        <button class="ghost sm" onclick="showQueryLab()" id="qlabBtn">🧬 找源词表现</button>
+        <button class="ghost sm" onclick="showCoverage()" id="covBtn">📊 覆盖度盘点</button>
+        <button class="ghost sm" onclick="showCandidates()" id="candBtn">🧺 候选池全量</button>
+        <button class="ghost sm" onclick="scanDup()" id="dupBtn">🔗 扫描同站多源</button>
+      </div>
+      <div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-top:6px">
+        <span class="sub" style="width:100%">下面几个是"手动触发一次自动运维里的同名任务",只在排查问题时才需要:</span>
+        <button class="ghost sm" onclick="prospectAll()" id="prosBtn">🧭 立刻找一轮源</button>
+        <button class="ghost sm" onclick="locateAll(false)" id="locBtn">🎯 立刻定位栏目</button>
+        <button class="ghost sm" onclick="testAllSources()" id="testAllBtn">🩺 立刻体检全部源</button>
+      </div>
+      <span class="sub" style="display:block;margin-top:6px">
+        <b>自检</b>:候选池里每个引擎跑 1 条词,结论自动写回引擎列表(引擎自检任务每 3 天也做一次)。
+        <b>找源词表现</b>:每条找源词的实际产出、哪些限定词在拖后腿(词表会自己淘汰和扩张)。
+        <b>覆盖度</b>:哪些行业近期一条事件都没有——这些空白已自动变成找源词,这里只是给你看。
+        <b>候选池</b>:达标的会自动入库,明确不相关的会自动清理;想提前收下或拉黑才进来。
+        <b>扫描同站</b>:同站不同栏目属正常,真重复(同栏目)会标红——查重合并本来也是自动的。
+      </span>
+    </details>
     <div id="prosProgress" class="sub" style="margin-bottom:8px"></div>
     <div id="candBox" style="margin-bottom:8px"></div>
     <div id="covBox" style="margin-bottom:8px"></div>
@@ -804,6 +818,7 @@ async function loadAutopilot(){
             <button class="ghost sm" onclick="delSource(${x.id},'${esc(x.name).replace(/'/g,"")}')">不要这个源</button>`:''}
         </div>`).join("")}
         ${(todo.manual_assist||[]).length?`<div class="muted" style="margin-top:4px">半自动源(需人工粘贴结果):${todo.manual_assist.map(esc).join("、")}</div>`:''}
+        ${(todo.blocked||[]).map(t=>`<div class="pill bad" style="display:block;margin:4px 0;white-space:pre-wrap">${esc(t)}</div>`).join("")}
       </div>`:`<div class="sub" style="margin-top:6px"><span class="pill ok">无需人工介入</span> 自动化已处理完当前所有源库维护事项</div>`}
       ${(a.recent&&a.recent.length)?`<details style="margin-top:6px"><summary class="muted">最近 ${a.recent.length} 条自动运维记录</summary>
         <ul style="margin:4px 0;padding-left:18px;font-size:12px">${a.recent.map(r=>

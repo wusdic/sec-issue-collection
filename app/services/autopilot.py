@@ -279,13 +279,26 @@ def recent(db, need_id: str, limit: int = 30) -> list[dict]:
 
 
 def human_todo(db, need_id: str) -> dict:
-    """真正需要人处理的事(自动化跑完后剩下的极少数)。页面据此提示,不必到处翻。"""
+    """真正需要人处理的事(自动化跑完后剩下的极少数)。页面据此提示,不必到处翻。
+
+    刻意只放"机器判不了"的三类,别把自动化已经能处理的事也塞进来变成待办:
+      ① 定级建议(主要是"该不该给 S2"——S2 能支撑『已确认』金额,是发布红线,机器不碰);
+      ② 半自动源(要人贴结果的);
+      ③ 找源引擎全线不可用(自动调优也救不回来,只能人去开渲染/换网络)。
+    """
     from app.services import grading
     suggest = grading.pending_human(db, need_id)
     stale = grading.stale_trials(db, need_id)
     manual_assist = [s.name for s in db.query(Source).filter_by(manual_assist=True).all()
                      if need_id in (s.serves_needs or [])]
+    engines = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",")
+               if x.strip()]
+    blocked = []
+    if getattr(settings, "prospect_enabled", True) and not engines:
+        blocked.append("一个可用的找源引擎都没有:主动找源现在是空跑。"
+                       "去设置页打开「启用浏览器渲染/截图」后点一次「🔎 找源路径自检」")
     return {"suggest_credibility": suggest,
             "stale_trials": [{"id": s.id, "name": s.name} for s in stale],
             "manual_assist": manual_assist,
-            "total": len(suggest) + len(manual_assist)}
+            "blocked": blocked,
+            "total": len(suggest) + len(manual_assist) + len(blocked)}

@@ -505,45 +505,20 @@ def source_discover_columns(source_id: int, persist: bool = False,
 def source_to_search_retry(source_id: int, retire_original: bool = True,
                            db: Session = Depends(get_session),
                            _: AppUser = Depends(require_roles("analyst"))):
-    """低成本兜底:把直连抓不到的页面型源,改造成『站内检索』——借搜索引擎按 site:域名 抓它。
+    """低成本兜底:把直连抓不到的页面型源改造成『站内检索』——借搜索引擎按 site:域名 抓它。
 
-    生成一个检索型兄弟源(adapter_config.site=注册域,相关性排序不早停),可选把原页面源停用。
-    搜索引擎的爬虫能渲染 JS、绕过部分反爬,故常能救回政务站等直连抓不到的源。
+    平时不用点:体检自动停用一个页面源时会顺手做这件事(见 health.register_failure)。
+    这里留作定向补救的入口。
     """
+    from app.services import health
     src = db.get(Source, source_id)
     if not src:
         raise HTTPException(404, "源不存在")
-    if src.kind != "page" or not (src.entry_url and src.entry_url.startswith("http")):
-        raise HTTPException(422, "仅支持有有效入口链接的页面型源转站内检索")
-    domain = url_tools.identity_key_for(src.entry_url)
-    if not domain or domain.startswith("mp:"):
-        raise HTTPException(422, "无法从入口链接解析出站点域名")
-    ident = f"site:{domain}"
-    existing = db.query(Source).filter_by(identity_key=ident).one_or_none()
-    if existing:
-        if existing.lifecycle == "retired":
-            existing.lifecycle = "active"
-        # 该检索源可能是"根域源没定位到栏目"时自动建的挂靠源(经父源采集,不独立排期);
-        # 现在要把父源停掉改走它,必须解除挂靠,否则父源一停它就再也不会被采。
-        ecfg = dict(existing.adapter_config or {})
-        if retire_original and ecfg.pop("parent_site_id", None) is not None:
-            existing.adapter_config = ecfg
-        created_id, created = existing.id, False
-    else:
-        retry = Source(
-            name=f"{src.name}·站内检索", entry_url=None, kind="query",
-            adapter="baidu_search", adapter_config={"site": domain, "list_order": "relevance"},
-            credibility=src.credibility, tier=src.tier, lifecycle="active",
-            serves_needs=list(src.serves_needs or []), identity_key=ident, site_key=domain,
-            discovered_from="search_retry", note=f"由页面型源「{src.name}」直连抓不到,改站内检索兜底",
-        )
-        db.add(retry)
-        db.flush()
-        created_id, created = retry.id, True
-    if retire_original:
-        src.lifecycle = "retired"
+    r = health.convert_to_site_search(db, src, retire_original=retire_original)
+    if not r.get("ok"):
+        raise HTTPException(422, r.get("note") or "该源不适合转站内检索")
     db.commit()
-    return {"id": created_id, "created": created, "site": domain,
+    return {"id": r["id"], "created": r["created"], "site": r["site"],
             "retired_original": retire_original}
 
 
