@@ -8,6 +8,7 @@
 在候选/数据源页作为"待确认"呈现,一键处理。
 """
 import threading
+import time as _time
 from datetime import datetime, timedelta
 
 from app.config import settings
@@ -80,13 +81,29 @@ def _do_dedup(db, need_id: str) -> dict:
     return discovery.recompute_keys(db)
 
 
+def _deadline():
+    """本步的截止时刻。
+
+    真正该限制的是"这一步别跑太久",不是"最多处理几条"——条数上限是拍脑袋的:
+    源变多了它就覆盖不到,人还得记着去调。所以条数上限放到实际上不限制,
+    用时间预算兜住;没跑完的下一轮自然接着做(两者都按"最久没处理的优先"排序)。
+    """
+    sec = int(getattr(settings, "autopilot_task_budget_seconds", 0) or 0)
+    return (_time.monotonic() + sec) if sec > 0 else None
+
+
 def _do_locate(db, need_id: str) -> dict:
     from app.services import columns, locate
     todo = locate.pending(db, need_id)
-    cap = int(getattr(settings, "autopilot_locate_max", 10) or 10)
-    todo = todo[:cap] if cap > 0 else todo
-    located, cols, failed = 0, 0, 0
+    cap = int(getattr(settings, "autopilot_locate_max", 0) or 0)
+    if cap > 0:
+        todo = todo[:cap]
+    until = _deadline()
+    located, cols, failed, scanned = 0, 0, 0, 0
     for s in todo:
+        if until and _time.monotonic() > until:
+            break                   # 时间到:剩下的下一轮接着做
+        scanned += 1
         try:
             kids, _ = columns.discover_and_persist(db, s)
             if kids:
@@ -97,14 +114,23 @@ def _do_locate(db, need_id: str) -> dict:
         except Exception:  # noqa: BLE001 单站失败不终止
             db.rollback()
             failed += 1
-    return {"scanned": len(todo), "located": located, "columns": cols, "no_column": failed}
+    out = {"scanned": scanned, "located": located, "columns": cols, "no_column": failed}
+    if scanned < len(todo):
+        out["remaining"] = len(todo) - scanned
+        out["note"] = f"本轮时间到,还有 {out['remaining']} 个站下轮继续"
+    return out
 
 
 def _do_health(db, need_id: str) -> dict:
     from app.services import health
-    cap = int(getattr(settings, "autopilot_health_max", 25) or 25)
-    r = health.run_batch(db, need_id, limit=cap)
+    cap = int(getattr(settings, "autopilot_health_max", 0) or 0)
+    until = _deadline()
+    r = health.run_batch(db, need_id, limit=cap or None,
+                         should_stop=(lambda: bool(until and _time.monotonic() > until)))
     r.pop("results", None)          # 摘要落库,明细太长不存
+    if r.pop("canceled", None) and r.get("done", 0) < r.get("total", 0):
+        r["remaining"] = r["total"] - r["done"]
+        r["note"] = f"本轮时间到,还有 {r['remaining']} 个源下轮继续"
     return r
 
 

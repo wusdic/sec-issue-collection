@@ -560,6 +560,7 @@ async function vSources(){
     <p class="sub">源库是自己维护的:载入内置源、查重合并、定位栏目、体检、找源、词表进化、定级、候选入库
       都由「源库自动运维」按周期做完。<b>这一页你只需要看两件事</b>——上面的提示(机器判不了的)和
       下面源清单里的异常;其余按钮都收在「🔬 诊断与观察」里,平时不用点。</p>
+    <div id="bootBox"></div>
     <div id="srcAlert"></div>
     <div id="autoBox"></div>
     ${canEditSrc()?`<details class="card" style="margin:10px 0;padding:14px">
@@ -605,6 +606,7 @@ async function vSources(){
         <b>扫描同站</b>:同站不同栏目属正常,真重复(同栏目)会标红——查重合并本来也是自动的。
       </span>
     </details>
+    <div id="stBox" class="sub" style="margin-bottom:8px"></div>
     <div id="prosProgress" class="sub" style="margin-bottom:8px"></div>
     <div id="candBox" style="margin-bottom:8px"></div>
     <div id="covBox" style="margin-bottom:8px"></div>
@@ -614,8 +616,9 @@ async function vSources(){
     <div id="srcTable">加载中…</div>`;
   loadSources();
   loadAutopilot();
+  pollBootstrap();
   moduleAlert("srcAlert", "sources");
-  if(canEditSrc()){ pollHealth(); pollLocate(); pollProspect(); }   // 切回本页时自动接上正在跑的后台任务进度
+  if(canEditSrc()){ pollHealth(); pollLocate(); pollProspect(); pollSelftest(); }   // 切回本页时自动接上正在跑的后台任务进度
 }
 async function loadSources(){
   try{
@@ -966,6 +969,89 @@ async function pollProspect(){
   PROS_POLL=setInterval(tick,2000);
 }
 
+/* ---- 首次部署流程:一键按依赖顺序把"刚装好该干的事"干一遍,每步状态可见。
+       日常运维是周期轮转,首次不一样——找源要靠先采到的语料才发挥得出来,
+       所以顺序必须是 整理源 → 先采一轮 → 再找源 ---- */
+let bootTimer=null;
+async function pollBootstrap(){
+  const box=document.getElementById("bootBox"); if(!box) return;
+  try{
+    const r=await api(`/bootstrap?need_id=${NEED}`);
+    box.innerHTML=renderBootstrap(r);
+    if(bootTimer) clearTimeout(bootTimer);
+    if(r.running) bootTimer=setTimeout(pollBootstrap,3000);
+  }catch(e){ box.innerHTML=""; }
+}
+const BOOT_ICON={done:"✅",running:"⏳",failed:"❌",skipped:"⏭",pending:"○"};
+function bootSummary(st){
+  const x=st.summary||{};
+  if(st.step==="precheck") return (x.items||[]).map(i=>`${i.ok?"✅":(i.blocking?"⛔":"⚠️")} ${esc(i.title)}`).join("　");
+  if(st.step==="seeds") return `清单 ${x.in_file||0} 个,新增 ${x.added||0},库内共 ${x.total||0}`;
+  if(st.step==="engines") return `可用引擎:${(x.usable||[]).join("、")||"无"}${x.applied?"　"+esc(x.applied):""}`;
+  if(st.step==="dedup") return `校正源键 ${x.keys_fixed!=null?x.keys_fixed:"-"}、合并重复 ${x.merged!=null?x.merged:"-"}`;
+  if(st.step==="locate") return `扫了 ${x.scanned||0} 个站,定位成功 ${x.located||0} 个、共 ${x.columns||0} 个栏目,没识别出栏目 ${x.no_column||0} 个`;
+  if(st.step==="health") return `测了 ${x.done||0}/${x.total||0}:能出数据 ${x.ok||0}、抓不到 ${x.fail||0}、停用 ${x.retired||0}、恢复 ${x.revived||0}`;
+  if(st.step==="crawl") return x.still_running?esc(x.note||"采集仍在进行"):`源 ${x.sources||0} 个,新入库 ${x.new_docs||0} 篇,判为相关 ${x.kept_docs||0} 篇,生成事件 ${x.new_events||0} 条`;
+  if(st.step==="prospect") return `新挖词 ${(x.harvested||[]).length} 个、新增找源词 ${x.new_queries||0} 条;搜到 ${x.hits||0} 条结果,新候选渠道 ${x.new_candidates||0} 个,自动入库 ${x.auto_trial||0} 个`;
+  return "";
+}
+function renderBootstrap(r){
+  const pc=r.precheck||{};
+  const blocked=(pc.blocked||[]).length>0;
+  if(r.completed && !blocked){
+    return `<details class="card" style="margin:8px 0;padding:12px">
+      <summary class="muted">✅ 首次部署流程已完成 —— 之后交给「源库自动运维」按周期跑,这里不用再点</summary>
+      <div style="margin-top:8px">${bootSteps(r)}</div>
+      ${canEditSrc()?`<button class="ghost sm" style="margin-top:6px" onclick="runBootstrap(false)">再跑一遍</button>`:""}
+    </details>`;
+  }
+  const head=r.running
+    ? `<b>🚀 首次部署流程进行中</b> <span class="muted">可以切走做别的,回来会接着显示</span>
+       ${canEditSrc()?`<button class="ghost sm" style="margin-left:8px" onclick="cancelBootstrap()">取消</button>`:""}`
+    : `<b>🚀 首次部署 —— 一键把该干的事按顺序干一遍</b>
+       <span class="muted">日常运维是周期轮转;首次有依赖关系:整理源 → 先采一轮 → 再找源
+       (找源要靠先采到的语料才发挥得出来,顺序反了等于白跑)</span>`;
+  const blockBox=blocked?`<div class="pill bad" style="display:block;margin:8px 0;white-space:pre-wrap">
+      <b>先解决这个再开始:</b>
+      ${(pc.items||[]).filter(i=>!i.ok&&i.blocking).map(i=>`\n· ${esc(i.title)} —— ${esc(i.fix||"")}`).join("")}
+    </div>`:"";
+  const warnBox=(pc.items||[]).filter(i=>!i.ok&&!i.blocking&&i.fix).map(i=>
+      `<div class="pill warn" style="display:block;margin:4px 0;white-space:pre-wrap">⚠️ ${esc(i.title)} —— ${esc(i.fix)}</div>`).join("");
+  return `<div class="card" style="margin:8px 0;padding:12px;border-left:3px solid var(--brand)">
+    ${head}${blockBox}${warnBox}
+    <div style="margin-top:8px">${bootSteps(r)}</div>
+    ${(!r.running&&canEditSrc())?`<div style="margin-top:8px">
+      <button onclick="runBootstrap(false)" ${blocked?"disabled":""}>${r.never?"开始首次流程":"继续跑未完成的步骤"}</button>
+      <button class="ghost" onclick="runBootstrap(true)" ${blocked?"disabled":""}
+        title="只整理源、不采集。适合想先看看源整理结果再决定什么时候开采">跳过采集那一步</button>
+    </div>`:""}
+  </div>`;
+}
+function bootSteps(r){
+  return `<div style="display:grid;gap:4px">${(r.steps||[]).map((st,i)=>`
+    <div style="display:flex;gap:8px;align-items:flex-start;font-size:13px">
+      <span style="width:1.4em">${BOOT_ICON[st.status]||"○"}</span>
+      <div style="flex:1">
+        <b>${i+1}. ${esc(st.label)}</b>
+        ${st.status==="running"?'<span class="pill info">进行中</span>':""}
+        ${st.status==="failed"?`<span class="pill bad">失败:${esc(st.note||"")}</span>`:""}
+        ${st.status==="skipped"?`<span class="pill">${esc(st.note||"已跳过")}</span>`:""}
+        <div class="muted" style="font-size:12px">${st.status==="pending"?esc(st.what):esc(bootSummary(st))||esc(st.what)}</div>
+      </div></div>`).join("")}</div>`;
+}
+async function runBootstrap(skipCrawl){
+  try{
+    const r=await api(`/bootstrap/run?need_id=${NEED}&skip_crawl=${skipCrawl?"true":"false"}`,{method:"POST"});
+    if(!r.started){ alert(r.note||"没能启动"); pollBootstrap(); return; }
+    toast("首次流程已开始,每步进展会实时显示");
+    pollBootstrap();
+  }catch(e){ alert("启动失败:"+e.message); }
+}
+async function cancelBootstrap(){
+  try{ await api(`/bootstrap/cancel`,{method:"POST"}); toast("已请求取消(当前步骤跑完后停下)"); pollBootstrap(); }
+  catch(e){ alert(e.message); }
+}
+
 /* ---- 找源词表现:关键词进化机制的可视面。词表按实际产出自我淘汰和自我扩张,
        但人得能看见它在怎么变,否则又是一个黑箱 ---- */
 async function showQueryLab(){
@@ -1063,24 +1149,49 @@ async function banCand(key){
 
 /* ---- 找源路径自检:先确认这条路通不通,再决定要不要铺关键词 ---- */
 async function prospectSelftest(){
-  const box=document.getElementById("prosProgress");
-  box.innerHTML=`<span class="muted">自检中…(每个引擎只跑 1 条词,约十几秒)</span>`;
   try{
-    const r=await api(`/sources/prospect/selftest?query=${encodeURIComponent("网警 处罚")}`,{method:"POST"});
-    box.innerHTML=`<div class="card" style="padding:12px">
-      <b>🔎 找源路径自检</b> <span class="muted">测试词「${esc(r.query)}」,候选池里每个引擎跑 1 条;结论会自动写回引擎列表(被误判踢掉的也有机会回来)</span>
-      <div style="margin:6px 0">${r.engines.map(e=>`<div style="margin:4px 0">
-        <span class="pill ${e.ok?'ok':(e.blocked||e.blocked_by?'warn':'bad')}">${esc(e.engine)}</span>
-        ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":(e.blocked_by?`解析出 ${e.items} 条,差最后一步`:(e.off_topic?`解析出 ${e.items} 条,但答的不是这个问题`:"不可用")))}
-        ${e.on_topic!=null?`<span class="muted" title="结果标题里带查询词的比例。整批都不带,说明这个引擎压根没在搜我们给的词">切题率 ${e.on_topic}</span>`:""}
-        <span class="${e.blocked_by?'pill warn':'muted'}">· ${esc(e.hint)}</span>
-        ${(e.samples&&e.samples.length)?`<div class="muted" style="font-size:12px;margin-left:14px">
-          ${e.samples.map(x=>`${esc(x.title)} → <b>${esc(x.key||("丢弃:"+x.drop))}</b>`).join("<br>")}</div>`:""}
-      </div>`).join("")}</div>
-      <div class="${(r.render_would_fix&&r.render_would_fix.length)?'pill warn':(r.usable.length?'pill ok':'pill bad')}" style="display:block;white-space:pre-wrap">${esc(r.advice)}</div>
-      ${r.applied?`<div class="sub" style="margin-top:4px">${r.applied.changed?`<b>已按自检结果自动调整引擎列表:</b>${esc(r.applied.note)}`:`<span class="muted">引擎列表未改动(${esc(r.applied.note)})</span>`}</div>`:""}
-    </div>`;
+    await api(`/sources/prospect/selftest?query=${encodeURIComponent("网警 处罚")}`,{method:"POST"});
+    pollSelftest();
+  }catch(e){ document.getElementById("stBox").innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+/* 自检是后台任务:切页回来也要能接上进度、看到上次结论(结果落在 AutoOpsRun 里) */
+let stTimer=null;
+async function pollSelftest(){
+  const box=document.getElementById("stBox"); if(!box) return;
+  try{
+    const r=await api(`/sources/prospect/selftest`);
+    box.innerHTML=renderSelftest(r);
+    if(stTimer) clearTimeout(stTimer);
+    if(r.running) stTimer=setTimeout(pollSelftest,2000);
   }catch(e){ box.innerHTML=`<span class="pill warn">${esc(e.message)}</span>`; }
+}
+function renderSelftest(r){
+  if(r.never) return `<span class="muted">还没做过找源路径自检。点上面的按钮跑一次(约一两分钟),</span>
+    <span class="muted">结论会自动写回引擎列表。</span>`;
+  if(r.running){
+    const pct=r.total?Math.round(100*(r.done||0)/r.total):0;
+    return `<div class="card" style="padding:12px"><b>🔎 找源路径自检中</b>
+      ${r.done||0}/${r.total||0}(${pct}%) <span class="muted">当前:${esc(r.current||"")}</span>
+      <div style="background:#0d1526;border-radius:6px;height:8px;overflow:hidden;margin:6px 0">
+        <div style="height:100%;width:${pct}%;background:var(--brand)"></div></div>
+      <span class="muted">开了浏览器渲染时一个引擎要十几秒。可以切走做别的,回来会接着显示。</span></div>`;
+  }
+  if(r.error) return `<div class="pill bad" style="display:block;white-space:pre-wrap">自检失败:${esc(r.error)}</div>`;
+  const eng=r.engines||[];
+  return `<div class="card" style="padding:12px">
+    <b>🔎 找源路径自检</b> <span class="muted">测试词「${esc(r.query||"")}」·
+      ${r.at?esc(String(r.at).replace("T"," ").slice(0,16)):""} 跑的·候选池里每个引擎跑 1 条</span>
+    <div style="margin:6px 0">${eng.map(e=>`<div style="margin:4px 0">
+      <span class="pill ${e.ok?'ok':(e.blocked||e.blocked_by?'warn':'bad')}">${esc(e.engine)}</span>
+      ${e.ok?`解析出 ${e.items} 条`:(e.blocked?"验证页/反爬":(e.blocked_by?`解析出 ${e.items} 条,差最后一步`:(e.off_topic?`解析出 ${e.items} 条,但答的不是这个问题`:"不可用")))}
+      ${e.on_topic!=null?`<span class="muted" title="结果标题里带查询词的比例。整批都不带,说明这个引擎压根没在搜我们给的词">切题率 ${e.on_topic}</span>`:""}
+      <span class="${e.blocked_by?'pill warn':'muted'}">· ${esc(e.hint||"")}</span>
+      ${(e.samples&&e.samples.length)?`<div class="muted" style="font-size:12px;margin-left:14px">
+        ${e.samples.map(x=>`${esc(x.title)} → <b>${esc(x.key||("丢弃:"+x.drop))}</b>`).join("<br>")}</div>`:""}
+    </div>`).join("")}</div>
+    <div class="${(r.render_would_fix&&r.render_would_fix.length)?'pill warn':((r.usable||[]).length?'pill ok':'pill bad')}" style="display:block;white-space:pre-wrap">${esc(r.advice||"")}</div>
+    ${r.applied?`<div class="sub" style="margin-top:4px">${r.applied.changed?`<b>已按自检结果自动调整引擎列表:</b>${esc(r.applied.note)}`:`<span class="muted">引擎列表未改动(${esc(r.applied.note)})</span>`}</div>`:""}
+  </div>`;
 }
 
 /* ---- 覆盖度盘点:缺哪个行业 = 该补哪块源 ---- */

@@ -1395,3 +1395,28 @@ def test_selftest_covers_whole_pool(db, monkeypatch):
                         lambda names=None: asked.setdefault("names", list(names or [])) and [])
     prospect.selftest(db, "网警 处罚")
     assert "sogou_wechat" in asked["names"] and "bing_rss" in asked["names"]
+
+
+# ---------------- ⑬ 自检结果落库:切页回来看得到 ----------------
+
+def test_selftest_status_reads_last_run(db, need):
+    """点完自检切走再回来,要看得到上次跑了什么——结果落 AutoOpsRun,不在内存里。"""
+    from app.models import AutoOpsRun
+    db.add(AutoOpsRun(need_id=need.id, task="engines_selftest", status="done",
+                      summary={"query": "网警 处罚", "usable": ["baidu_search"],
+                               "engines": [{"engine": "baidu_search", "ok": True, "items": 8}],
+                               "advice": "可用引擎:baidu_search"},
+                      started_at=datetime.utcnow(), finished_at=datetime.utcnow()))
+    db.commit()
+    st = prospect.selftest_status(db)
+    assert st["running"] is False and st["usable"] == ["baidu_search"]
+    assert st["query"] == "网警 处罚" and st["status"] == "done"
+
+
+def test_selftest_status_never_run(db):
+    from app.models import AutoOpsRun
+    db.query(AutoOpsRun).filter(AutoOpsRun.task == "engines_selftest").delete(
+        synchronize_session=False)
+    db.commit()
+    st = prospect.selftest_status(db)
+    assert st.get("never") is True and st["running"] is False

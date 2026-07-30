@@ -160,7 +160,7 @@ class Settings:
     # 还是"测过不可用被踢掉的",前者补进在用列表,后者不再塞回去
     prospect_engines_tuned: str = os.getenv("PROSPECT_ENGINES_TUNED", "")
     # 公众号文章要抓一次才知道属于哪个号,单轮最多解析这么多条(每条一次网络请求)
-    prospect_wechat_resolve_max: int = int(os.getenv("PROSPECT_WECHAT_RESOLVE_MAX", "30"))
+    prospect_wechat_resolve_max: int = int(os.getenv("PROSPECT_WECHAT_RESOLVE_MAX", "120"))
     prospect_pages_per_query: int = int(os.getenv("PROSPECT_PAGES_PER_QUERY", "2"))
     prospect_query_cap: int = int(os.getenv("PROSPECT_QUERY_CAP", "150"))      # 单轮最多跑多少条找源词
     # 百度/必应的结果链接是自家跳转链,不还原就只能得到 baidu.com——单轮最多还原这么多条
@@ -192,7 +192,7 @@ class Settings:
     query_share_revive: float = float(os.getenv("QUERY_SHARE_REVIVE", "0.1"))
     autopilot_queries_days: int = int(os.getenv("AUTOPILOT_QUERIES_DAYS", "7"))
     # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个
-    prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "8"))
+    prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "30"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)
     # 候选源 LLM 相关度初评:抓候选站首页抽样标题,让模型判"是否持续产出国内安全事件内容"
     probe_llm_enabled: bool = os.getenv("PROBE_LLM_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -209,10 +209,17 @@ class Settings:
     autopilot_hour: int = int(os.getenv("AUTOPILOT_HOUR", "4"))        # 每天几点(UTC)检查一次到期任务
     autopilot_dedup_days: int = int(os.getenv("AUTOPILOT_DEDUP_DAYS", "7"))
     autopilot_locate_days: int = int(os.getenv("AUTOPILOT_LOCATE_DAYS", "7"))
-    autopilot_locate_max: int = int(os.getenv("AUTOPILOT_LOCATE_MAX", "10"))    # 每轮最多定位几个站
+    # 0 = 不按条数限量(默认)。限量交给 autopilot_task_budget_seconds:
+    # 条数上限是拍脑袋的——源一变多就覆盖不到,还得人记着去调
+    autopilot_locate_max: int = int(os.getenv("AUTOPILOT_LOCATE_MAX", "0"))
     autopilot_health_days: int = int(os.getenv("AUTOPILOT_HEALTH_DAYS", "3"))
-    autopilot_health_max: int = int(os.getenv("AUTOPILOT_HEALTH_MAX", "25"))    # 每轮最多体检几个源
+    autopilot_health_max: int = int(os.getenv("AUTOPILOT_HEALTH_MAX", "0"))
     autopilot_prospect_days: int = int(os.getenv("AUTOPILOT_PROSPECT_DAYS", "7"))
+    # 每个维护任务的时长上限(秒)。这是真正该设的护栏:没跑完的下一轮自然接着做
+    # (locate/health 都按"最久没处理的优先"排序,不会有源被永久跳过)。0=不限时
+    autopilot_task_budget_seconds: int = int(os.getenv("AUTOPILOT_TASK_BUDGET_SECONDS", "3600"))
+    # 首次部署流程里等第一轮采集最多等多久(秒);超时就不再等,剩余步骤下次再跑
+    bootstrap_crawl_budget_seconds: int = int(os.getenv("BOOTSTRAP_CRAWL_BUDGET_SECONDS", "7200"))
     autopilot_grade_days: int = int(os.getenv("AUTOPILOT_GRADE_DAYS", "1"))
     autopilot_candidates_days: int = int(os.getenv("AUTOPILOT_CANDIDATES_DAYS", "1"))
     autopilot_engines_days: int = int(os.getenv("AUTOPILOT_ENGINES_DAYS", "3"))

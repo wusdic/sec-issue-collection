@@ -302,20 +302,23 @@ def cancel_prospect(_: AppUser = Depends(require_roles("analyst"))):
 
 @api.post("/sources/prospect/selftest")
 def prospect_selftest(query: str = "网警 处罚", apply: bool = True,
-                      db: Session = Depends(get_session),
                       _: AppUser = Depends(require_roles("analyst"))):
-    """找源路径可行性自检:每个引擎只跑一条词,快速判断这条路通不通。
+    """启动找源路径自检(后台跑,立即返回)。
 
-    apply=True(默认)时把结论直接落到引擎列表——自检看完还要人去设置页手改一遍,
-    等于把已经算出来的结论又丢回给人做。不想改配置就传 apply=false。
+    开了渲染后一个引擎要十几秒、整池要一两分钟,同步等在页面上必然"点完切页就丢"。
+    结果落 AutoOpsRun,切页/刷新回来用 GET 同一路径就能看到跑到哪、上次结论是什么。
+    apply=True(默认)时结论直接落到引擎列表——已经算出来的结论不该再丢回给人抄一遍。
     """
-    from app.services import fetcher, prospect
-    with fetcher.render_session():
-        r = prospect.selftest(db, query)
-        if apply and getattr(settings, "prospect_autotune", True):
-            r["applied"] = prospect.apply_selftest(db, r)
-            db.commit()
-    return r
+    from app.services import prospect
+    return prospect.selftest_start("sec_events", query, apply=apply)
+
+
+@api.get("/sources/prospect/selftest")
+def prospect_selftest_status(db: Session = Depends(get_session),
+                            _: AppUser = Depends(current_user)):
+    """自检进度 / 上一次自检结果(切页回来接着看)。"""
+    from app.services import prospect
+    return prospect.selftest_status(db)
 
 
 @api.get("/sources/prospect/queries")
@@ -397,6 +400,31 @@ def autopilot_state(need_id: str = "sec_events", db: Session = Depends(get_sessi
             "plan": autopilot.plan(db, need_id),
             "recent": autopilot.recent(db, need_id),
             "human_todo": autopilot.human_todo(db, need_id)}
+
+
+# ---------- 首次部署流程 ----------
+
+@api.get("/bootstrap")
+def bootstrap_status(need_id: str = "sec_events", db: Session = Depends(get_session),
+                     _: AppUser = Depends(current_user)):
+    """首次流程进度/结果 + 前置检查。切页刷新都能接着看。"""
+    from app.services import bootstrap
+    return bootstrap.status(db, need_id)
+
+
+@api.post("/bootstrap/run")
+def bootstrap_run(need_id: str = "sec_events", skip_crawl: bool = False,
+                  _: AppUser = Depends(require_roles("analyst"))):
+    """一键跑首次部署该做的事(后台,按依赖顺序:整理源 → 先采一轮 → 再找源)。"""
+    from app.services import bootstrap
+    return bootstrap.start(need_id, skip_crawl=skip_crawl)
+
+
+@api.post("/bootstrap/cancel")
+def bootstrap_cancel(_: AppUser = Depends(require_roles("analyst"))):
+    from app.services import bootstrap
+    bootstrap.cancel()
+    return {"canceled": True}
 
 
 @api.post("/autopilot/run")

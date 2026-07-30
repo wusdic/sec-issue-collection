@@ -653,7 +653,7 @@ def _on_topic_rate(query: str, titles: list) -> float:
     return sum(1 for x in ts if any(g in x for g in grams)) / len(ts)
 
 
-def selftest(db, query: str = "网警 处罚") -> dict:
+def selftest(db, query: str = "网警 处罚", on_progress=None) -> dict:
     """找源路径可行性自检:每个引擎只跑一条词,报告这条路到底通不通。
 
     先验证路径再铺关键词——否则铺了几百个词,发现引擎全被反爬,白跑几十分钟。
@@ -662,7 +662,8 @@ def selftest(db, query: str = "网警 处罚") -> dict:
     # 测整个候选池,不只是当前在用的那几个:被上一次自检踢掉的引擎(反爬是临时的)
     # 和升级新加的引擎都必须有机会重新证明自己,否则一旦误判就永远回不来。
     out = {"query": query, "engines": [], "usable": [], "tested": [], "advice": ""}
-    for name, eng in _engines(all_engine_names()):
+    pool = all_engine_names()
+    for name, eng in _engines(pool):
         row = {"engine": name, "ok": False, "blocked": False, "items": 0,
                "samples": [], "hint": ""}
         try:
@@ -732,6 +733,8 @@ def selftest(db, query: str = "网警 处罚") -> dict:
         out["tested"].append(name)
         if row["ok"]:
             out["usable"].append(name)
+        if on_progress:
+            on_progress(len(out["tested"]), len(pool), name)
     # 卡在跳转/公众号解析的引擎单独列出来:它们是"差一步"而不是"不行",
     # 结论里必须区分开,否则人会把最该留的引擎删掉
     out["render_would_fix"] = [e["engine"] for e in out["engines"]
@@ -750,6 +753,89 @@ def selftest(db, query: str = "网警 处罚") -> dict:
                          "①开启「启用浏览器渲染/截图」(对验证页和跳转页最有效);"
                          "②或确认这台机器能正常访问搜索引擎。")
     return out
+
+
+# ---------------- 自检:后台跑 + 结果落库(切页回来还看得到) ----------------
+
+_st_lock = threading.Lock()
+_st_state: dict = {"running": False}
+
+
+def selftest_status(db=None) -> dict:
+    """当前自检状态;没在跑就把上一次的结果读回来。
+
+    自检要抓好几个引擎、开渲染时一个引擎就要十几秒,同步等在页面上必然"点完切页就丢"。
+    所以改成后台跑 + 结果落 AutoOpsRun:切页/刷新回来都能看到跑到哪、上次结论是什么。
+    """
+    with _st_lock:
+        cur = dict(_st_state)
+    if cur.get("running") or db is None:
+        return cur
+    from app.models import AutoOpsRun
+    row = (db.query(AutoOpsRun).filter(AutoOpsRun.task == "engines_selftest")
+           .order_by(AutoOpsRun.started_at.desc()).first())
+    if not row:
+        return {"running": False, "never": True}
+    out = dict(row.summary or {})
+    out.update({"running": False, "status": row.status,
+                "at": row.started_at.isoformat(timespec="seconds"),
+                "finished_at": row.finished_at.isoformat(timespec="seconds") if row.finished_at else None})
+    if row.status == "failed":
+        out["error"] = row.note
+    return out
+
+
+def selftest_start(need_id: str, query: str = "网警 处罚", apply: bool = True) -> dict:
+    """后台起一次自检(幂等)。"""
+    with _st_lock:
+        if _st_state.get("running"):
+            return dict(_st_state)
+        _st_state.clear()
+        _st_state.update({"running": True, "phase": "准备", "done": 0,
+                          "total": len(all_engine_names()), "current": "",
+                          "query": query, "engines": [],
+                          "started_at": datetime.utcnow().isoformat(timespec="seconds")})
+    threading.Thread(target=_selftest_run, args=(need_id, query, apply), daemon=True).start()
+    return selftest_status()
+
+
+def _st_set(**kw):
+    with _st_lock:
+        _st_state.update(kw)
+
+
+def _selftest_run(need_id: str, query: str, apply: bool):
+    from app.models import AutoOpsRun
+    db = SessionLocal()
+    row = AutoOpsRun(need_id=need_id, task="engines_selftest", status="running")
+    try:
+        db.add(row)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    try:
+        with fetcher.render_session():
+            r = selftest(db, query, on_progress=lambda d, t, c: _st_set(done=d, total=t, current=c))
+        if apply and getattr(settings, "prospect_autotune", True):
+            r["applied"] = apply_selftest(db, r)
+        row.status, row.summary = "done", r
+        row.finished_at = datetime.utcnow()
+        db.commit()
+        _st_set(**r)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        from app.services.errors import error_headline
+        msg = error_headline(e)
+        try:
+            row.status, row.note, row.finished_at = "failed", msg, datetime.utcnow()
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+        _st_set(error=msg)
+    finally:
+        _st_set(running=False, phase="完成", current="",
+                finished_at=datetime.utcnow().isoformat(timespec="seconds"))
+        db.close()
 
 
 def apply_selftest(db, r: dict) -> dict:
