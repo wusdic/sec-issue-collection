@@ -75,9 +75,12 @@ def test_watch_targets_feed_keywords(db):
 
 def test_discovery_recipes_generated_without_file(db):
     c = need_ctx.get(db, "company_watch")
-    assert c.discovery_file is None
-    assert c.source_search_queries and any("星河智算" in q for q in c.source_search_queries)
-    assert "星河智算科技有限公司" in c.query_recipes["subject_terms"]
+    assert c.discovery_file is None and c.source_search_queries == []        # 契约层只读文件
+    qs = keywords.search_queries_for(c)                                        # 能力层按 scope 生成
+    assert qs and any("星河智算" in q for q in qs)
+    assert "星河智算科技有限公司" in keywords.recipes_for(c)["subject_terms"]
+    from app.services import prospect
+    assert prospect.base_queries(c) == qs
 
 
 # ---------------- 场景①:医疗行业政策(文档型,复用政策 Schema,行业限定) ----------------

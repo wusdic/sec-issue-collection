@@ -159,23 +159,30 @@ def relevance_terms(db=None, need_id: str | None = None, ctx=None) -> list[str]:
     """
     c = _ctx(ctx, need_id)
     need_id = need_id or c.id
-    # 库里的词表优先:没带 db 时若已缓存过库版本,直接复用,不要退回文件版
-    if need_id in _TERMS_CACHE:
-        return _TERMS_CACHE[need_id]
-    if db is None and f"file:{need_id}" in _TERMS_CACHE:
-        return _TERMS_CACHE[f"file:{need_id}"]
     fields = c.relevance_term_fields or ["event_terms"]
     raw: list[str] = []
     from_db = False
+    ks = None
     try:
         if db is not None:
             from app.models import KeywordSet
             ks = db.query(KeywordSet).filter_by(need_id=need_id, is_active=True).first()
-            if ks:
-                for f in fields:
-                    raw += [str(t) for t in (ks.content or {}).get(f) or []]
-                from_db = bool(raw)
     except Exception:  # noqa: BLE001 取词表失败不该影响栏目验证
+        ks = None
+    # 缓存键带上生效矩阵的版本:关键词换了版本(页面保存/自动生成)自然失效,不需要别的模块来清缓存
+    cache_key = f"{need_id}@{ks.version}" if ks is not None else (need_id if db is not None else f"file:{need_id}")
+    if cache_key in _TERMS_CACHE:
+        return _TERMS_CACHE[cache_key]
+    if db is None:
+        for k in list(_TERMS_CACHE):          # 无 db 调用:复用任一库版本缓存
+            if k.startswith(f"{need_id}@"):
+                return _TERMS_CACHE[k]
+    try:
+        if ks is not None:
+            for f in fields:
+                raw += [str(t) for t in (ks.content or {}).get(f) or []]
+            from_db = bool(raw)
+    except Exception:  # noqa: BLE001
         raw, from_db = [], False
     if not raw and c.discovery_terms_file:
         try:
@@ -193,8 +200,7 @@ def relevance_terms(db=None, need_id: str | None = None, ctx=None) -> list[str]:
             if len(part) >= 2 and not re.fullmatch(r"[A-Za-z ]+", part):
                 terms.add(part)
     out = sorted(terms, key=len, reverse=True)
-    # 只有取到库里的词表才占用正式缓存键;文件兜底单独缓存,后续带 db 调用仍会重新查库
-    _TERMS_CACHE[need_id if from_db else f"file:{need_id}"] = out
+    _TERMS_CACHE[cache_key if from_db else f"file:{need_id}"] = out
     return out
 
 

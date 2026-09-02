@@ -527,8 +527,7 @@ class MockLLM(BaseLLM):
         from app.services import need_ctx
         c = ctx or need_ctx.get(None, need_ctx.default_need_id())
         try:
-            from app.services.extraction import load_record_schema
-            schema = load_record_schema(schema_path) if schema_path and schema_path not in ("light", "None") \
+            schema = need_ctx.load_schema_file(schema_path) if schema_path and schema_path not in ("light", "None") \
                 else c.record_schema()
         except Exception:  # noqa: BLE001 没有 Schema 也要能产出(测试/演示)
             schema = {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}

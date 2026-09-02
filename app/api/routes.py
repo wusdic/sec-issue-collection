@@ -590,68 +590,11 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
     达到 source_auto_retire_fail_streak 即自动标记停用(retired)。单源手动测试默认 mark=False,
     纯探测不改状态。
     """
-    import time as _time
-    from datetime import datetime as _dt
-
-    from app.services.adapters import get_adapter
+    from app.services import health as health_svc
     src = db.get(Source, source_id)
     if not src:
         raise HTTPException(404, "源不存在")
-
-    _health: dict = {}          # 本次健康判定明细(观察中/停用原因),回传给页面
-
-    def _record(ok_data: bool):
-        """把成败计入源健康(带冗余度:见 health.register_failure),返回是否被自动停用。"""
-        if not mark:
-            return False
-        from app.services import health as health_svc
-        if ok_data:
-            # 复检成功的自动停用源直接恢复:误杀能自愈
-            if src.lifecycle == "retired" and not (src.adapter_config or {}).get("manually_retired"):
-                src.lifecycle = "active"
-            health_svc.register_success(db, src)
-            db.commit()
-            return False
-        v = health_svc.register_failure(db, src, "试抓无结果")
-        _health.update(v)
-        db.commit()
-        return v["retired"]
-
-    adapter = get_adapter(src)
-    t0 = _time.time()
-    used_q = None
-    try:
-        if src.kind == "query":
-            used_q = (q or "").strip()
-            if not used_q:  # 没给词就从该源服务的需求的关键词矩阵取一个事件词做样本
-                from app.models import KeywordSet
-                nid = (src.serves_needs or [need_ctx.default_need_id()])[0]
-                ks = db.query(KeywordSet).filter_by(need_id=nid, is_active=True).first()
-                terms = (ks.content.get("event_terms") if ks else None) or need_ctx.get(db, nid).source_search_queries
-                used_q = terms[0] if terms else need_ctx.get(db, nid).name
-            if hasattr(adapter, "search_page"):
-                items = adapter.search_page(used_q, 0) or []
-            else:
-                items, _ = adapter.search(used_q, max_pages=1)
-        else:
-            items = adapter.discover_page(0) or []
-    except Exception as e:  # noqa: BLE001
-        retired = _record(False)
-        return {"ok": False, "error": error_headline(e, 300),
-                "adapter": src.adapter, "kind": src.kind,
-                "fail_streak": src.fail_streak, "retired": retired,
-                "watching": bool(_health.get("watching")), "health_note": _health.get("note", "")}
-    elapsed = round(_time.time() - t0, 1)
-    retired = _record(bool(items))          # 抓到 0 条也算一次失败(计入健康)
-    sample = [{"url": i.url, "title": i.title,
-               "publisher": i.publisher or i.wechat_account} for i in items[:20]]
-    return {"ok": True, "count": len(items), "adapter": src.adapter, "kind": src.kind,
-            "query": used_q, "elapsed": elapsed, "items": sample,
-            "fail_streak": src.fail_streak, "retired": retired,
-            "watching": bool(_health.get("watching")), "health_note": _health.get("note", ""),
-            "hint": ("能抓到内容,可放心保留" if items else
-                     "没抓到条目:该站可能需浏览器渲染/登录、反爬、或入口链接/适配器不匹配,"
-                     "建议改用 RSS 地址或换源")}
+    return health_svc.probe_source(db, src, q=q, mark=mark)
 
 
 # ---------- 找源词表现 / 关键词进化 ----------
@@ -1388,8 +1331,9 @@ def run_digest(need_id: str = Depends(need_id_param), push: bool = False,
     from app.services import digest as digest_svc
     if push:
         d = digest_svc.generate_today(db, need_id)
-        from app.services.daily import deliver_email
-        ok, msg = deliver_email(f"安全事件日报 {d.day}", d.markdown or "")
+        from app.services.notify import deliver_email
+        title = (d.content or {}).get("title") or "日报"
+        ok, msg = deliver_email(f"{title} {d.day}", d.markdown or "")
         return {"day": d.day.isoformat(), "pushed": ok, "push_detail": msg,
                 "events": d.content.get("events_total", 0)}
     d = digest_svc.upsert(db, need_id, __import__("datetime").datetime.utcnow().date())

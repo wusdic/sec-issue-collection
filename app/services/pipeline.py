@@ -24,10 +24,7 @@ from app.services.profiles import get_active_dictionaries
 
 # 分隔符必须含全角「:」(U+FF1A),否则会把冒号一起捕进来,形成「:新华社」与「新华社」两个不同的键
 CITATION_RE = re.compile(r"(?:来源|转载自|首发于|原文链接)[:：\s]*([^\s,，、。;；<>\"]{2,60})")
-# 明显不是"发布主体"的正文套话/碎片,禁止当成公众号或候选源
-_REF_STOPWORDS = ("转载", "出处", "请注明", "如若", "版权", "侵删", "免责", "声明", "来源",
-                  "附件", "下载", "点击", "可疑", "邮件", "代码", "平台", "共享", "原作者",
-                  "本文", "编辑", "责任", "投稿", "阅读", "关注")
+_REF_STOPWORDS = url_tools.REF_STOPWORDS      # 兼容旧名
 
 
 def _parse_dt(s: str | None):
@@ -349,22 +346,7 @@ def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
 
 
 def _is_subject_like(ref: str) -> bool:
-    """是否像一个"发布主体名"(公众号/机构),用于过滤正文套话碎片。
-
-    公众号名通常较短、不含 URL、不以助词起头、不含"转载/出处/版权"等套话。
-    """
-    s = (ref or "").strip()
-    if not (2 <= len(s) <= 20):
-        return False
-    if "://" in s or s.lower().startswith("www."):
-        return False
-    if any(w in s for w in _REF_STOPWORDS):
-        return False
-    if s[0] in "的于如和或与在等为被把将从对": 
-        return False                       # 以助词/介词开头的多是句子碎片
-    if not re.search(r"[\u4e00-\u9fffA-Za-z]", s):
-        return False
-    return True
+    return url_tools.is_subject_like(ref)
 
 
 def _negative_terms(db, need_id: str) -> list[str]:

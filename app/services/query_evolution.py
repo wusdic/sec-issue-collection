@@ -249,8 +249,8 @@ def harvest_terms(db, need_id: str, top_n: int = 8, days: int = 90) -> list[str]
 
 
 def _all_pool_terms(ctx=None) -> list[str]:
-    from app.services import prospect
-    r = prospect._recipes(ctx)
+    from app.services import keywords, need_ctx
+    r = keywords.recipes_for(ctx or need_ctx.get(None, need_ctx.default_need_id()))
     out = []
     for k in ("subject_terms", "action_terms", "event_terms", "channel_terms"):
         out += [str(x).strip() for x in (r.get(k) or []) if str(x).strip()]
@@ -259,14 +259,13 @@ def _all_pool_terms(ctx=None) -> list[str]:
 
 def mutate(db, need_id: str, per_kind: int = 6) -> dict:
     """从高产词派生候选新词:去掉限定词、换动作词、挖来的新词配锚点。"""
-    from app.services import prospect
     min_runs = int(_cfg("query_min_runs", 2))
     rows = [s for s in db.query(SearchQueryStat).filter_by(need_id=need_id, state="active").all()
             if s.runs >= min_runs]
     rows.sort(key=value_of, reverse=True)
     good = [s for s in rows if value_of(s) > 0][:per_kind * 2]
-    from app.services import need_ctx
-    acts = [str(x).strip() for x in (prospect._recipes(need_ctx.get(db, need_id)).get("action_terms") or [])
+    from app.services import keywords, need_ctx
+    acts = [str(x).strip() for x in (keywords.recipes_for(need_ctx.get(db, need_id)).get("action_terms") or [])
             if str(x).strip()]
     weak = weak_terms(db, need_id)
     proposals: list[tuple[str, str, str]] = []      # (query, origin, parent)

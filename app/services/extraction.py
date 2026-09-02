@@ -9,14 +9,9 @@ from app.services.llm import get_llm, get_screen_llm
 from app.services.money_guard import apply_guard
 from app.services.prompts import extract_prompts, screen_prompts
 
-_SCHEMA_CACHE: dict[str, dict] = {}
-
-
 def load_record_schema(path: str | Path) -> dict:
-    key = str(path)
-    if key not in _SCHEMA_CACHE:
-        _SCHEMA_CACHE[key] = json.loads(Path(path).read_text(encoding="utf-8"))
-    return _SCHEMA_CACHE[key]
+    """记录 Schema 文件(与 need_ctx 共用一份缓存)。"""
+    return need_ctx.load_schema_file(path)
 
 
 def screen_document(profile_cfg: dict, title: str, text: str, ctx=None) -> dict:

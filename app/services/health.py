@@ -214,11 +214,78 @@ def pick(db, need_id: str, limit: int | None = None, stale_days: int | None = No
     return srcs + recheck_due(db, need_id)      # 误杀自愈:到期的自动停用源一并复检
 
 
+def probe_source(db, src: Source, q: str | None = None, mark: bool = False) -> dict:
+    """一键试抓:实时抓该源第一页,返回发现的条目(不入库、不存档),用来判断源是否能出数据。
+
+    页面型→discover_page(0);检索型→用一个代表关键词 search_page(0)。仅取前 20 条。
+    mark=True(批量体检用):把本次成败计入源健康——成功清零 fail_streak,失败累加;连续失败
+    达到 source_auto_retire_fail_streak 即自动标记停用(retired)。单源手动测试默认 mark=False。
+    """
+    import time as _time
+
+    from app.services import need_ctx
+    from app.services.adapters import get_adapter
+    from app.services.errors import error_headline
+
+    _health: dict = {}          # 本次健康判定明细(观察中/停用原因),回传给页面
+
+    def _record(ok_data: bool):
+        if not mark:
+            return False
+        if ok_data:
+            # 复检成功的自动停用源直接恢复:误杀能自愈
+            if src.lifecycle == "retired" and not (src.adapter_config or {}).get("manually_retired"):
+                src.lifecycle = "active"
+            register_success(db, src)
+            db.commit()
+            return False
+        v = register_failure(db, src, "试抓无结果")
+        _health.update(v)
+        db.commit()
+        return v["retired"]
+
+    adapter = get_adapter(src)
+    t0 = _time.time()
+    used_q = None
+    try:
+        if src.kind == "query":
+            used_q = (q or "").strip()
+            if not used_q:  # 没给词就从该源服务的需求取一个代表词做样本
+                from app.models import KeywordSet
+                from app.services import keywords
+                nid = (src.serves_needs or [need_ctx.default_need_id()])[0]
+                ks = db.query(KeywordSet).filter_by(need_id=nid, is_active=True).first()
+                terms = list(keywords.expand_queries(ks.content) if ks else []) or keywords.search_queries_for(need_ctx.get(db, nid))
+                used_q = terms[0] if terms else need_ctx.get(db, nid).name
+            if hasattr(adapter, "search_page"):
+                items = adapter.search_page(used_q, 0) or []
+            else:
+                items, _ = adapter.search(used_q, max_pages=1)
+        else:
+            items = adapter.discover_page(0) or []
+    except Exception as e:  # noqa: BLE001
+        retired = _record(False)
+        return {"ok": False, "error": error_headline(e, 300),
+                "adapter": src.adapter, "kind": src.kind,
+                "fail_streak": src.fail_streak, "retired": retired,
+                "watching": bool(_health.get("watching")), "health_note": _health.get("note", "")}
+    elapsed = round(_time.time() - t0, 1)
+    retired = _record(bool(items))          # 抓到 0 条也算一次失败(计入健康)
+    sample = [{"url": i.url, "title": i.title,
+               "publisher": i.publisher or i.wechat_account} for i in items[:20]]
+    return {"ok": True, "count": len(items), "adapter": src.adapter, "kind": src.kind,
+            "query": used_q, "elapsed": elapsed, "items": sample,
+            "fail_streak": src.fail_streak, "retired": retired,
+            "watching": bool(_health.get("watching")), "health_note": _health.get("note", ""),
+            "hint": ("能抓到内容,可放心保留" if items else
+                     "没抓到条目:该站可能需浏览器渲染/登录、反爬、或入口链接/适配器不匹配,"
+                     "建议改用 RSS 地址或换源")}
+
+
 def check_one(db, s: Source) -> dict:
     """体检一个源:试抓一次并把成败计入健康(带冗余度);能出数据的停用源自动恢复。"""
-    from app.api.routes import test_fetch_source
     was_retired = s.lifecycle == "retired"
-    r = test_fetch_source(s.id, q=None, mark=True, db=db, _=None)
+    r = probe_source(db, s, q=None, mark=True)
     good = bool(r.get("ok")) and int(r.get("count") or 0) > 0
     revived = good and was_retired and s.lifecycle != "retired"
     if revived:

@@ -33,7 +33,7 @@ def _valid_subject(name: str | None) -> bool:
         return False
     if not _re.search(r"[一-鿿A-Za-z]", s):  # 至少含一个中英文字
         return False
-    from app.services.pipeline import _is_subject_like
+    from app.services.url_tools import is_subject_like as _is_subject_like
     return _is_subject_like(s)
 
 

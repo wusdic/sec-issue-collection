@@ -232,3 +232,28 @@ def query_hash(query: str) -> str:
     """C4 水位线的查询键:规范化(去多余空白)后哈希。"""
     normalized = re.sub(r"\s+", " ", query.strip().lower())
     return hashlib.sha256(normalized.encode()).hexdigest()
+
+
+# 明显不是"发布主体"的正文套话/碎片,禁止当成公众号或候选源(与领域无关的文本规律)
+REF_STOPWORDS = ("转载", "出处", "请注明", "如若", "版权", "侵删", "免责", "声明", "来源",
+                 "附件", "下载", "点击", "可疑", "邮件", "代码", "平台", "共享", "原作者",
+                 "本文", "编辑", "责任", "投稿", "阅读", "关注")
+
+
+def is_subject_like(ref: str) -> bool:
+    """是否像一个"发布主体名"(公众号/机构),用于过滤正文套话碎片。
+
+    主体名通常较短、不含 URL、不以助词起头、不含"转载/出处/版权"等套话。
+    """
+    s = (ref or "").strip()
+    if not (2 <= len(s) <= 20):
+        return False
+    if "://" in s or s.lower().startswith("www."):
+        return False
+    if any(w in s for w in REF_STOPWORDS):
+        return False
+    if s[0] in "的于如和或与在等为被把将从对":
+        return False                       # 以助词/介词开头的多是句子碎片
+    if not re.search(r"[\u4e00-\u9fffA-Za-z]", s):
+        return False
+    return True

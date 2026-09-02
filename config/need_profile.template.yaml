@@ -1,76 +1,224 @@
-# 信息需求画像模板 v0.1 —— 通用信息搜索框架的需求实例化配置
-# 用法: 复制本文件为 need_<名称>.yaml, 按第 7 节实例化清单逐项填写
-# 六要素齐备且声明覆盖基准后方可上线; 框架不变量(存档/去重/来源绑定/三态断言)不可裁剪
+# =====================================================================================
+# 需求画像模板 v1.2 —— 通用数据采集平台的"需求实例化"配置(一份画像 = 一个需求)
+# 用法:复制为 config/need_<id>.yaml,按注释填写;`python -m app.cli init --need <id>` 装载。
+# 规则:
+#   · 只有 9 个键必填(标 ★);其余全部有平台中性缺省,不写即用缺省;
+#   · 词表 / 关键词矩阵 / 找源配方 / 种子源 / Schema 文件都可以省:关键词与找源配方按 scope 自动生成,
+#     Schema 可用 pipeline.extract_mode: light 按角色生成;
+#   · 行业个性只允许出现在画像里,引擎代码零行业字面量(有测试守护);
+#   · 参数维度详解见 design/platform/02(A–H)与 02 附录(I 范围 / J 关键词 / K 流水线)。
+# =====================================================================================
 
 need:
-  id: ""                      # 唯一标识, 如 sec_events / policy_watch / tender_intel
-  name: ""                    # 人读名称
-  owner: ""                   # 需求负责人(词表与质量规则的裁决人)
-  priority: B                 # A/B/C, 决定抓取与查询配额分配
-  timeliness_sla: 日级        # 告警级/小时级/日级/周级(9C), 反向决定源调度优先级
-  primary_behaviors: [G1]     # 主驱动行为(9B): 发现主驱动 [G1] / 名单主驱动 [G5] / 混合
-  languages: [zh]             # 语言范围(9F), 词表按语言维护
-  regions: [中国大陆]          # 地域范围(9F)
+  id: ""                    # ★ 唯一标识(英文/下划线),如 med_policy / tender_watch / company_watch
+  name: ""                  # ★ 人读名称(界面标题、提示词、日报都用它)
+  owner: ""                 # 需求负责人
+  priority: B               # A/B/C:影响抓取与查询配额
+  timeliness_sla: 日级      # 告警级/小时级/日级/周级:反向决定源调度间隔上限
+  primary_behaviors: [G1]   # 主驱动:G1 发现型 / G5 名单型 / 混合
+  languages: [zh]
+  regions: [中国大陆]        # 只用于推导地域策略(国内域名偏好/境外域名拒绝);"要哪个省市"写在 scope.regions
 
-# 合规画像(9D, 框架级必填)
-compliance:
-  data_categories: []         # 信息类别: 企业公开信息/个人公开职务信息/涉舆情内容...
-  personal_info: false        # 是否涉及个人信息(true 则强制最小化字段+更严审计)
+compliance:                 # ★ 合规画像(框架级必填,collection_boundary 不能空)
+  data_categories: []
+  personal_info: false      # true 则最小化字段 + 更严审计
   collection_boundary: 仅公开渠道
-  retention: ""               # 留存期限
-  usage_limit: ""             # 用途限定(如: 仅内部分析, 对外引用需法务审核)
+  retention: ""
+  usage_limit: ""
 
-# ① 目标记录 Schema(可多个, 共享同一名单与实体库)
-record_schemas:
-  - file: ""                  # JSON Schema 文件路径, 如 schema/event.schema.json
-    archetype: 事件型          # 记录原型(9A): 事件型/文档型/对象型/观测型 — 决定更新与去重语义
-    min_publish_fields: []    # 最少可发布字段集(入库门槛)
-    dedup_key: []             # 记录级去重键(按原型: 实体+类型+时间窗 / 文号 / 实体键 / 对象+指标+粒度)
+# ---------- A. 记录:原型 / Schema / 角色 / 类型 / 去重 ----------
+record_schemas:             # ★ 至少一项;file 可省(→ 轻量 Schema,见 pipeline.extract_mode)
+  - file: ""                # JSON Schema 路径,如 schema/event.schema.json
+    archetype: 事件型        # 事件型(发生一次,后续补全)/ 文档型(发布后不变,状态跃迁)/ 对象型(实体档案)/ 观测型(持续动态)
+    min_publish_fields: []  # 最少可发布字段
+    dedup_key: []           # 说明性:真正的去重规则在 record.dedup
 
-entity_links: []              # 挂接的全局实体类型: org / product / person / region(跨需求共享实体库)
+record:
+  id_prefix: REC            # ★ 记录号前缀(REC-YYYYMMDD-NNNN)
+  envelope:                 # 系统信封字段写到哪个键;"" = 不注入(文档型 Schema 自带业务 status 时)
+    id_field: event_id
+    status_field: status
+    review_field: review
+  field_roles:              # ★ 角色 → payload 路径(支持 a.b、a[0]、别名列表 [a.b, a.c]);查询列/报表/界面只认角色
+    title: title
+    subject: ""             # 主体(单位/发布机关/采购人/企业)
+    subject_key: ""         # 主体唯一键(信用代码/文号/项目编号),去重优先用它
+    subject_type: ""
+    subject_size: ""
+    dim1: ""                # 主维度(行业/主题/动态类型)——覆盖度、交叉表、日报分组的缺省维度
+    dim2: ""
+    region: ""              # 地域(省/市)
+    region2: ""
+    grade: ""               # 等级/文种/公告类型(grade_order 决定排序与徽标颜色)
+    tags_a: ""              # 标签组 A(手段/主题/采购品目)
+    tags_b: ""              # 标签组 B(后果/涉及行业)
+    occurred_date: ""       # 发生/发布日
+    disclosed_date: ""      # 披露/生效日
+    record_type: record_type
+  role_labels: {}           # 角色显示名,如 {subject: 发布机关, dim1: 主题}
+  record_types:             # 记录类型三值:单一 / 汇总型(通报/情报/盘点)/ 范畴外
+    values: [单一记录, 汇总情报, 不该入库]
+    default: 单一记录
+    out_of_scope: 不该入库
+    advisory:
+      value: 汇总情报
+      hints: [通报, 汇总, 盘点, 统计, 月报, 周报, 综述]   # 标题命中 + 无单一主体 → 判为汇总型
+      subject_blank_values: ["", 未披露, 未知, 不明, 无, 多家]
+  grade_order: []           # 等级从高到低,如 [特别重大, 重大, 较大, 一般, 未定级]
+  completeness_weights: {}  # 字段 → 权重;空 = Schema required 等权
+  dedup:                    # 记录级指纹去重
+    subject_roles: [subject_key, subject+region]   # 主体键候选(按序取第一个非空;a+b 复合键)
+    type_role: tags_a       # 类型交集角色;null = 不看类型
+    date_role: occurred_date
+    window_days: null       # 时间窗;null = 运行时设置 fingerprint_window_days
+  confidence_by_credibility: {S1: 已证实, S2: 多源印证, S3: 单源待证, S4: 单源待证}
 
-# ② 领域词表
-dictionaries:
-  file: ""                    # 枚举词表文件(版本化发布)
-  discovery_terms_file: ""    # G1 发现搜索词表(含时间限定与排除词)
-  source_search_terms: []     # G2 找源搜索词
+# ---------- B. 词表 / 覆盖度 / 关键词 ----------
+dictionaries:               # ★ 非空即可;file 可省(覆盖维度取值改从 scope 取)
+  file: ""                  # 枚举词表 YAML(版本化)
+  discovery_terms_file: ""  # 日常检索关键词矩阵文件;省略 → 装载时按 scope/keywords 自动生成
+  relevance_term_fields: [event_terms, consequence_terms]   # 栏目相关度用矩阵里的哪些词组
 
-# ③ 来源策略
-sources:
-  seed_file: ""               # 种子源清单
-  reputation_registry: ""     # 发布主体信誉名录(通用能力): 主体名→可信度; 默认按主体定级、不丢弃
-  repost_detection: true      # 是否启用转载/转发溯源(识别转载并追原始出处)
-  credibility_levels:         # 本需求的可信度分级定义与"确认"授权等级
-    confirm_allowed: []       # 允许支撑 confirmed 断言的等级, 如 [S1, S2]
-    levels: {}                # S1..Sn: 定义说明
+coverage:
+  dimension_role: dim1      # 覆盖度按哪个角色统计
+  dictionary_key: industries  # 词表里哪一节是该维度的取值({一级: [二级]} 或 [值])
+  scope_kind: ""            # 无词表时从 scope 的哪一维取值(空 = 自动按 industries/topics/doc_types/regions/entities 顺序)
+  query_templates: []       # 覆盖空白 → 找源词模板,{ind} 占位,如 ["{ind} 数据泄露"]
+  short_names: {}           # 长名 → 语料常用短名
+  placeholders: [其他, 其它, 未分类, 未知, 词表外]
+  window_days: null         # null = 运行时设置
+  min_records: null
 
-# ④ 更新策略
-update:
-  lagged_fields: []           # 滞后字段清单: [{field: "", typical_lag_days: 0}]
-  followup_schedule: []       # G4 追踪节奏, 如 [30, 90, 180, 365]
-  watch_kinds: []             # G5 名单对象类型: org/product/attacker_group/topic/...
-  expansion_rules: []         # G6 关联扩展规则: 记录属性 → 扩展查询模板
-  burst_signals: []           # G7 突发信号源: 热搜/政策发布/榜单
-  close_condition: ""         # 记录关闭条件
+# ---------- I. 范围限定(v1.2):要"哪一片"的信息。一处声明,五处消费 ----------
+scope:                      # 每项:值 或 {value, terms: [同义/简称]}(entities 用 aliases)
+  regions: []               # 地域,如 [{value: 江苏省, terms: [江苏, 南京, 苏州]}]
+  industries: []            # 行业,如 [{value: 医疗卫生, terms: [医疗, 医院, 医保]}]
+  topics: []                # 主题/事项,如 [互联网诊疗, 医保支付]
+  entities: []              # 主体名单(企业/厅局),如 [{value: 某某集团, aliases: [某某, XX]}];监控名单(WatchTarget)自动并入
+  doc_types: []             # 文种/公告类型,如 [通知, 管理办法, 中标公告]
+  require_mention: []       # 必须提及的维度,如 [regions] / [entities]:未提及 → 范畴外
+  time_window_days: null    # 采集时效窗(天);null = 运行时设置 collect_recency_days
 
-# ⑤ 质量规则
-quality:
-  model: 事实核实型            # 质量模型(9E): 事实核实型/影响力评估型/观点聚合型, 可字段级混用
-  assertion_tristate_fields: []   # 事实核实型: 需三态管理的关键断言字段
-  influence_signals: []           # 影响力评估型: 引用/热度/作者权威等加权信号
-  stance_fields: []               # 观点聚合型: 多立场并存记录的字段
-  screen_prompt: ""               # 粗筛判定标准(LLM prompt 要点)
-  double_review_fields: []        # 需双人复核的字段
+# ---------- J. 关键词生成与组合(v1.2) ----------
+keywords:
+  groups: {}                # 静态词组 {action_terms: [发布, 印发], event_terms: [...]},与 scope 派生词组合并
+  compose: []               # 组合配方;空 = 平台缺省(锚点[主体/地域/行业] × 对象[主题/事件/动作/文种])
+                            # 例:[{groups: [region_terms, industry_terms, doctype_terms], template: "{0} {1} {2}", limits: [3, 3, 3]}]
+  expand_with_llm: false    # 生成时让模型补同义/相关说法
+  expand_per_term: 3
+  time_filters: []          # 适配器映射为平台时间参数,如 [近7天]
+  negative_terms: []        # 排除词
+  query_budget_per_source_daily: 200
+  max_pages_per_query: 3
+  auto_generate: true       # 无 discovery_terms_file 时装载即生成
 
-# ⑥ 输出物(9C 输出四型)
-outputs:
-  reports: []                 # 报表型: [{name: "", cycle: 周/月/季, audience: ""}]
-  leads: []                   # 线索型: 推送给人跟进的规则
-  api_subscriptions: []       # 订阅型: 按用户过滤条件分发(CRM 等)
-  alerts: []                  # 告警型: [{condition: 阈值/状态跃迁, channel: "", latency: 分钟/小时}]
-  kpi: []                     # 本需求的专属 KPI(覆盖率/时延/转化等)
+# ---------- C. 来源与可信度 ----------
+sources:                    # ★ 非空即可
+  seed_file: ""             # 种子源清单(可省)
+  reputation_registry: ""   # 发布主体信誉名录(可省)
+  repost_detection: true
+  discovery_file: ""        # 找源配方/候选评分/定级规则文件;省略 → 找源词与配方按 scope 生成
+  credibility_levels:
+    confirm_allowed: [S1, S2]   # 允许支撑 confirmed 断言的来源等级(发布红线)
+    levels: {}
+  column_discovery:         # 根域站点自动定位栏目
+    hint_words: []          # 栏目提示词(领域词)
+    stop_words: []          # 空 = 平台缺省导航噪声词
+    path_hints: []          # URL 路径拼音段,如 [zhengce, tzgg]
+  prospect:
+    selftest_query: ""      # 引擎自检词;空 = 找源词第一条
+    probe_prompt: ""        # 候选源初评提示词;空 = 按需求名与粗筛目标生成
+    harvest_prompt: ""      # 挖词提示词;空 = 按需求名生成
+  region_policy: null       # null = 由 need.regions/languages 推导;可写 {domestic_tlds, reject_tlds, require_script}
+  skip_hosts_extra: []      # 追加不作为专业源的域
+  grading: null             # 试运行源自动定级规则;null = discovery_file.grading
+  discovery_scoring: null   # 候选评分权重;null = discovery_file.scoring
 
-# G8 覆盖基准(强制, 无基准不上线)
-benchmark:
-  baselines: []               # [{name: "", type: 官方汇总/商业数据/人工抽样, cycle: 月}]
+# ---------- D. 质量:粗筛 / 抽取 / 范畴 / 断言三态 ----------
+quality:                    # ★ model 与 screen.goal
+  model: 事实核实型          # 事实核实型 / 影响力评估型 / 观点聚合型
+  screen:
+    goal: ""                # ★ 粗筛判定目标(一句话)
+    include_rules: []       # 算相关的情形
+    exclude_rules: []       # 必须判否的情形
+    reminder: ""
+  extract_rules: []         # 领域抽取规则(平台通用硬规则之外追加)
+  scope_guard:
+    exclude_patterns: []            # 标题命中即范畴外(正则)
+    include_override_patterns: []   # 但命中这些则放行
+    out_of_scope_reason: ""
+  assertions:               # 事实核实型的关键断言三态(声称/估算/确认)
+    tristate_fields: []     # 如 [loss_L1, loss_L4];空 = 不启用
+    labels: {}
+    channels: {claimed: claimed_cny, estimated: estimated_cny, confirmed: confirmed_cny}
+    claimed_markers: ""     # 空 = 平台通用语境词
+    confirmed_markers: ""
+    isolation: []           # [{source_path: ransom.demanded_amount, reason: 要求≠损失}]
+    paid_check: null
+  double_review_fields: []
+
+# ---------- K. 流水线组合(v1.2) ----------
+pipeline:
+  stages: [screen, extract, scope_gate, content_check, dedup_record, draft]   # 可增删排序
+  extract_mode: schema      # schema = 按 record_schemas.file;light = 按角色生成轻量 Schema(标题/摘要/主体/分类/地域/标签/日期)
+  light_fields: []          # 轻量 Schema 追加字段 [{name, type, desc}]
+
+# ---------- E. 更新:回访 / 触发 / 检索包 ----------
+update:                     # ★ 非空即可
+  lagged_fields: []
+  followup_schedule: [30, 90, 180, 365]
+  followup_triggers: []     # [{field, when: status_in|value_in|value_not_in|empty|list_item_missing|flag_unknown, values, reason}]
+  followup_search:
+    subject_role: subject
+    query_suffixes: []
+    link_templates: {}      # {站名: "https://…?q={q}"}
+  watch_kinds: []           # 名单对象类型
+  expansion_rules: []
+  burst_signals: []
+  close_condition: ""
+
+# ---------- F. 输出:线索 / 报表 / 日报 ----------
+outputs:                    # ★ 非空即可
+  reports: []
+  alerts: []
+  kpi: []
+  leads_engine:
+    enabled: false
+    mapping_file: ""        # 产品映射
+    write_back_field: ""    # 匹配到的产品回写到记录字段
+    subject_role: subject
+    grade_weights: {}
+    size_weights: {}
+    window_stages: []       # 空 = 平台缺省四段窗口
+    match_dims: {}
+    talk_track: {facts: []}
+  reports_engine:
+    crosstab: {row_role: dim1, col_roles: [tags_a, tags_b]}
+    amount_sum: null        # {kind: tristate|plain, fields: [...], group_role: dim1, default_scope: confirmed}
+    status_count: null      # {field, item_key, status_key, statuses}
+    missing_field: null     # {field}
+  digest:
+    title: ""               # 空 = "<需求名>日报"
+    group_roles: [dim1, grade]
+    rank_role: grade
+    advisory_split: true
+
+# ---------- G. 界面 ----------
+ui:
+  record_label: 记录
+  tabs: {}                  # {leads: {label: 线索, enabled: false}} 等,未列出的用缺省
+  list_columns: []          # [{role: title}, {role: subject}, ...];空 = 缺省列
+  filters: []               # [{role: status, label: 状态}, {role: grade}]
+  detail_sections: []       # [{kind: kv, roles: [...]}, {kind: tags, roles: [...]}, {kind: tristate}, {kind: object, path, label, keys}, {kind: text, path, label}, {kind: list, path, label}, {kind: sources}]
+  dashboard_tiles: []       # [{key: events_total, label, go, filter, click, desc}]
+
+# ---------- 演示 / 离线 Mock ----------
+demo:
+  samples: []               # [{title, text}]:一键载入演示数据 / CLI demo 用
+mock:                       # 离线 Mock 模型规则(不参与真实运行)
+  screen_keywords: []
+  extract_rules: []         # [{path, regex|when_contains|when_path_contains, value|append, transform: wan|float|int}]
+
+benchmark:                  # ★ 覆盖基准(无基准不上线)
+  baselines: []             # [{name, type: 官方汇总/商业数据/人工抽样, cycle: 月}]
   target_recall: 0.9

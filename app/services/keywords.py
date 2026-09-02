@@ -215,11 +215,6 @@ def generate(db, ctx, expand: bool | None = None, persist: bool = True):
         ks.published_at = datetime.utcnow()
         db.add(ks)
         db.flush()
-        try:
-            from app.services import columns
-            columns.reset_terms_cache()
-        except Exception:  # noqa: BLE001
-            pass
     return content, ks
 
 
@@ -235,3 +230,24 @@ def discovery_recipes(ctx) -> dict:
         "query_recipes": {"subject_terms": subject[:30], "action_terms": action[:20],
                           "event_terms": event[:30], "channel_terms": [], "max_combos": 60},
     }
+
+
+def search_queries_for(ctx) -> list[str]:
+    """找源词:画像配方文件里的 source_search_queries;没有文件 → 按 scope/keywords 生成。"""
+    qs = ctx.source_search_queries
+    return qs if qs else discovery_recipes(ctx)["source_search_queries"]
+
+
+def recipes_for(ctx) -> dict:
+    """找源组合配方:画像配方文件里的 query_recipes;没有文件 → 按 scope/keywords 生成。"""
+    r = ctx.query_recipes
+    return r if r else discovery_recipes(ctx)["query_recipes"]
+
+
+def selftest_query_for(ctx) -> str:
+    """引擎自检词:画像显式声明 > 找源词第一条 > 需求名。"""
+    explicit = (ctx.sources_cfg.get("prospect") or {}).get("selftest_query")
+    if explicit:
+        return str(explicit)
+    qs = search_queries_for(ctx)
+    return qs[0] if qs else ctx.name

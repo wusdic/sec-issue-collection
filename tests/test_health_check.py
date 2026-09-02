@@ -58,12 +58,10 @@ def test_health_status_shape_when_idle():
 
 def test_health_check_runs_and_reports_progress(db, need, monkeypatch):
     """体检在后台跑,进度可查(此前在浏览器同步跑,源多就像"没反应")。"""
-    from app.api import routes
-
-    def _fake(source_id, q=None, mark=False, db=None, _=None):
+    def _fake(db, src, q=None, mark=False):
         return {"ok": True, "count": 3, "hint": "能抓到内容", "retired": False}
 
-    monkeypatch.setattr(routes, "test_fetch_source", _fake)
+    monkeypatch.setattr(health, "probe_source", _fake)     # 试抓能力在服务层,不再经由接口层
     for i in range(3):
         db.add(Source(name=f"体检源{i}", kind="page", adapter="generic_rss", credibility="S3",
                       tier="B", lifecycle="active", serves_needs=[need.id],

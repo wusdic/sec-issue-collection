@@ -48,12 +48,14 @@ def _ctx(ctx=None, need_id: str | None = None):
 
 
 def base_queries(ctx=None) -> list[str]:
-    """画像 discovery_file(缺省 config/discovery.yaml)里人工维护的找源专用检索词。"""
-    return _ctx(ctx).source_search_queries
+    """找源专用检索词:画像配方文件里人工维护的;没有文件 → 关键词模块按 scope 生成。"""
+    from app.services import keywords
+    return keywords.search_queries_for(_ctx(ctx))
 
 
 def _recipes(ctx=None) -> dict:
-    return _ctx(ctx).query_recipes
+    from app.services import keywords
+    return keywords.recipes_for(_ctx(ctx))
 
 
 def combo_queries(ctx=None) -> list[str]:
@@ -654,7 +656,8 @@ def selftest(db, query: str | None = None, on_progress=None, ctx=None) -> dict:
     # 测整个候选池,不只是当前在用的那几个:被上一次自检踢掉的引擎(反爬是临时的)
     # 和升级新加的引擎都必须有机会重新证明自己,否则一旦误判就永远回不来。
     c = _ctx(ctx)
-    query = query or c.selftest_query
+    from app.services import keywords
+    query = query or keywords.selftest_query_for(c)
     out = {"query": query, "engines": [], "usable": [], "tested": [], "advice": ""}
     pool = all_engine_names()
     for name, eng in _engines(pool):
@@ -781,7 +784,8 @@ def selftest_status(db=None) -> dict:
 
 def selftest_start(need_id: str, query: str | None = None, apply: bool = True) -> dict:
     """后台起一次自检(幂等)。测试词缺省取画像 sources.prospect.selftest_query。"""
-    query = query or need_ctx.get(None, need_id).selftest_query
+    from app.services import keywords
+    query = query or keywords.selftest_query_for(need_ctx.get(None, need_id))
     with _st_lock:
         if _st_state.get("running"):
             return dict(_st_state)
@@ -908,7 +912,8 @@ def autotune_engines(db, query: str | None = None, need_id: str | None = None) -
     pool = all_engine_names()
     prev = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",") if x.strip()]
     c = need_ctx.get(db, need_id or need_ctx.default_need_id())
-    r = selftest(db, query or c.selftest_query, ctx=c)      # selftest 本身就测整池,不必再临时改配置
+    from app.services import keywords
+    r = selftest(db, query or keywords.selftest_query_for(c), ctx=c)      # selftest 本身就测整池,不必再临时改配置
     usable = r["usable"]
     detail = {e["engine"]: ("可用" if e["ok"] else ("验证页/反爬" if e["blocked"] else e["hint"][:60]))
               for e in r["engines"]}

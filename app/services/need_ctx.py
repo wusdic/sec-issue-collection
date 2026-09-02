@@ -238,9 +238,11 @@ class NeedContext:
         self.scope_cfg = m["scope"]
         self.keywords_cfg = m["keywords"]
         self.pipeline_cfg = m["pipeline"]
-        # 轻量抽取模式且画像没声明角色 → 用轻量 Schema 的缺省角色
-        if self.extract_mode == "light" and not ((cfg.get("record") or {}).get("field_roles")):
-            self.record["field_roles"] = {**self.record["field_roles"], **_LIGHT_ROLES}
+        # 轻量抽取模式:角色缺省对齐轻量 Schema(title/subject/category/region/tags/published_date),
+        # 画像声明的角色覆盖缺省(如把 dim2 指到追加字段 industry)
+        if self.extract_mode == "light":
+            declared = dict((cfg.get("record") or {}).get("field_roles") or {})
+            self.record["field_roles"] = {**self.record["field_roles"], **_LIGHT_ROLES, **declared}
         # 兼容旧键
         q = cfg.get("quality") or {}
         if not self.quality["screen"].get("goal") and q.get("screen_prompt"):
@@ -322,8 +324,7 @@ class NeedContext:
         """记录 Schema(dict):有文件读文件,否则按角色生成轻量 Schema。"""
         f = self.schema_file
         if f and f.exists():
-            from app.services.extraction import load_record_schema
-            return load_record_schema(f)
+            return load_schema_file(f)
         return self.light_schema()
 
     # ---------------- 范围限定 ----------------
@@ -492,25 +493,24 @@ class NeedContext:
         return self.path(self.sources_cfg.get("discovery_file"))
 
     def discovery_yaml(self) -> dict:
-        """找源配方 / 候选评分 / 定级规则:画像给了文件读文件;没给(或文件不存在)则由关键词模块
-        按 scope/keywords 生成配方(source_search_queries + query_recipes),让新需求零文件也能找源。"""
+        """找源配方 / 候选评分 / 定级规则文件(画像 sources.discovery_file)。没给或读不到 → {};
+        此时找源词与配方由关键词模块按 scope 生成(keywords.search_queries_for / recipes_for),
+        契约层不反向依赖能力模块。"""
         if self._discovery_cache is None:
-            data = None
+            data = {}
             f = self.discovery_file
             if f is not None:
                 try:
                     with open(f, encoding="utf-8") as fh:
                         data = yaml.safe_load(fh) or {}
                 except (OSError, yaml.YAMLError):
-                    data = None
-            if data is None:
-                try:
-                    from app.services import keywords
-                    data = keywords.discovery_recipes(self)
-                except Exception:  # noqa: BLE001
                     data = {}
             self._discovery_cache = data
         return self._discovery_cache
+
+    @property
+    def has_discovery_file(self) -> bool:
+        return bool(self.discovery_yaml())
 
     def load_dictionaries_file(self) -> dict:
         p = self.dictionaries_file
@@ -692,6 +692,18 @@ class NeedContext:
                 "pipeline_stages": self.pipeline_stages}
 
 
+# ---------------- Schema 文件加载(带缓存;契约层自有,不依赖处理层) ----------------
+
+_SCHEMA_CACHE: dict[str, dict] = {}
+
+
+def load_schema_file(path) -> dict:
+    key = str(path)
+    if key not in _SCHEMA_CACHE:
+        _SCHEMA_CACHE[key] = json.loads(Path(path).read_text(encoding="utf-8"))
+    return _SCHEMA_CACHE[key]
+
+
 # ---------------- 获取与缓存 ----------------
 
 _CACHE: dict[str, tuple[str, NeedContext]] = {}
@@ -752,6 +764,13 @@ def get(db, need_id: str | None = None) -> NeedContext:
     """引擎统一取参入口。有 db 读库里的画像;没有 db(或库里没有)按文件找;都没有给中性缺省。"""
     need_id = need_id or default_need_id()
     cfg = None
+    if db is None:
+        # 没带会话:优先用本进程最近构造过的同名上下文(流水线/接口刚按库里画像建过),
+        # 保证 Mock 模型、守卫缺省等无会话调用看到的和主流程一致
+        with _LOCK:
+            hit = _CACHE.get(need_id)
+        if hit:
+            return hit[1]
     if db is not None:
         try:
             from app.models import NeedProfile
@@ -762,6 +781,19 @@ def get(db, need_id: str | None = None) -> NeedContext:
             cfg = None
     if cfg is None:
         cfg = load_profile_config(need_id)
+    if cfg is None and db is None:
+        # 没带会话、也没有画像文件(只在库里注册过的需求,如页面/接口创建的):自己开一个短会话查
+        try:
+            from app.db import SessionLocal
+            from app.models import NeedProfile
+            s = SessionLocal()
+            try:
+                np = s.get(NeedProfile, need_id)
+                cfg = dict(np.config) if np is not None and np.config else None
+            finally:
+                s.close()
+        except Exception:  # noqa: BLE001 库不可用就退回中性缺省
+            cfg = None
     if cfg is None:
         cfg = {"need": {"id": need_id, "name": need_id}}
     return from_config(cfg)

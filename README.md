@@ -11,7 +11,10 @@
 [03 功能清单](design/platform/03-功能清单.md) ·
 [04 多视角验证](design/platform/04-多视角验证.md) ·
 [05 落地与验证记录](design/platform/05-落地验证.md)(含"新增一个需求"操作清单)·
-[06 场景适用性与能力模组](design/platform/06-场景适用性与能力模组.md)(医疗政策 / 招标中标 / 企业定向 / 省市文件四个场景画像,能力模组目录)。
+[06 场景适用性与能力模组](design/platform/06-场景适用性与能力模组.md)(四个场景画像,能力模组目录)·
+[07 需求泛化模型与决策表](design/platform/07-需求泛化模型与决策表.md)(六根轴 + 需求特征→画像键 决策表,生成式验证)·
+[08 模块边界与升级规范](design/platform/08-模块边界与升级规范.md)(分层、契约、扩展点、升级操作规范)。
+画像模板:[`config/need_profile.template.yaml`](config/need_profile.template.yaml)(v1.2 全维度,9 个必填键)。
 
 快速开始:`python -m app.cli init`(装载默认需求;`--all` 装载全部画像)→ `uvicorn app.main:app` → 登录后头部可切换需求。
 
