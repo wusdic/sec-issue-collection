@@ -9,9 +9,9 @@
 通知(邮件/飞书/webhook)与导出(本地资料库/多维表格)是可插拔组件。
 
 平台设计与验证见 `design/platform/`(从 [00 总纲](design/platform/00-总纲.md) 开始):
-[01 实施方案](design/platform/01-实施方案.md) ·
+[01 架构设计与实施方案](design/platform/01-实施方案.md)(模块式分层,每层的需求与验收)·
 [02 业务逻辑与参数化维度](design/platform/02-业务逻辑与参数化维度.md) ·
-[03 功能清单](design/platform/03-功能清单.md) ·
+[03 功能说明书](design/platform/03-功能清单.md)(每个功能:作用/给谁用/入口/用法要点)·
 [04 多视角验证](design/platform/04-多视角验证.md) ·
 [05 落地与验证记录](design/platform/05-落地验证.md)(含"新增一个需求"操作清单)·
 [06 场景适用性与能力模组](design/platform/06-场景适用性与能力模组.md)(四个场景画像,能力模组目录)·
