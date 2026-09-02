@@ -232,6 +232,8 @@ outputs:
     amount_sum: {fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5], group_role: dim1, default_scope: confirmed}
     status_count: {field: security_controls, item_key: control, status_key: status, statuses: [缺位, 在位但失效, 在位被绕过]}
     missing_field: {field: sellable_mapping}
+  exports:
+    - {name: 本地资料库, kind: local_library, root: data/library, path_template: "{dim1}/{grade}/{year}", formats: [json, md]}
   digest:
     title: 安全事件日报
     group_roles: [dim1, grade]
@@ -280,6 +282,7 @@ ui:
     - {key: avg_completeness, label: 完备度均分, go: events, desc: "事件字段填充完整度平均分"}
     - {key: followups_open, label: 回访待办, go: followups, desc: "待回访补全罚款/判决/整改采购等滞后信息"}
     - {key: traceability, label: 金额可追溯, click: trace, desc: "红线校验:所有『已确认金额』是否都挂了权威来源"}
+    - {key: quality, label: 质量评分, go: events, desc: "完整性/准确性/一致性/时效性加权(A–D)"}
 
 demo:
   samples:

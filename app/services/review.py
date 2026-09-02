@@ -71,6 +71,12 @@ def _do_publish(db, ev, task, record_schema, confirm_allowed, user_id):
     task.stage = "published"
     db.add(AuditLog(user_id=user_id, action="review.publish", target=ev.event_id))
     db.flush()
+    # 分类存本地:发布即落到本地资料库(画像声明了 local_library 才做;失败不影响发布)
+    try:
+        from app.services import exports
+        exports.on_publish(db, ev)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def reject(db: Session, event_id: str, user_id: int, reason: str) -> ReviewTask:

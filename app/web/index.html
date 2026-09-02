@@ -294,7 +294,7 @@ async function vDashboard(){
       {key:"traceability",label:"断言可追溯",click:"trace",desc:"红线校验:所有『已确认』断言是否都挂了权威来源"},
     ];
     const cards = tiles.filter(t=>!(t.key==="leads_new"&&UI&&!UI.leads_enabled)).map(t=>({
-      k:t.label, v:(t.key==="traceability")?trace:(d[t.key]??"-"), go:t.go, f:t.filter, click:t.click,
+      k:t.label, v:(t.key==="traceability")?trace:(t.key==="quality"?(d.quality?`${d.quality.grade} <span class="muted" style="font-size:14px">${d.quality.score}</span>`:"-"):(d[t.key]??"-")), go:t.go, f:t.filter, click:t.click,
       small:t.key==="traceability", desc:t.desc||""}));
     const box=document.getElementById("cards");
     box.innerHTML = cards.map((c,i)=>
@@ -1567,7 +1567,7 @@ async function loadDocs(){
       rows.map(d=>`<tr>
         <td style="cursor:pointer;color:var(--brand)" onclick="openDoc(${d.id})">${esc(d.title||d.url)}</td>
         <td class="muted">${esc(d.publisher||"")}</td>
-        <td title="${esc(d.screen_reason||'')}">${screenPill(d.screen_status)}${d.screen_score!=null?` <span class="muted">${d.screen_score}</span>`:""}</td>
+        <td title="${esc(d.screen_reason||'')}">${screenPill(d.screen_status)}${d.screen_score!=null?` <span class="muted">${d.screen_score}</span>`:""}${d.verification?` <span class="pill ${d.verification.status==="verified"?"ok":(d.verification.status==="pending_review"?"warn":"")}" title="域可信度 ${esc(d.verification.domain_trust||"")}">${({verified:"已验证",pending_review:"待复核",unverified:"未验证"})[d.verification.status]||esc(d.verification.status)}</span>`:""}</td>
         <td>${d.is_primary?'首发':'<span class="muted">转载</span>'}</td>
         <td>${d.url?`<a href="${esc(d.url)}" target="_blank" rel="noopener">原文↗</a>`:'<span class="muted">-</span>'}</td>
         ${canAct?`<td style="white-space:nowrap">${d.screen_status==="manual_queue"?

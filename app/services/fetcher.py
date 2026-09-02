@@ -306,3 +306,16 @@ def screenshot_pages(url: str) -> list[bytes]:
             y += step
         browser.close()
     return shots
+
+
+def post_json(url: str, data: dict | None = None, headers: dict | None = None,
+              timeout: float | None = None, as_form: bool = False) -> FetchResult:
+    """POST 一个 JSON(或表单)请求,返回 FetchResult(html=响应文本)。json_api 适配器 method=POST 时用。"""
+    hdrs = {"User-Agent": settings.fetch_user_agent, **_BASE_HEADERS, **(headers or {})}
+    try:
+        with httpx.Client(follow_redirects=True, timeout=timeout or settings.fetch_timeout, headers=hdrs) as client:
+            resp = client.post(url, data=data) if as_form else client.post(url, json=data or {})
+            return FetchResult(url=url, final_url=str(resp.url), status=resp.status_code,
+                               html=decode_body(resp), headers=dict(resp.headers))
+    except Exception as e:  # noqa: BLE001
+        return FetchResult(url=url, final_url=url, status=None, html=None, error=str(e))

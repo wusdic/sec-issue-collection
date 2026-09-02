@@ -117,3 +117,48 @@ def complete_task(db: Session, task_id: int, user_id: int, findings: str = "") -
     t.done_at = datetime.utcnow()
     db.flush()
     return t
+
+
+def recheck_due(db: Session, need_id: str, ctx=None, on: date | None = None, limit: int = 50) -> dict:
+    """再核查接回访:对到期回访任务对应记录的来源文档重抓比对哈希;内容变了就把信号写进任务并记动作。
+
+    文档型记录(法规/政策/公告)的"状态跃迁"(征求意见→发布→生效→废止)往往体现在原页面内容变化上,
+    这一步把它变成回访台上看得见的提示,而不是靠人再去翻。
+    """
+    from app.models import Event, EventSource, RawDocument
+    from app.services import actions, need_ctx, verify
+    c = ctx or need_ctx.get(db, need_id)
+    on = on or date.today()
+    checked, changed, errors = 0, [], 0
+    tasks = [t for t in due_tasks(db, on) if (db.get(Event, t.event_id) or Event(need_id="")).need_id == need_id]
+    seen_docs: dict[int, dict] = {}
+    for t in tasks[:limit]:
+        for es in db.query(EventSource).filter_by(event_id=t.event_id).all():
+            if not es.doc_id:
+                continue
+            doc = db.get(RawDocument, es.doc_id)
+            if doc is None:
+                continue
+            if doc.id not in seen_docs:
+                try:
+                    seen_docs[doc.id] = verify.recheck(doc, c)
+                except Exception as e:  # noqa: BLE001
+                    seen_docs[doc.id] = {"ok": False, "error": str(e)}
+                checked += 1
+            r = seen_docs[doc.id]
+            if not r.get("ok"):
+                errors += 1
+                continue
+            if r.get("changed"):
+                tag = f"[内容已变化 {on.isoformat()}]"
+                if tag not in (t.reason or ""):
+                    t.reason = f"{tag} {t.reason or ''}".strip()
+                doc.verification = {**(doc.verification or {}), "content_hash": r["content_hash"],
+                                    "changed_at": on.isoformat()}
+                changed.append(t.event_id)
+                actions.record(db, "record.source_changed",
+                               f"记录 {t.event_id} 的来源页面内容已变化,请在回访时核对状态",
+                               need_id=need_id, target=t.event_id,
+                               detail={"doc_id": doc.id, "url": doc.final_url or doc.url})
+    db.flush()
+    return {"tasks": len(tasks), "checked": checked, "changed": sorted(set(changed)), "errors": errors}

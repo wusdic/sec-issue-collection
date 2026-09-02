@@ -203,8 +203,13 @@ def dashboard(db: Session, need_id: str, ctx=None) -> dict:
     leads_new = db.query(Lead).filter_by(need_id=need_id, status="new").count()
     scores = [ev.completeness_score for ev in db.query(Event).filter(
         Event.need_id == need_id, Event.completeness_score.isnot(None)).all()]
+    try:
+        q = quality_scorecard(db, need_id, ctx=c)
+        quality = {"score": q["score"], "grade": q["grade"], "dimensions": q["dimensions"]}
+    except Exception:  # noqa: BLE001 评分卡算不出不影响看板
+        quality = None
     return {
-        "need_id": need_id, "need_name": c.name,
+        "need_id": need_id, "need_name": c.name, "quality": quality,
         "events_total": total, "events_published": published, "docs_total": docs,
         "pending_review": pending_review, "followups_open": open_followups, "leads_new": leads_new,
         "avg_completeness": round(sum(scores) / len(scores), 1) if scores else None,
@@ -234,7 +239,14 @@ def quality_scorecard(db: Session, need_id: str, days: int | None = None, ctx=No
     cov = _cov.industry_coverage(db, need_id, days, c)
     covered = sum(1 for x in cov if x["level"] in ("有覆盖", "偏少")) / len(cov) if cov else 1.0
     comps = [e.completeness_score for e in live if e.completeness_score is not None]
-    completeness = 100 * (0.5 * covered + 0.5 * ((sum(comps) / len(comps) / 100) if comps else 0.0))
+    comp_avg = (sum(comps) / len(comps) / 100) if comps else 0.0
+    from app.services import benchmark as _bm
+    bm = _bm.latest(db, need_id)
+    recall = bm["recall"] if bm and bm.get("recall") is not None else None
+    if recall is not None:      # 有对标基准:漏报率是"找得全"最直接的度量,权重最高
+        completeness = 100 * (0.3 * covered + 0.2 * comp_avg + 0.5 * recall)
+    else:
+        completeness = 100 * (0.5 * covered + 0.5 * comp_avg)
     # 准确性
     trace_ok = 1.0 if traceability_check(db, need_id, c)["ok"] else 0.0
     from app.services.money_guard import apply_guard
@@ -261,6 +273,12 @@ def quality_scorecard(db: Session, need_id: str, days: int | None = None, ctx=No
         timeliness = 100 * max(0.0, min(1.0, 1 - (med - 1) / 29)) if med > 1 else 100.0
     else:
         timeliness = 100.0
+    # 验证状态分布(真实可信的直观信号)
+    from app.models import RawDocument as _RD
+    vdist: dict[str, int] = {}
+    for (v,) in db.query(_RD.verification).filter(_RD.need_id == need_id, _RD.screen_status == "screened_in").all():
+        st = (v or {}).get("status") or "unverified" if isinstance(v, dict) else "unverified"
+        vdist[st] = vdist.get(st, 0) + 1
     dims = {"completeness": round(completeness, 1), "accuracy": round(accuracy, 1),
             "consistency": round(consistency, 1), "timeliness": round(timeliness, 1)}
     total = round(sum(dims[k] * w.get(k, 0) for k in dims) / (sum(w.get(k, 0) for k in dims) or 1), 1)
@@ -268,5 +286,6 @@ def quality_scorecard(db: Session, need_id: str, days: int | None = None, ctx=No
     return {"need_id": need_id, "score": total, "grade": grade, "dimensions": dims, "weights": w,
             "labels": {"completeness": "完整性", "accuracy": "准确性", "consistency": "一致性", "timeliness": "时效性"},
             "records": len(live), "coverage_gaps": [x["industry"] for x in cov if x["gap"]][:20],
+            "benchmark": bm, "verification": vdist,
             "median_lag_days": (lags[len(lags) // 2] if lags else None),
             "generated_at": _dt.utcnow().isoformat(timespec="seconds")}

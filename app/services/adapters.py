@@ -117,8 +117,8 @@ class JsonApiAdapter(BaseAdapter):
             fr = fetcher.fetch(url, referer=headers.get("Referer"))
             body = fr.html if fr.ok else None
         else:
-            fr = fetcher.post_json(api, params, headers=headers) if hasattr(fetcher, "post_json") else None
-            body = fr.html if fr and fr.ok else None
+            fr = fetcher.post_json(api, params, headers=headers, as_form=bool(self.config.get("form")))
+            body = fr.html if fr.ok else None
         if not body:
             return None
         try:

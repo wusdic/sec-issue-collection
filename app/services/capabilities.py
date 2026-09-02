@@ -252,3 +252,15 @@ def _notify_feishu(db, ctx, text: str):
     from app.services import notify
     ok, note = notify.deliver_feishu(text)
     return {"ok": ok, "note": note}
+
+
+@register("benchmark.run", "找源", "对标基准:拿一份权威清单算召回与漏报归因(找得全的度量)", {"batch_name": "批次名", "items": "[{title,url,date}]", "period": "YYYY-MM"})
+def _benchmark(db, ctx, batch_name: str = "对标", items: list | None = None, period: str | None = None):
+    from app.services import benchmark
+    return benchmark.run(db, ctx, batch_name, items or [], period)
+
+
+@register("followup.recheck", "更新", "到期回访记录的来源再核查:内容变化写进回访任务并记动作", {"limit": "最多核查条数"})
+def _followup_recheck(db, ctx, limit: int = 50):
+    from app.services import followup
+    return followup.recheck_due(db, ctx.id, ctx, limit=int(limit))

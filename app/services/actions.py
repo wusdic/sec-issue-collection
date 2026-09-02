@@ -55,6 +55,9 @@ CATALOG: dict[str, Spec] = {
     "source.auto_merge": Spec(
         "sources", HIGH, "重复源自动合并", 5,
         "被合并方转为停用未删除,数据源页点『恢复启用』可撤销"),
+    "record.source_changed": Spec(
+        "followups", HIGH, "回访记录的来源页面内容已变化", 0,
+        "回访时核对状态;若已生效/废止请更新记录状态"),
     "source.auto_revive": Spec(
         "sources", NOTICE, "停用源复检通过自动恢复", 0, "数据源页再次停用即可"),
     "source.auto_watch": Spec(
@@ -129,6 +132,13 @@ def record(db, action: str, title: str, *, need_id: str | None = None, detail: d
     except Exception:  # noqa: BLE001 记账失败绝不能影响主流程
         try:
             db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    # 紧急级动作立即走通知组件(只用已配置的渠道;没配就什么都不发)
+    if row.level >= CRITICAL:
+        try:
+            from app.services import notify
+            notify.send(f"[紧急] {title[:80]}", f"{title}\n需求:{need_id or '-'}\n对象:{target or '-'}\n{detail or ''}"[:3000])
         except Exception:  # noqa: BLE001
             pass
     return row

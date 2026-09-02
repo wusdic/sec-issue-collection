@@ -706,7 +706,7 @@ def list_documents(need_id: str, status: str | None = None, relevant: bool = Fal
     return [{"id": d.id, "title": d.title, "url": d.final_url or d.url, "publisher": d.publisher,
              "screen_status": d.screen_status, "screen_score": d.screen_score,
              "screen_reason": d.screen_reason, "is_primary": d.is_primary,
-             "snapshot_id": d.snapshot_id,
+             "snapshot_id": d.snapshot_id, "verification": d.verification,
              "fetched_at": d.fetched_at.isoformat() if d.fetched_at else None}
             for d in q.order_by(RawDocument.id.desc()).limit(limit).all()]
 
@@ -863,6 +863,33 @@ def event_relations(event_id: str, db: Session = Depends(get_session), _: AppUse
     """记录的上下游关系(废止/替代/修订/依据)。"""
     from app.services import relations
     return relations.for_event(db, event_id)
+
+
+class BenchmarkIn(BaseModel):
+    need_id: str | None = None
+    name: str
+    period: str | None = None
+    source_desc: str | None = None
+    items: list[dict]                      # [{title, url, date}]
+
+
+@api.post("/benchmark")
+def benchmark_run(body: BenchmarkIn, db: Session = Depends(get_session),
+                  user: AppUser = Depends(require_roles("analyst"))):
+    """对标基准:上传一份权威汇总/人工抽样清单,算库里的召回与漏报归因(doc_only=采到没成记录,not_found=没采到)。"""
+    from app.services import benchmark
+    r = benchmark.run(db, need_ctx.get(db, _nid(body.need_id)), body.name, body.items, body.period, body.source_desc)
+    db.add(AuditLog(user_id=user.id, action="benchmark.run", target=_nid(body.need_id),
+                    detail={"batch_id": r["batch_id"], "recall": r["recall"]}))
+    db.commit()
+    return r
+
+
+@api.get("/benchmark")
+def benchmark_history(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
+                      _: AppUser = Depends(current_user)):
+    from app.services import benchmark
+    return {"latest": benchmark.latest(db, need_id), "history": benchmark.history(db, need_id)}
 
 
 @api.get("/kpi/scorecard")

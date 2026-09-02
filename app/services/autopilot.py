@@ -31,6 +31,9 @@ TASKS = [
     ("prospect", "主动找源 + 候选相关度初评", "autopilot_prospect_days", 7),
     ("grade", "试运行源自动定级/淘汰", "autopilot_grade_days", 1),
     ("candidates", "候选池:补初评 + 达标入库 + 清理无关", "autopilot_candidates_days", 1),
+    # 主线闭环:文档型记录的来源页面变了要让回访看见;发布的记录按画像导出(本地资料库/外部表)
+    ("recheck", "到期回访记录的来源再核查(内容变化提示)", "autopilot_recheck_days", 7),
+    ("exports", "按画像导出已发布记录(本地资料库/多维表格)", "autopilot_exports_days", 1),
 ]
 
 
@@ -230,7 +233,21 @@ def _do_queries(db, need_id: str) -> dict:
     return r
 
 
-_ACTIONS = {"seeds": _do_seeds, "engines": _do_engines, "queries": _do_queries,
+def _do_recheck(db, need_id: str) -> dict:
+    from app.services import followup, need_ctx
+    return followup.recheck_due(db, need_id, need_ctx.get(db, need_id))
+
+
+def _do_exports(db, need_id: str) -> dict:
+    from app.services import exports, need_ctx
+    c = need_ctx.get(db, need_id)
+    if not (c.outputs.get("exports") or []):
+        return {"skipped": "画像未声明 outputs.exports"}
+    return exports.run(db, c)
+
+
+_ACTIONS = {"recheck": _do_recheck, "exports": _do_exports,
+            "seeds": _do_seeds, "engines": _do_engines, "queries": _do_queries,
             "dedup": _do_dedup, "locate": _do_locate, "health": _do_health,
             "prospect": _do_prospect, "grade": _do_grade, "candidates": _do_candidates}
 

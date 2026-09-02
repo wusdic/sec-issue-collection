@@ -197,3 +197,16 @@ def run(db, ctx, name: str | None = None, statuses=("published", "monitoring"), 
             item["error"] = f"不支持的导出类型 {kind}"
         results.append(item)
     return {"ok": all("error" not in r for r in results), "exports": results}
+
+
+def on_publish(db, ev, ctx=None) -> dict:
+    """发布即落盘:把这一条记录写进画像声明的所有 local_library 目标(其它目标由每日导出任务统一跑)。"""
+    c = ctx or need_ctx.get(db, ev.need_id)
+    out = {}
+    for ex in (c.outputs.get("exports") or []):
+        if isinstance(ex, dict) and (ex.get("kind") or "") == "local_library":
+            try:
+                out[ex.get("name") or "local_library"] = local_library(db, c, ex, [ev])
+            except Exception as e:  # noqa: BLE001 落盘失败不影响发布
+                out[ex.get("name") or "local_library"] = {"error": str(e)}
+    return out

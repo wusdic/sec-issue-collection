@@ -14,7 +14,7 @@ L0 = {"errors", "diagnostics", "url_tools", "simhash", "need_ctx", "prompts",
       "llm", "fetcher", "archive", "reputation", "settings_service", "actions", "notify"}
 L1 = {"adapters", "columns", "keywords", "extraction", "money_guard", "dedup", "events", "followup",
       "leads", "kpi", "digest", "coverage", "discovery", "grading", "query_evolution", "health",
-      "wechat", "review", "verify", "relations", "exports"}
+      "wechat", "review", "verify", "relations", "exports", "benchmark"}
 L2 = {"pipeline", "prospect", "scheduler", "crawl_runner", "locate", "autopilot", "bootstrap", "daily",
       "profiles", "capabilities"}
 LAYER = {**{m: 0 for m in L0}, **{m: 1 for m in L1}, **{m: 2 for m in L2}}

@@ -153,6 +153,8 @@ outputs:
     amount_sum: null
     status_count: null
     missing_field: {field: related_products}
+  exports:
+    - {name: 本地资料库, kind: local_library, root: data/library, path_template: "{dim1}/{grade}/{year}", formats: [json, md]}
   digest:
     title: 政策动态日报
     group_roles: [dim1, grade]
@@ -195,6 +197,7 @@ ui:
     - {key: docs_total, label: 采集文档, go: crawl, desc: "采集入库的原始页面"}
     - {key: pending_review, label: 待复核, go: review, desc: "等人工核对后才能发布"}
     - {key: followups_open, label: 跟踪待办, go: followups, desc: "待跟踪生效/修订/废止"}
+    - {key: quality, label: 质量评分, go: events, desc: "完整性/准确性/一致性/时效性加权(A–D)"}
 
 demo:
   samples:
