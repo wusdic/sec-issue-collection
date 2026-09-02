@@ -1,0 +1,55 @@
+# 场景画像④:某省/市地域的某类文件(文档型;轻量抽取;必须提及该地域;主题维度来自 scope)
+need: {id: nanjing_docs, name: 南京市数据与政务类文件跟踪, owner: 政务事业部, priority: B, timeliness_sla: 日级,
+       primary_behaviors: [G1], languages: [zh], regions: [中国大陆]}
+compliance: {data_categories: [政府公开文件], personal_info: false, collection_boundary: 仅公开渠道, retention: 永久保留, usage_limit: 内部参考}
+record_schemas:
+  - {archetype: 文档型, min_publish_fields: [title]}
+record:
+  id_prefix: NJD
+  envelope: {id_field: "", status_field: ""}
+  role_labels: {subject: 发文单位, dim1: 主题, region: 地域, tags_a: 标签, occurred_date: 发布日, record_type: 类型}
+  record_types:
+    values: [正式文件, 征求意见, 不该入库]
+    default: 正式文件
+    out_of_scope: 不该入库
+    advisory: {value: 征求意见, hints: [征求意见, 意见稿], subject_blank_values: []}
+  dedup: {subject_roles: [subject+title], type_role: null, date_role: occurred_date, window_days: 365}
+dictionaries: {relevance_term_fields: [topic_terms, doctype_terms]}
+scope:
+  regions: [{value: 南京市, terms: [南京]}]
+  topics: [数据要素, 政务服务, 数字政府, 公共数据开放]
+  doc_types: [通知, 意见, 办法, 方案]
+  require_mention: [regions]
+pipeline: {extract_mode: light}
+coverage: {dimension_role: dim1, scope_kind: topics}
+sources:
+  credibility_levels: {confirm_allowed: [S1], levels: {S1: 市政府/委办局官网, S2: 市属媒体, S3: 其他}}
+quality:
+  model: 事实核实型
+  screen: {goal: 判断是否为南京市政府及委办局发布的数据要素/政务服务/数字政府类文件, exclude_rules: [其他城市文件, 解读与评论]}
+update: {followup_schedule: [90]}
+outputs:
+  reports: [{name: 南京政务文件周报, cycle: 周, audience: 政务事业部}]
+  reports_engine: {crosstab: {row_role: dim1, col_roles: [record_type]}, amount_sum: null, status_count: null, missing_field: null}
+  leads_engine: {enabled: false}
+  digest: {title: 南京数据政务文件日报, group_roles: [dim1], rank_role: dim1}
+ui:
+  record_label: 文件
+  tabs: {leads: {label: 线索, enabled: false}}
+  list_columns: [{role: title}, {role: subject}, {role: dim1}, {role: occurred_date}]
+  detail_sections: [{kind: kv, roles: [subject, dim1, region, occurred_date]}, {kind: text, path: summary, label: 摘要}, {kind: sources}]
+benchmark: {baselines: [{name: 南京市政府信息公开目录, type: 官方汇总, cycle: 月}], target_recall: 0.9}
+demo:
+  samples:
+    - {title: 南京市人民政府办公厅关于印发南京市数据要素市场化改革实施方案的通知,
+       text: "南京市人民政府办公厅印发《南京市数据要素市场化改革实施方案》,宁政办发〔2026〕20号,推动公共数据开放与数据要素市场建设。"}
+    - {title: 杭州市发布数据要素改革方案, text: "杭州市印发数据要素市场化改革方案,推动公共数据授权运营。"}
+mock:
+  screen_keywords: [南京, 数据, 政务, 通知, 办法, 方案, 意见, 印发]
+  extract_rules:
+    - {path: region, when_contains: [南京], value: 南京市}
+    - {path: subject, regex: "((?:南京市|杭州市)[\\u4e00-\\u9fff]{2,12}(?:办公厅|委员会|局|政府))"}
+    - {path: category, when_contains: [数据要素], value: 数据要素}
+    - {path: category, when_contains: [政务服务], value: 政务服务}
+    - {path: summary, regex: "正文[::]\\s*([^\\n]{10,200})"}
+    - {path: published_date, regex: "〔(\\d{4})〕", transform: str}

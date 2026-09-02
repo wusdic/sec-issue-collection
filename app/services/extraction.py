@@ -88,7 +88,7 @@ def _weights_for(ctx, record_schema: dict | None) -> dict:
     req = []
     if record_schema is None and ctx is not None:
         try:
-            record_schema = load_record_schema(ctx.schema_file)
+            record_schema = ctx.record_schema()
         except (OSError, ValueError):
             record_schema = None
     if record_schema:

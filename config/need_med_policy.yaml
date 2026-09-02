@@ -1,0 +1,64 @@
+# 场景画像①:医疗行业最新政策(文档型;复用政策 Schema;范围=行业维度;关键词自动生成;无词表/种子/配方文件)
+need: {id: med_policy, name: 医疗行业政策动态, owner: 行业研究, priority: B, timeliness_sla: 日级,
+       primary_behaviors: [G1], languages: [zh], regions: [中国大陆]}
+compliance: {data_categories: [政策法规], personal_info: false, collection_boundary: 仅公开渠道, retention: 永久保留, usage_limit: 内部参考}
+record_schemas:
+  - {file: schema/policy.schema.json, archetype: 文档型, min_publish_fields: [title, issuer], dedup_key: [doc_number]}
+record:
+  id_prefix: MED
+  envelope: {id_field: doc_id, status_field: ""}
+  field_roles: {title: title, subject: issuer, subject_key: doc_number, dim1: "topics[0]", grade: doc_type,
+                tags_a: topics, tags_b: affected_industries, occurred_date: published_date,
+                disclosed_date: effective_date, record_type: record_type}
+  role_labels: {subject: 发布机关, subject_key: 文号, dim1: 主题, grade: 文种, tags_a: 主题, tags_b: 涉及领域, occurred_date: 发布日}
+  record_types:
+    values: [正式文件, 征求意见, 不该入库]
+    default: 正式文件
+    out_of_scope: 不该入库
+    advisory: {value: 征求意见, hints: [征求意见, 意见稿], subject_blank_values: []}
+  dedup: {subject_roles: [subject_key, subject+title], type_role: null, date_role: occurred_date, window_days: 3650}
+dictionaries: {relevance_term_fields: [topic_terms, doctype_terms]}
+scope:
+  industries: [{value: 医疗卫生, terms: [医疗, 医院, 卫生健康, 医药, 医保]}]
+  topics: [互联网诊疗, 医保支付, 医疗数据, 药品集采, 分级诊疗]
+  doc_types: [通知, 管理办法, 指导意见, 征求意见稿]
+  require_mention: [industries]
+keywords:
+  groups: {action_terms: [发布, 印发, 出台]}
+  time_filters: [近30天]
+coverage: {dimension_role: dim1, scope_kind: topics, query_templates: ["{ind} 医疗 政策", "{ind} 通知 卫健委"]}
+sources:
+  credibility_levels: {confirm_allowed: [S1], levels: {S1: 部委/省厅官网, S2: 行业协会, S3: 媒体}}
+  prospect: {selftest_query: 卫健委 通知 互联网诊疗}
+quality:
+  model: 事实核实型
+  screen:
+    goal: 判断是否为国家或省级卫生健康/医保/药监部门发布的医疗行业政策文件或其征求意见稿
+    include_rules: [部委/省厅印发的通知、办法、指导意见、实施细则, 医保支付/药品集采/互联网诊疗/医疗数据相关规定]
+    exclude_rules: [政策解读课程/培训/招聘/会议通知, 媒体评论与二手解读]
+update: {followup_schedule: [30, 90], followup_triggers: [{field: effective_date, when: empty, reason: 生效日期未披露}]}
+outputs:
+  reports: [{name: 医疗政策周报, cycle: 周, audience: 行业研究}]
+  reports_engine: {crosstab: {row_role: dim1, col_roles: [grade]}, amount_sum: null, status_count: null, missing_field: null}
+  leads_engine: {enabled: false}
+  digest: {title: 医疗政策日报, group_roles: [dim1, grade], rank_role: grade}
+ui:
+  record_label: 政策
+  tabs: {leads: {label: 线索, enabled: false}}
+  list_columns: [{role: title}, {role: subject}, {role: dim1}, {role: grade}, {role: occurred_date}]
+  detail_sections: [{kind: kv, roles: [subject, subject_key, dim1, grade, occurred_date]}, {kind: text, path: summary, label: 摘要}, {kind: sources}]
+benchmark: {baselines: [{name: 国家卫健委政策文件库, type: 官方汇总, cycle: 月}], target_recall: 0.9}
+demo:
+  samples:
+    - {title: 国家卫生健康委关于印发互联网诊疗监管细则的通知,
+       text: "国家卫生健康委、国家中医药局印发《互联网诊疗监管细则(试行)》,国卫办医发〔2026〕5号,规范医院开展互联网诊疗活动,明确医保支付衔接要求。"}
+mock:
+  screen_keywords: [卫生健康, 卫健委, 医疗, 医院, 医保, 印发, 通知, 办法, 征求意见, 诊疗]
+  extract_rules:
+    - {path: doc_number, regex: "(?:文号)?([\\u4e00-\\u9fff]{2,10}〔\\d{4}〕\\d+号)"}
+    - {path: issuer, regex: "(国家卫生健康委|国家医保局|国家中医药局|[\\u4e00-\\u9fff]{2,4}省卫生健康委)"}
+    - {path: doc_type, when_contains: [细则, 办法], value: 规范性文件}
+    - {path: status, when_contains: [印发, 发布], value: 发布}
+    - {path: topics, when_contains: [互联网诊疗], append: 互联网诊疗}
+    - {path: topics, when_contains: [医保], append: 医保支付}
+    - {path: affected_industries, when_contains: [医院], append: 医疗卫生}

@@ -10,7 +10,8 @@
 [02 业务逻辑与参数化维度](design/platform/02-业务逻辑与参数化维度.md) ·
 [03 功能清单](design/platform/03-功能清单.md) ·
 [04 多视角验证](design/platform/04-多视角验证.md) ·
-[05 落地与验证记录](design/platform/05-落地验证.md)(含"新增一个需求"操作清单)。
+[05 落地与验证记录](design/platform/05-落地验证.md)(含"新增一个需求"操作清单)·
+[06 场景适用性与能力模组](design/platform/06-场景适用性与能力模组.md)(医疗政策 / 招标中标 / 企业定向 / 省市文件四个场景画像,能力模组目录)。
 
 快速开始:`python -m app.cli init`(装载默认需求;`--all` 装载全部画像)→ `uvicorn app.main:app` → 登录后头部可切换需求。
 

@@ -1,0 +1,82 @@
+# 场景画像②:某类招标/中标信息(对象型;地域+行业双限定;金额为普通数值;项目编号去重)
+need: {id: tender_watch, name: 江苏网络安全招标中标监测, owner: 销售运营, priority: A, timeliness_sla: 小时级,
+       primary_behaviors: [G1], languages: [zh], regions: [中国大陆]}
+compliance: {data_categories: [政府采购公开信息], personal_info: false, collection_boundary: 仅公开渠道, retention: 3年, usage_limit: 内部销售参考}
+record_schemas:
+  - {file: schema/tender.schema.json, archetype: 对象型, min_publish_fields: [project_name, notice_type], dedup_key: [project_no]}
+record:
+  id_prefix: TND
+  envelope: {id_field: "", status_field: ""}
+  field_roles: {title: title, subject: buyer, subject_key: project_no, subject_type: notice_type, dim1: industry,
+                region: region, grade: notice_type, tags_a: items, occurred_date: published_date, record_type: record_type}
+  role_labels: {subject: 采购人, subject_key: 项目编号, dim1: 行业, region: 地区, grade: 公告类型, tags_a: 采购品目, occurred_date: 发布日, record_type: 类型}
+  record_types:
+    values: [单一公告, 汇总, 不该入库]
+    default: 单一公告
+    out_of_scope: 不该入库
+    advisory: {value: 汇总, hints: [汇总, 盘点, 周报], subject_blank_values: ["", 未披露]}
+  grade_order: [中标公告, 招标公告, 变更公告, 废标公告, 其他]
+  dedup: {subject_roles: [subject_key, subject+title], type_role: null, date_role: occurred_date, window_days: 365}
+dictionaries: {relevance_term_fields: [industry_terms, doctype_terms]}
+scope:
+  regions: [{value: 江苏省, terms: [江苏, 南京, 苏州, 无锡, 常州, 南通]}]
+  industries: [{value: 网络安全, terms: [网络安全, 信息安全, 等保, 数据安全, 安全运营]}]
+  doc_types: [招标公告, 中标公告, 中标结果公告, 采购公告, 成交公告]
+  require_mention: [regions]
+  time_window_days: 30
+keywords:
+  compose:
+    - {groups: [region_terms, industry_terms, doctype_terms], template: "{0} {1} {2}", limits: [3, 3, 3]}
+    - {groups: [industry_terms, doctype_terms], template: "{0} {1}"}
+  time_filters: [近7天]
+  negative_terms: [招聘, 培训]
+coverage: {dimension_role: region, scope_kind: regions, query_templates: ["{ind} 网络安全 中标公告"]}
+sources:
+  credibility_levels: {confirm_allowed: [S1], levels: {S1: 政府采购网/公共资源交易平台, S2: 招标代理机构, S3: 商业招标聚合站}}
+  prospect: {selftest_query: 江苏 网络安全 中标公告}
+quality:
+  model: 事实核实型
+  screen:
+    goal: 判断是否为江苏省内网络安全/信息安全类采购项目的招标、中标、变更、废标公告原文
+    include_rules: [政府采购网/公共资源交易中心发布的公告原文, 采购内容涉及安全设备/等保测评/安全运营/数据安全]
+    exclude_rules: [招标代理/培训/资讯解读, 非江苏省项目, 与安全无关的采购]
+  extract_rules: ["amount.value 只填公告明确写出的中标金额/预算金额(元);单位万元要换算成元"]
+update: {followup_schedule: [30], followup_triggers: [{field: winner, when: empty, reason: 尚未公布中标人}]}
+outputs:
+  reports: [{name: 招标中标周报, cycle: 周, audience: 销售}]
+  reports_engine:
+    crosstab: {row_role: dim1, col_roles: [grade]}
+    amount_sum: {kind: plain, fields: [amount.value], group_role: region}
+    status_count: null
+    missing_field: {field: winner}
+  leads_engine: {enabled: false}
+  digest: {title: 招标中标日报, group_roles: [region, grade], rank_role: grade}
+ui:
+  record_label: 公告
+  tabs: {leads: {label: 线索, enabled: false}}
+  list_columns: [{role: title}, {role: grade}, {role: subject}, {role: region}, {role: occurred_date}]
+  filters: [{role: status, label: 状态}, {role: grade}]
+  detail_sections: [{kind: kv, roles: [subject, subject_key, dim1, region, grade, occurred_date]},
+                    {kind: object, path: amount, label: 金额, keys: {value: 金额(元), currency: 币种}},
+                    {kind: text, path: winner, label: 中标供应商}, {kind: tags, roles: [tags_a]}, {kind: sources}]
+benchmark: {baselines: [{name: 江苏政府采购网月度公告, type: 官方汇总, cycle: 月}], target_recall: 0.95}
+demo:
+  samples:
+    - {title: 南京市某区政务云网络安全等保建设项目中标公告,
+       text: "项目编号:JSZC-2026-0812。采购人:南京市某区大数据管理局。中标供应商:江苏某某信息技术有限公司,中标金额:286.5万元。项目内容:政务云平台等级保护建设及安全运营服务。"}
+    - {title: 苏州市某医院网络安全设备采购招标公告,
+       text: "项目编号:SZ-2026-CG-077。采购人:苏州市某医院。采购内容:防火墙、态势感知平台、等保测评服务。投标截止日期2026年9月20日。"}
+mock:
+  screen_keywords: [招标, 中标, 采购, 公告, 网络安全, 等保, 信息安全, 江苏, 南京, 苏州]
+  extract_rules:
+    - {path: project_no, regex: "项目编号[::]?\\s*([A-Z]{2,6}-?\\d{4}-?[A-Z0-9-]{2,})"}
+    - {path: project_name, regex: "([\\u4e00-\\u9fff0-9A-Za-z]{4,40}项目)"}
+    - {path: buyer, regex: "采购人[::]?\\s*([\\u4e00-\\u9fff]{2,30}?(?:局|委员会|医院|大学|公司|中心|集团))"}
+    - {path: winner, regex: "中标(?:供应商|单位|人)[::]?\\s*([\\u4e00-\\u9fff]{2,30}?(?:公司|集团|研究所))"}
+    - {path: amount.value, regex: "中标(?:金额|价)[::]?\\s*(\\d+(?:\\.\\d+)?)\\s*万元", transform: wan}
+    - {path: notice_type, when_contains: [中标], value: 中标公告}
+    - {path: notice_type, when_contains: [招标公告], value: 招标公告}
+    - {path: region, when_contains: [江苏, 南京, 苏州, 无锡], value: 江苏省}
+    - {path: industry, when_contains: [网络安全, 等保, 信息安全], value: 网络安全}
+    - {path: items, when_contains: [防火墙], append: 防火墙}
+    - {path: items, when_contains: [等保], append: 等级保护}

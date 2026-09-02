@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "招标/中标公告记录(对象型示例)",
+  "type": "object",
+  "required": ["title", "project_name", "notice_type", "published_date"],
+  "properties": {
+    "title": {"type": "string"},
+    "project_no": {"type": "string", "description": "项目编号(去重键)"},
+    "project_name": {"type": "string"},
+    "buyer": {"type": "string", "description": "采购人/招标人"},
+    "winner": {"type": "string", "description": "中标/成交供应商;招标阶段留空"},
+    "amount": {"type": "object", "properties": {"value": {"type": ["number", "null"]}, "currency": {"type": "string"}}},
+    "region": {"type": "string"},
+    "industry": {"type": "string"},
+    "notice_type": {"enum": ["招标公告", "中标公告", "变更公告", "废标公告", "其他"]},
+    "published_date": {"type": "string"},
+    "deadline": {"type": ["string", "null"]},
+    "items": {"type": "array", "items": {"type": "string"}, "description": "采购品目"},
+    "summary": {"type": "string"},
+    "record_type": {"enum": ["单一公告", "汇总", "不该入库"]},
+    "sources": {"type": "array", "items": {"type": "object"}}
+  }
+}

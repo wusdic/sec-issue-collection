@@ -225,6 +225,14 @@ def setup_need(db: Session, need_id: str | None = None, activate: bool = True) -
     if paths["keywords"] and Path(paths["keywords"]).exists():
         load_keyword_set(db, np.id, paths["keywords"])
         out["keywords"] = True
+    else:
+        # 没给关键词文件:按画像 scope/keywords 自动生成矩阵(auto_generate 可关)
+        ctx = need_ctx.get(db, np.id)
+        if ctx.keywords_cfg.get("auto_generate", True):
+            from app.services import keywords
+            content, _ks = keywords.generate(db, ctx, persist=True)
+            out["keywords"] = bool(content.get("preview"))
+            out["keywords_generated"] = len(content.get("preview") or [])
     if paths["sources"] and Path(paths["sources"]).exists():
         out["seed_sources"] = load_seed_sources(db, np.id, paths["sources"])
     db.flush()

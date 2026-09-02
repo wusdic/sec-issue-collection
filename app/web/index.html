@@ -1633,6 +1633,8 @@ async function vSettings(){
     <div id="kwForm">加载中…</div>
     ${["analyst","admin"].includes(ROLE)?`<div style="margin-top:14px">
       <button onclick="saveKeywords()">保存关键词并生效</button>
+      <button class="ghost" onclick="generateKeywords(false)" title="按画像的范围限定(地域/行业/主题/主体/文种)+ 监控名单自动生成词组与组合配方">自动生成关键词</button>
+      <button class="ghost" onclick="generateKeywords(true)" title="同上,并让大模型补同义/相关说法">生成并用模型扩展</button>
       <span id="kwMsg" style="margin-left:12px"></span></div>`:'<p class="muted">仅 analyst/admin 可编辑关键词</p>'}`;
   try{
     const cfg=await api("/settings");
@@ -1668,7 +1670,10 @@ async function loadKeywords(){
       const input=editable?`<input id="kw_${k}" value="${esc(val)}" style="width:120px">`:`<span class="mono">${esc(val)}</span>`;
       return `<div class="formRow"><div><div class="fl">${esc(label)}</div><div class="fd">${esc(desc)}</div></div><div>${input}</div></div>`;
     }).join("");
-    const listRows=KW_LISTS.map(([k,label,desc])=>{
+    const known=new Set(KW_LISTS.map(x=>x[0]));
+    const extra=Object.keys(KW_CONTENT).filter(k=>k.endsWith("_terms")&&!known.has(k)&&Array.isArray(KW_CONTENT[k]))
+      .map(k=>[k,({region_terms:"地域词",industry_terms:"行业词",topic_terms:"主题词",entity_terms:"主体词(含别名)",doctype_terms:"文种词",action_terms:"动作词",event_terms:"事件词"})[k]||k,"自动生成的词组"]);
+    const listRows=KW_LISTS.concat(extra).map(([k,label,desc])=>{
       const arr=KW_CONTENT[k]||[];
       const ta=editable?`<textarea id="kw_${k}" rows="3" style="width:100%;font-size:13px" placeholder="每行一个词">${esc(arr.join("\n"))}</textarea>`
         :`<div class="muted">${esc(arr.join("、"))||"(空)"}</div>`;
@@ -1683,13 +1688,22 @@ async function loadKeywords(){
 async function saveKeywords(){
   const content=Object.assign({},KW_CONTENT);
   KW_NUMS.forEach(([k])=>{ const el=document.getElementById("kw_"+k); if(el&&el.value!=="") content[k]=parseInt(el.value)||0; });
-  KW_LISTS.forEach(([k])=>{ const el=document.getElementById("kw_"+k); if(el) content[k]=el.value.split("\n").map(s=>s.trim()).filter(Boolean); });
+  Object.keys(content).concat(KW_LISTS.map(x=>x[0])).filter((k,i,a)=>a.indexOf(k)===i&&(k.endsWith("_terms")||KW_LISTS.some(x=>x[0]===k)))
+    .forEach(k=>{ const el=document.getElementById("kw_"+k); if(el) content[k]=el.value.split("\n").map(s=>s.trim()).filter(Boolean); });
   const msg=document.getElementById("kwMsg"); msg.innerHTML='<span class="muted">保存中…</span>';
   try{
     const r=await api("/keywords",{method:"PUT",body:JSON.stringify({need_id:NEED,content})});
     msg.innerHTML=`<span class="pill ok">已保存 v${r.version}</span> <span class="muted">展开后 ${r.expanded_count} 条查询,下次采集生效</span>`;
     toast("关键词已更新"); KW_CONTENT=content; loadKeywords();
   }catch(e){ msg.innerHTML=`<span class="pill bad">失败:${esc(e.message)}</span>`; }
+}
+async function generateKeywords(expand){
+  const msg=document.getElementById("kwMsg"); if(msg) msg.innerHTML='<span class="muted">生成中…</span>';
+  try{
+    const r=await api(`/keywords/generate?need_id=${NEED}&expand=${expand?"true":"false"}`,{method:"POST"});
+    if(msg) msg.innerHTML=`<span class="pill ok">已生成 ${esc(r.version)}</span> <span class="muted">词组:${Object.entries(r.groups||{}).map(([k,n])=>k+" "+n).join("、")};示例:${(r.preview||[]).slice(0,6).map(esc).join(" / ")}</span>`;
+    toast("关键词矩阵已生成并生效"); loadKeywords();
+  }catch(e){ if(msg) msg.innerHTML=`<span class="pill bad">失败:${esc(e.message)}</span>`; }
 }
 function renderLLMTest(t){
   if(!t) return "";

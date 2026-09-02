@@ -35,7 +35,14 @@ def screen_prompts(profile_cfg: dict, title: str, text: str, ctx=None) -> tuple[
     if exc:
         system += "【必须判 false,不得放行】\n" + "\n".join(f"· {r}" for r in exc) + "\n"
     if reminder:
-        system += f"关键:{reminder}"
+        system += f"关键:{reminder}\n"
+    scope_lines = c.scope_summary()
+    if scope_lines:
+        system += "【范围限定】只收下列范围内的内容:\n" + "\n".join(f"· {x}" for x in scope_lines) + "\n"
+        rm = c.require_mention
+        if rm:
+            from app.services.need_ctx import SCOPE_LABEL
+            system += "标题或正文未提及上述『" + "/".join(SCOPE_LABEL[k] for k in rm) + "』中任何一个的,一律判 false。\n"
     user = f"标题:{title}\n正文:\n{text[:6000]}"
     return system, user
 
@@ -61,9 +68,12 @@ def extract_prompts(profile_cfg: dict, dictionaries: dict, record_schema: dict,
         f"另输出 record_type,取值只能是 {rt.get('values')};"
         f"若本文不属于『{c.name}』的收集范畴,填『{rt.get('out_of_scope')}』(此时其余字段可留空、不要强填)")
     rules += c.extract_rules
+    scope_lines = c.scope_summary()
+    if scope_lines:
+        rules.append("范围限定(主体/地域/分类取值优先对齐这些名单及其别名,别名统一写成正式名):" + ";".join(scope_lines))
     numbered = "\n".join(f"{i + 1}) {r}" for i, r in enumerate(rules))
     system = (
-        f"TASK=extract\nNEED_ID={c.id}\nSCHEMA_FILE={c.schema_file}\n"
+        f"TASK=extract\nNEED_ID={c.id}\nSCHEMA_FILE={c.schema_file or 'light'}\n"
         f"你是『{c.name}』的结构化抽取器。把文章内容按给定 JSON Schema 抽取为一条记录,仅输出 JSON。\n"
         f"硬规则(违反即废):\n{numbered}\n"
         # Schema 必须完整给出:$defs 里的结构(三态/日期精度等)截掉模型就看不到怎么写
@@ -92,3 +102,14 @@ def list_template_prompts(html: str) -> tuple[str, str]:
         '{"item_selector": "CSS选择器", "title_from": "text|attr:x", "url_from": "href", "confidence": 0-1}'
     )
     return system, html[:15000]
+
+
+def expand_terms_prompts(ctx, group: str, terms: list[str], per: int) -> tuple[str, str]:
+    """关键词扩展:给一组词补同义/相关检索说法(keywords 能力模块用)。"""
+    system = (
+        "TASK=expand_terms\n"
+        f"你是『{ctx.name}』的检索词工程师。给你一组『{group}』类的词,请为每个词补 {per} 个"
+        "中文搜索引擎里常见的同义/近义/口语/缩写说法(2-10 字,完整说法,不要半截词、不要重复原词)。"
+        '只输出 JSON:{"terms": ["词1", "词2"]}'
+    )
+    return system, "词组:\n" + "\n".join(f"- {t}" for t in terms)

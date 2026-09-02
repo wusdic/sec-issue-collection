@@ -68,7 +68,7 @@ DEFAULTS: dict = {
                  "short_names": {}, "placeholders": ["其他", "其它", "未分类", "未知", "词表外"],
                  "window_days": None, "min_records": None},
     "sources": {
-        "discovery_file": "config/discovery.yaml",
+        "discovery_file": None,               # None → 由关键词模块按 scope 生成配方
         "column_discovery": {"hint_words": [], "stop_words": [
             "招聘", "关于我们", "联系", "网站地图", "版权", "登录", "注册", "English", "简介",
             "机构设置", "领导", "党建", "会议", "视频", "图片", "专题", "首页", "邮箱", "服务"],
@@ -125,7 +125,28 @@ DEFAULTS: dict = {
     },
     "demo": {"samples": []},
     "mock": {"screen_keywords": [], "extract_rules": []},
+    # ---- 范围限定(scope):需求"要什么"的五个维度。每项可写 值 或 {value, terms|aliases}。
+    # 它同时喂给:关键词生成(词组)、粗筛提示词(范围说明)、范畴闸门(require_mention)、覆盖度(维度取值)、找源配方。
+    "scope": {"regions": [], "industries": [], "topics": [], "entities": [], "doc_types": [],
+              "require_mention": [],        # 例 ["entities"]:标题/正文必须提到该维度至少一个词,否则范畴外
+              "time_window_days": None},    # None → 运行时设置 collect_recency_days
+    # ---- 关键词生成与组合(keywords 能力模块)
+    "keywords": {"groups": {},               # 静态词组 {group: [terms]},与 scope 派生词组合并
+                 "compose": [],              # 组合配方 [{groups:[a,b], template:"{0} {1}", limits:[n,m]}];空 → 平台缺省配方
+                 "expand_with_llm": False, "expand_per_term": 3,
+                 "time_filters": [], "negative_terms": [],
+                 "query_budget_per_source_daily": 200, "max_pages_per_query": 3,
+                 "auto_generate": True},     # 画像没给 discovery_terms_file 时装载即自动生成矩阵
+    # ---- 处理流水线组合:阶段可增删排序;extract_mode=light 时不需要 Schema 文件(按角色生成轻量 Schema)
+    "pipeline": {"stages": ["screen", "extract", "scope_gate", "content_check", "dedup_record", "draft"],
+                 "extract_mode": "schema", "light_fields": []},
 }
+SCOPE_KINDS = ("regions", "industries", "topics", "entities", "doc_types")
+SCOPE_GROUP = {"regions": "region_terms", "industries": "industry_terms", "topics": "topic_terms",
+               "entities": "entity_terms", "doc_types": "doctype_terms"}
+SCOPE_LABEL = {"regions": "地域", "industries": "行业", "topics": "主题", "entities": "主体", "doc_types": "文种"}
+_LIGHT_ROLES = {"title": "title", "subject": "subject", "dim1": "category", "region": "region",
+                "tags_a": "tags", "occurred_date": "published_date", "record_type": "record_type"}
 
 _FOREIGN_TLDS = [".jp", ".kr", ".ca", ".us", ".uk", ".de", ".fr", ".au", ".in", ".ru", ".br", ".sg",
                  ".my", ".th", ".vn", ".id", ".ph", ".nz", ".it", ".es", ".nl", ".se", ".ch", ".il",
@@ -214,6 +235,12 @@ class NeedContext:
         self.ui = m["ui"]
         self.demo = m["demo"]
         self.mock = m["mock"]
+        self.scope_cfg = m["scope"]
+        self.keywords_cfg = m["keywords"]
+        self.pipeline_cfg = m["pipeline"]
+        # 轻量抽取模式且画像没声明角色 → 用轻量 Schema 的缺省角色
+        if self.extract_mode == "light" and not ((cfg.get("record") or {}).get("field_roles")):
+            self.record["field_roles"] = {**self.record["field_roles"], **_LIGHT_ROLES}
         # 兼容旧键
         q = cfg.get("quality") or {}
         if not self.quality["screen"].get("goal") and q.get("screen_prompt"):
@@ -255,9 +282,103 @@ class NeedContext:
         return ((self.raw.get("record_schemas") or [{}])[0].get("archetype")) or "事件型"
 
     @property
-    def schema_file(self) -> Path:
+    def schema_file(self) -> Path | None:
+        """记录 Schema 文件;轻量模式(或画像未给文件)返回 None,此时用 record_schema() 生成。"""
         f = (self.raw.get("record_schemas") or [{}])[0].get("file")
-        return self.path(f) if f else settings.schema_dir / "event.schema.json"
+        if f:
+            return self.path(f)
+        return None if self.extract_mode == "light" or not self.raw.get("record_schemas") else None
+
+    @property
+    def extract_mode(self) -> str:
+        return str(self.pipeline_cfg.get("extract_mode") or "schema")
+
+    @property
+    def pipeline_stages(self) -> list[str]:
+        return [str(x) for x in (self.pipeline_cfg.get("stages") or DEFAULTS["pipeline"]["stages"])]
+
+    def light_schema(self) -> dict:
+        """按角色生成的轻量记录 Schema:标题/摘要/主体/分类/地域/标签/日期 + 画像追加字段。"""
+        rt = self.record_types
+        props = {
+            "title": {"type": "string"}, "summary": {"type": "string"},
+            "subject": {"type": "string", "description": "信息涉及的主体(机构/企业/部门),没有填『未披露』"},
+            "category": {"type": "string", "description": "分类/主题"},
+            "region": {"type": "string", "description": "涉及地域,没有填『未披露』"},
+            "published_date": {"type": "string", "description": "YYYY-MM-DD;不明填『未披露』"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "record_type": {"enum": list(rt.get("values") or ["单一记录", "汇总情报", "不该入库"])},
+            "sources": {"type": "array", "items": {"type": "object"}},
+        }
+        for f in self.pipeline_cfg.get("light_fields") or []:
+            if isinstance(f, dict) and f.get("name"):
+                props[str(f["name"])] = {"type": f.get("type") or "string", "description": f.get("desc") or ""}
+            elif isinstance(f, str):
+                props[f] = {"type": "string"}
+        return {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object",
+                "title": f"{self.name} 轻量记录", "required": ["title", "summary"], "properties": props}
+
+    def record_schema(self) -> dict:
+        """记录 Schema(dict):有文件读文件,否则按角色生成轻量 Schema。"""
+        f = self.schema_file
+        if f and f.exists():
+            from app.services.extraction import load_record_schema
+            return load_record_schema(f)
+        return self.light_schema()
+
+    # ---------------- 范围限定 ----------------
+    @property
+    def scope(self) -> dict:
+        return self.scope_cfg
+
+    def scope_items(self, kind: str) -> list[dict]:
+        """某维度的条目,统一成 [{value, terms:[value + 同义/别名]}]。"""
+        out = []
+        for x in self.scope_cfg.get(kind) or []:
+            if isinstance(x, dict):
+                v = str(x.get("value") or x.get("name") or "").strip()
+                if not v:
+                    continue
+                extra = [str(t).strip() for t in (x.get("terms") or x.get("aliases") or []) if str(t).strip()]
+                out.append({"value": v, "terms": [v] + [t for t in extra if t != v]})
+            elif x not in (None, ""):
+                out.append({"value": str(x).strip(), "terms": [str(x).strip()]})
+        return out
+
+    def scope_values(self, kind: str) -> list[str]:
+        return [x["value"] for x in self.scope_items(kind)]
+
+    def scope_terms(self, kind: str) -> list[str]:
+        seen, out = set(), []
+        for x in self.scope_items(kind):
+            for t in x["terms"]:
+                if t not in seen:
+                    seen.add(t)
+                    out.append(t)
+        return out
+
+    @property
+    def require_mention(self) -> list[str]:
+        return [str(k) for k in (self.scope_cfg.get("require_mention") or []) if str(k) in SCOPE_KINDS]
+
+    @property
+    def time_window_days(self) -> int:
+        v = self.scope_cfg.get("time_window_days")
+        return int(v) if v else int(getattr(settings, "collect_recency_days", 0) or 0)
+
+    def scope_summary(self) -> list[str]:
+        """给提示词/界面用的范围说明行。"""
+        lines = []
+        for kind in SCOPE_KINDS:
+            items = self.scope_items(kind)
+            if not items:
+                continue
+            parts = []
+            for it in items:
+                alias = [t for t in it["terms"] if t != it["value"]]
+                parts.append(it["value"] + (f"(含 {'/'.join(alias)})" if alias else ""))
+            lines.append(f"{SCOPE_LABEL[kind]}:" + "、".join(parts))
+        return lines
 
     @property
     def min_publish_fields(self) -> list[str]:
@@ -367,17 +488,28 @@ class NeedContext:
         return self.path((self.raw.get("sources") or {}).get("seed_file"))
 
     @property
-    def discovery_file(self) -> Path:
-        return self.path(self.sources_cfg.get("discovery_file") or "config/discovery.yaml")
+    def discovery_file(self) -> Path | None:
+        return self.path(self.sources_cfg.get("discovery_file"))
 
     def discovery_yaml(self) -> dict:
-        """找源配方 / 候选评分 / 定级规则所在的文件(按需求可不同)。"""
+        """找源配方 / 候选评分 / 定级规则:画像给了文件读文件;没给(或文件不存在)则由关键词模块
+        按 scope/keywords 生成配方(source_search_queries + query_recipes),让新需求零文件也能找源。"""
         if self._discovery_cache is None:
-            try:
-                with open(self.discovery_file, encoding="utf-8") as f:
-                    self._discovery_cache = yaml.safe_load(f) or {}
-            except (OSError, yaml.YAMLError):
-                self._discovery_cache = {}
+            data = None
+            f = self.discovery_file
+            if f is not None:
+                try:
+                    with open(f, encoding="utf-8") as fh:
+                        data = yaml.safe_load(fh) or {}
+                except (OSError, yaml.YAMLError):
+                    data = None
+            if data is None:
+                try:
+                    from app.services import keywords
+                    data = keywords.discovery_recipes(self)
+                except Exception:  # noqa: BLE001
+                    data = {}
+            self._discovery_cache = data
         return self._discovery_cache
 
     def load_dictionaries_file(self) -> dict:
@@ -555,7 +687,9 @@ class NeedContext:
                 "envelope": self.envelope,
                 "record_types": self.record_types, "grade_order": self.grade_order,
                 "confirm_allowed": self.confirm_allowed, "leads_enabled": bool(self.leads.get("enabled")),
-                "archetype": self.archetype, "id_prefix": self.id_prefix}
+                "archetype": self.archetype, "id_prefix": self.id_prefix,
+                "extract_mode": self.extract_mode, "scope": self.scope_summary(),
+                "pipeline_stages": self.pipeline_stages}
 
 
 # ---------------- 获取与缓存 ----------------

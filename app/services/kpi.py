@@ -59,8 +59,19 @@ def heatmap(db: Session, need_id: str, days: int = 365, ctx=None) -> dict:
 
 
 def _amount(channel) -> float:
+    if isinstance(channel, (int, float)) and not isinstance(channel, bool):
+        return float(channel)
+    if isinstance(channel, str):
+        try:
+            return float(channel.replace(",", ""))
+        except ValueError:
+            return 0.0
     if not isinstance(channel, dict):
         return 0.0
+    if channel.get("value") is not None and "point" not in channel:
+        return _amount(channel["value"])
+    if channel.get("amount") is not None:
+        return _amount(channel["amount"])
     if channel.get("point") is not None:
         return float(channel["point"])
     if channel.get("low") is not None:
@@ -74,9 +85,11 @@ def amount_stats(db: Session, need_id: str, scope: str | None = None, ctx=None) 
     cfg = c.reports.get("amount_sum")
     if not cfg or not (cfg.get("fields") or c.tristate_fields):
         return {"enabled": False, "note": "本需求未声明金额汇总(outputs.reports_engine.amount_sum)"}
-    scope = scope or cfg.get("default_scope") or "confirmed"
-    assert scope in ("confirmed", "claimed", "estimated")
-    channel_key = (c.assertions.get("channels") or {}).get(scope) or f"{scope}_cny"
+    plain = (cfg.get("kind") or "tristate") == "plain"       # plain:字段本身就是数字/{value},没有三态通道
+    scope = "plain" if plain else (scope or cfg.get("default_scope") or "confirmed")
+    if not plain:
+        assert scope in ("confirmed", "claimed", "estimated")
+    channel_key = None if plain else ((c.assertions.get("channels") or {}).get(scope) or f"{scope}_cny")
     fields = list(cfg.get("fields") or c.tristate_fields)
     group_role = cfg.get("group_role") or "dim1"
     per_field, per_group = defaultdict(float), defaultdict(float)
@@ -85,7 +98,7 @@ def amount_stats(db: Session, need_id: str, scope: str | None = None, ctx=None) 
         p = ev.payload or {}
         touched = False
         for f in fields:
-            amt = _amount(url_tools.dget(p, f, channel_key))
+            amt = _amount(url_tools.dget(p, *f.split("."))) if plain else _amount(url_tools.dget(p, f, channel_key))
             if amt:
                 per_field[f] += amt
                 per_group[_col(ev, group_role) or "未知"] += amt
@@ -93,7 +106,8 @@ def amount_stats(db: Session, need_id: str, scope: str | None = None, ctx=None) 
         if touched:
             n_events += 1
     labels = c.assertions.get("labels") or {}
-    return {"enabled": True, "scope": scope, "scope_note": "默认统计口径=已确认;本报表口径=" + scope,
+    return {"enabled": True, "scope": scope,
+            "scope_note": ("字段为普通数值,无三态口径" if plain else "默认统计口径=已确认;本报表口径=" + scope),
             "events_counted": n_events, "group_role": group_role, "group_label": c.role_label(group_role),
             "by_field": {f: {"amount": v, "label": labels.get(f, f)} for f, v in per_field.items()},
             "by_group": dict(per_group),

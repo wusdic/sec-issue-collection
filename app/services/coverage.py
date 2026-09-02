@@ -18,6 +18,15 @@ def dimension_values(ctx) -> dict[str, list[str]]:
     """覆盖维度的取值 → 子项列表。词表里可写成 {一级: [二级...]} 或 [值...] 或 [{name: 值}]。"""
     data = ctx.load_dictionaries_file()
     v = data.get(ctx.coverage.get("dictionary_key") or "industries")
+    if not v:
+        # 没有词表文件/该节为空 → 用范围限定(scope)里与覆盖维度对应的那一维当取值
+        from app.services.need_ctx import SCOPE_KINDS
+        kinds = [ctx.coverage.get("scope_kind")] if ctx.coverage.get("scope_kind") else \
+            ["industries", "topics", "doc_types", "regions", "entities"]
+        for k in kinds:
+            if k in SCOPE_KINDS and ctx.scope_values(k):
+                v = ctx.scope_values(k)
+                break
     if isinstance(v, dict):
         return {str(k): [str(x) for x in vv] if isinstance(vv, list) else [] for k, vv in v.items()}
     if isinstance(v, list):

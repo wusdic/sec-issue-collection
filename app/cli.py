@@ -5,6 +5,8 @@
   run-daily     执行每日采集与处理(真实网络)
   demo          离线端到端演示(MockLLM,无网络):采集→抽取→复核→发布→回访→线索
   verify-archives  存档抽样校验
+  keywords-generate  按画像 scope 自动生成关键词矩阵(--need X --expand)
+  cap-list / cap-run  列出 / 独立调用某个底层能力(cap-run screen --need X --params '{"title":..,"text":..}')
 """
 import json
 import sys
@@ -132,7 +134,7 @@ def demo():
             typer.echo(f"{f} 状态={(ev.payload.get(f) or {}).get('status')}(三态守卫 ✓)")
 
         typer.echo("== ② 复核发布(编辑提交→复核通过) ==")
-        schema = load_record_schema(ctx.schema_file)
+        schema = ctx.record_schema()
         reviewer = db.query(AppUser).filter_by(username="reviewer1").one()
         try:
             approve(db, event_id, reviewer.id, schema)
@@ -151,6 +153,43 @@ def demo():
                                 "products": l.products} for l in leads], ensure_ascii=False, indent=1))
         db.commit()
         typer.echo("演示完成 ✓")
+    finally:
+        db.close()
+
+
+@cli.command("keywords-generate")
+def keywords_generate(need: str = typer.Option(None, help="需求 id(缺省=默认需求)"),
+                      expand: bool = typer.Option(False, help="让模型补同义/相关说法"),
+                      dry_run: bool = typer.Option(False, help="只打印不落库")):
+    """按画像的范围限定 + 静态词组 + 监控名单生成关键词矩阵。"""
+    from app.services import capabilities
+    db = SessionLocal()
+    try:
+        r = capabilities.run("keywords.generate", db, need or NEED_ID, expand=expand, persist=not dry_run)
+        db.commit()
+        typer.echo(json.dumps(r, ensure_ascii=False, indent=1))
+    finally:
+        db.close()
+
+
+@cli.command("cap-list")
+def cap_list():
+    """列出可独立调用的底层能力。"""
+    from app.services import capabilities
+    for c in capabilities.list_capabilities():
+        typer.echo(f"[{c['group']}] {c['name']}: {c['doc']}  参数={list(c['params'])}")
+
+
+@cli.command("cap-run")
+def cap_run(name: str, need: str = typer.Option(None, help="需求 id"),
+            params: str = typer.Option("{}", help="JSON 参数")):
+    """独立调用一个能力(与流水线用的是同一个函数)。"""
+    from app.services import capabilities
+    db = SessionLocal()
+    try:
+        out = capabilities.run(name, db, need or NEED_ID, **json.loads(params or "{}"))
+        db.commit()
+        typer.echo(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     finally:
         db.close()
 

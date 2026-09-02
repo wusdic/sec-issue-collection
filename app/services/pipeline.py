@@ -51,9 +51,9 @@ def _as_dt(d):
     return datetime(d.year, d.month, d.day) if d else None
 
 
-def _too_old(d) -> bool:
-    """发布日期早于时效窗口(近 collect_recency_days 天)→ True。"""
-    days = int(getattr(settings, "collect_recency_days", 0) or 0)
+def _too_old(d, ctx=None) -> bool:
+    """发布日期早于时效窗口(画像 scope.time_window_days,缺省运行时设置 collect_recency_days)→ True。"""
+    days = int(ctx.time_window_days) if ctx is not None else int(getattr(settings, "collect_recency_days", 0) or 0)
     if days <= 0 or d is None:
         return False
     cutoff = (datetime.utcnow() - timedelta(days=days)).date()
@@ -81,6 +81,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
             stats[key] = stats.get(key, 0) + 1
 
     reg, repost_on = _reputation(need)
+    ctx = need_ctx.for_need(need)
     # 黑名单主体(默认空,仅真正垃圾源)直接丢弃;其余主体一律保留并按名录定级
     if reg is not None and reputation.is_blacklisted(reg, item.wechat_account or item.publisher):
         _bump("blacklist")
@@ -98,7 +99,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
 
     # 时效窗口:发布时间早于近 N 天(默认5年)判为历史,不抓不存,只留一条薄记录供 URL 去重记住
     pub_guess = _parse_dt(item.published) or _pub_date_from(url)
-    if pub_guess and _too_old(pub_guess):
+    if pub_guess and _too_old(pub_guess, ctx):
         _bump("too_old")
         db.add(RawDocument(
             need_id=need.id, source_id=source.id, crawl_run_id=crawl_run_id,
@@ -106,7 +107,7 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
             title=item.title, publisher=item.publisher or item.wechat_account or source.name,
             published_at=_as_dt(pub_guess), content_text=None,
             screen_status="screened_out",
-            screen_reason=f"早于时效窗口({settings.collect_recency_days}天),历史内容不采集"))
+            screen_reason=f"早于时效窗口({ctx.time_window_days}天),历史内容不采集"))
         db.flush()
         return None
 
@@ -196,21 +197,35 @@ def ingest_item(db: Session, need: NeedProfile, source: Source, item: Discovered
 
 
 def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
-    """粗筛 + 抽取 + 记录级去重;产出草稿事件或标记淘汰/合并。"""
+    """粗筛 + 抽取 + 范畴闸门 + 记录级去重 + 建草稿。阶段顺序由画像 pipeline.stages 决定,
+    每个阶段是 STAGES 里一个独立函数(也可单独调用,见 capabilities)。"""
     result = {"doc_id": doc.id, "action": None, "event_id": None}
     diagnostics.set_ref(doc.url)  # 后续 LLM/决策留痕自动关联到本文档
     if doc.screen_status == "screened_out":
         result["action"] = "skipped"
         return result
     # 转载(非首发)不再"未读先丢":仍走粗筛+抽取,真同事件由记录级指纹/语义去重合并。
-    # 这样即便 SimHash 误判同稿,有价值内容也不会被静默丢弃;只在诊断里标注供分析。
     if not doc.is_primary:
         diagnostics.record("dedup", "同稿簇非首发(转载),仍走粗筛后由记录级去重把关",
                            detail={"cluster_id": doc.cluster_id})
-
-    cfg = need.config
     ctx = need_ctx.for_need(need)
-    verdict = screen_document(cfg, doc.title or "", doc.content_text or "", ctx=ctx)
+    st = {"payload": None, "extraction": None}
+    for name in ctx.pipeline_stages:
+        fn = STAGES.get(name)
+        if fn is None:
+            diagnostics.record("note", f"画像声明了未知阶段 {name},跳过")
+            continue
+        if fn(db, need, ctx, doc, st, result):
+            db.flush()
+            return result
+    db.flush()
+    return result
+
+
+# ---------------- 处理阶段(每个都是独立可调用的能力) ----------------
+
+def _stage_screen(db, need, ctx, doc, st, result) -> bool:
+    verdict = screen_document(need.config, doc.title or "", doc.content_text or "", ctx=ctx)
     conf = verdict["confidence"]
     doc.screen_score = conf
     doc.screen_reason = verdict["reason"]
@@ -228,60 +243,76 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
             doc.screen_status = "screened_out"
             doc.screen_reason = f"判为不相干({conf:.2f}):{verdict['reason']}"
         result["action"] = doc.screen_status
-        db.flush()
-        return result
+        return True
     doc.screen_status = "screened_in"
+    return False
 
-    record_schema = load_record_schema(ctx.schema_file)
+
+def _stage_extract(db, need, ctx, doc, st, result) -> bool:
+    record_schema = ctx.record_schema()
     dictionaries = get_active_dictionaries(db, need.id)
-    extraction = extract_record(cfg, dictionaries, record_schema, doc.title or "", doc.content_text or "", ctx=ctx)
-    payload = extraction["payload"]
+    extraction = extract_record(need.config, dictionaries, record_schema, doc.title or "", doc.content_text or "", ctx=ctx)
+    st["extraction"] = extraction
+    st["payload"] = extraction["payload"]
+    st["dict_version"] = str(dictionaries.get("version") or "")
     diagnostics.record("extract", "结构化抽取完成",
-                       detail={"payload": payload, "violations": extraction["violations"],
+                       detail={"payload": st["payload"], "violations": extraction["violations"],
                                "schema_errors": extraction["schema_errors"]})
-    # 范畴闸门(画像 quality.scope_guard):粗筛漏网时抽取后再兜一道,不入库
+    return False
+
+
+def _stage_scope_gate(db, need, ctx, doc, st, result) -> bool:
+    payload = st.get("payload") or {}
     if _is_out_of_scope(payload, doc.title or "", doc.content_text or "", ctx):
         doc.screen_status = "screened_out"
         doc.screen_reason = _out_of_scope_reason(ctx)
         result["action"] = "screened_out"
         diagnostics.record("extract", "判为范畴外,过滤不入库",
                            detail={"record_type": payload.get("record_type"), "title": doc.title})
-        db.flush()
-        return result
-    # 抽取空壳(标题/主体/要素全无)→ 不建空记录,转人工待定,避免仪表盘一堆空记录
+        return True
+    return False
+
+
+def _stage_content_check(db, need, ctx, doc, st, result) -> bool:
+    payload = st.get("payload") or {}
     if not _payload_has_content(payload, ctx):
         doc.screen_status = "manual_queue"
         doc.screen_reason = "抽取结果为空(疑似模型输出异常/正文不足),待人工确认"
         result["action"] = "manual_queue"
-        diagnostics.record("extract", "抽取为空,转人工待定(不建事件)",
+        diagnostics.record("extract", "抽取为空,转人工待定(不建记录)",
                            detail={"raw_keys": list(payload.keys())[:20]})
-        db.flush()
-        return result
+        return True
+    return False
 
-    # 记录级去重:指纹 → 语义召回
+
+def _stage_dedup_record(db, need, ctx, doc, st, result) -> bool:
+    payload = st.get("payload") or {}
     existing = dedup.fingerprint_match(db, need.id, payload, ctx=ctx)
     if existing:
-        # 疑似同一事件:不建新记录,文档转人工队列并挂明疑似目标,等待人工合并(10.3 跨时间合并)
         doc.screen_status = "manual_queue"
-        doc.screen_reason = f"疑似与 {existing.event_id} 为同一事件(指纹命中),请人工确认合并"
+        doc.screen_reason = f"疑似与 {existing.event_id} 为同一记录(指纹命中),请人工确认合并"
         result["action"] = "merge_suggested"
         result["event_id"] = existing.event_id
-        result["extraction"] = extraction
-        diagnostics.record("dedup", f"指纹命中疑似同事件 {existing.event_id},转人工合并",
+        result["extraction"] = st.get("extraction")
+        diagnostics.record("dedup", f"指纹命中疑似同记录 {existing.event_id},转人工合并",
                            detail={"matched_event": existing.event_id})
-        db.flush()
-        return result
+        return True
+    return False
 
+
+def _stage_draft(db, need, ctx, doc, st, result) -> bool:
+    payload = st.get("payload")
+    if payload is None:                      # 没跑抽取阶段就建草稿:用标题当最小记录
+        payload = {"title": doc.title or "", "summary": (doc.content_text or "")[:500]}
+    extraction = st.get("extraction") or {"violations": [], "schema_errors": []}
     src = db.get(Source, doc.source_id)
     src_cred = src.credibility if src else "S4"
-    # 通用:发布主体命中该需求信誉名录 → 按主体重定级(官方号/权威机关→S1/S2);
-    # 未命中则保留渠道默认等级(不丢弃)
+    # 通用:发布主体命中该需求信誉名录 → 按主体重定级;未命中则保留渠道默认等级(不丢弃)
     reg, _ = _reputation(need)
     if reg is not None and doc.publisher:
         src_cred = reputation.subject_credibility(reg, doc.publisher, src_cred)
-    ev = create_draft(db, need.id, payload, doc=doc,
-                      source_credibility=src_cred,
-                      dict_version=str(dictionaries.get("version") or ""), ctx=ctx)
+    ev = create_draft(db, need.id, payload, doc=doc, source_credibility=src_cred,
+                      dict_version=st.get("dict_version") or "", ctx=ctx)
     recall = dedup.semantic_recall(db, need.id, ev.embedding, exclude_event_id=ev.event_id)
     if recall:
         result["semantic_suspects"] = [(e.event_id, round(s, 3)) for e, s in recall]
@@ -289,12 +320,15 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
     result["event_id"] = ev.event_id
     result["violations"] = extraction["violations"]
     result["schema_errors"] = extraction["schema_errors"]
-    diagnostics.record("draft", f"生成草稿事件 {ev.event_id}(信誉 {src_cred})", ref=ev.event_id,
+    diagnostics.record("draft", f"生成草稿记录 {ev.event_id}(信誉 {src_cred})", ref=ev.event_id,
                        detail={"event_id": ev.event_id, "source_credibility": src_cred,
                                "semantic_suspects": result.get("semantic_suspects"),
                                "violations": extraction["violations"]})
-    db.flush()
-    return result
+    return True
+
+
+STAGES = {"screen": _stage_screen, "extract": _stage_extract, "scope_gate": _stage_scope_gate,
+          "content_check": _stage_content_check, "dedup_record": _stage_dedup_record, "draft": _stage_draft}
 
 
 def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:
@@ -386,7 +420,13 @@ def _rx(pat: str) -> re.Pattern:
 
 
 def _out_of_scope_reason(ctx) -> str:
-    return str(ctx.scope_guard.get("out_of_scope_reason") or f"非『{ctx.name}』范畴,不入库")
+    if ctx.scope_guard.get("out_of_scope_reason"):
+        return str(ctx.scope_guard["out_of_scope_reason"])
+    from app.services.need_ctx import SCOPE_LABEL
+    rm = ctx.require_mention
+    if rm:
+        return f"未提及范围限定的{'/'.join(SCOPE_LABEL[k] for k in rm)},不入库"
+    return f"非『{ctx.name}』范畴,不入库"
 
 
 def _is_out_of_scope(payload: dict, title: str, text: str, ctx=None) -> bool:
@@ -396,6 +436,15 @@ def _is_out_of_scope(payload: dict, title: str, text: str, ctx=None) -> bool:
     oos = c.record_types.get("out_of_scope")
     if oos and isinstance(payload, dict) and payload.get("record_type") == oos:
         return True
+    # 范围限定:声明 require_mention 的维度,标题/正文/抽取结果里必须提到其中至少一个词
+    for kind in c.require_mention:
+        terms = c.scope_terms(kind)
+        if not terms:
+            continue
+        hay = f"{title or ''} {(payload or {}).get('title') or ''} {(text or '')[:20000]} " \
+              f"{' '.join(str(v) for v in (payload or {}).values() if isinstance(v, str))}"
+        if not any(t in hay for t in terms):
+            return True
     sg = c.scope_guard
     excl = [str(x) for x in (sg.get("exclude_patterns") or []) if str(x)]
     if not excl:

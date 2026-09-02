@@ -29,7 +29,7 @@ api = APIRouter(prefix="/api/v1")
 
 
 def _record_schema(db: Session, need_id: str) -> dict:
-    return load_record_schema(need_ctx.for_need(get_active_profile(db, need_id)).schema_file)
+    return need_ctx.for_need(get_active_profile(db, need_id)).record_schema()
 
 
 def _confirm_allowed(db: Session, need_id: str) -> list[str]:
@@ -1179,6 +1179,47 @@ def get_keywords(need_id: str = Depends(need_id_param), db: Session = Depends(ge
 class KeywordsIn(BaseModel):
     need_id: str | None = None
     content: dict
+
+
+@api.post("/keywords/generate")
+def generate_keywords(need_id: str = Depends(need_id_param), expand: bool | None = None, persist: bool = True,
+                      db: Session = Depends(get_session),
+                      user: AppUser = Depends(require_roles("admin", "analyst"))):
+    """按画像的范围限定(scope)+ 静态词组 + 监控名单自动生成关键词矩阵(可选模型扩展同义词),并设为生效版本。"""
+    from app.services import capabilities
+    r = capabilities.run("keywords.generate", db, need_id, expand=expand, persist=persist)
+    if persist:
+        db.add(AuditLog(user_id=user.id, action="keywords.generate", target=need_id, detail={"version": r["version"]}))
+        db.commit()
+    return r
+
+
+# ---------- 能力注册表:每个底层能力都能独立调用 ----------
+
+@api.get("/capabilities")
+def capabilities_list(_: AppUser = Depends(current_user)):
+    from app.services import capabilities
+    return capabilities.list_capabilities()
+
+
+class CapRunIn(BaseModel):
+    need_id: str | None = None
+    params: dict = {}
+
+
+@api.post("/capabilities/{name}/run")
+def capability_run(name: str, body: CapRunIn, db: Session = Depends(get_session),
+                   _: AppUser = Depends(require_roles("admin", "analyst"))):
+    """独立调用一个能力(调试一段正文的粗筛/抽取、只生成关键词、只跑一轮找源……)。"""
+    from app.services import capabilities
+    try:
+        out = capabilities.run(name, db, _nid(body.need_id), **(body.params or {}))
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except TypeError as e:
+        raise HTTPException(400, f"参数不匹配:{e}")
+    db.commit()
+    return {"capability": name, "result": out}
 
 
 @api.put("/keywords")
