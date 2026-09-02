@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from app.config import settings
 from app.services import need_ctx
 from app.services.need_ctx import ROLE_COLUMNS
@@ -93,6 +95,71 @@ def render_fields(ev, field_map: dict, ctx) -> dict:
     return out
 
 
+def _safe(s, limit: int = 60) -> str:
+    import re as _re
+    s = _re.sub(r"[\\/:*?\"<>|\s]+", "_", str(s or "")).strip("._") or "未分类"
+    return s[:limit]
+
+
+def local_library(db, ctx, ex: dict, evs, dry_run: bool = False) -> dict:
+    """分类存本地:每条记录写成 <root>/<need>/<路径模板>/<记录号>_<标题>.json + .md,
+    并附来源链接与存档快照目录(可直接打开原文/截图)。路径模板用角色名占位,如 "{dim1}/{grade}/{year}"。"""
+    from pathlib import Path
+    from app.models import ArchiveManifest, EventSource
+    root = Path(ex.get("root") or (Path(settings.archive_root).parent / "library"))
+    tpl = str(ex.get("path_template") or "{dim1}/{year}")
+    fmt = [str(x) for x in (ex.get("formats") or ["json", "md"])]
+    written, paths = 0, []
+    for ev in evs:
+        p = ev.payload or {}
+        vals = {r: _safe(ctx.get_role(p, r) or getattr(ev, ROLE_COLUMNS.get(r, ""), None) or "未分类")
+                for r in ROLE_COLUMNS}
+        vals["title"] = _safe(p.get("title") or ev.event_id)
+        vals["year"] = str(ev.occurred_date.year if ev.occurred_date else (ev.created_at.year if ev.created_at else "未知年"))
+        vals["status"] = ev.status
+        vals["need"] = ctx.id
+        try:
+            rel = tpl.format(**vals)
+        except (KeyError, IndexError):
+            rel = vals["dim1"]
+        d = root / ctx.id / rel
+        base = f"{ev.event_id}_{vals['title']}"
+        snaps = []
+        for es in db.query(EventSource).filter_by(event_id=ev.event_id).all():
+            if es.snapshot_id:
+                m = db.get(ArchiveManifest, es.snapshot_id)
+                snaps.append({"snapshot_id": es.snapshot_id, "path": m.storage_path if m else None,
+                              "credibility": es.credibility})
+        doc = {"event_id": ev.event_id, "need_id": ev.need_id, "status": ev.status,
+               "roles": {r: (ctx.get_role(p, r)) for r in ROLE_COLUMNS if ctx.role_path(r)},
+               "payload": p, "snapshots": snaps,
+               "exported_at": __import__("datetime").datetime.utcnow().isoformat(timespec="seconds")}
+        paths.append(str(d / base))
+        if dry_run:
+            continue
+        d.mkdir(parents=True, exist_ok=True)
+        if "json" in fmt:
+            (d / f"{base}.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        if "md" in fmt:
+            lines = [f"# {p.get('title') or ev.event_id}", "",
+                     f"- 记录号:{ev.event_id} · 状态:{ev.status}"]
+            for r in ROLE_COLUMNS:
+                v = ctx.get_role(p, r)
+                if v not in (None, "", []):
+                    lines.append(f"- {ctx.role_label(r)}:{'、'.join(map(str, v)) if isinstance(v, list) else v}")
+            if p.get("summary"):
+                lines += ["", "## 摘要", str(p["summary"])]
+            lines += ["", "## 来源"]
+            for src in (p.get("sources") or []):
+                if isinstance(src, dict):
+                    lines.append(f"- [{src.get('credibility', '')}] {src.get('url_or_doc_number') or src.get('publisher') or ''}")
+            for sn in snaps:
+                lines.append(f"- 快照:{sn['snapshot_id']} → {sn['path']}")
+            (d / f"{base}.md").write_text("\n".join(lines), encoding="utf-8")
+        written += 1
+    return {"root": str(root / ctx.id), "written": written, "records": len(evs), "sample_paths": paths[:5]}
+
+
 def run(db, ctx, name: str | None = None, statuses=("published", "monitoring"), dry_run: bool = False,
         http=None) -> dict:
     """按画像 outputs.exports 执行导出。name 指定其中一个;dry_run 只渲染不写。"""
@@ -106,6 +173,10 @@ def run(db, ctx, name: str | None = None, statuses=("published", "monitoring"), 
     results = []
     for ex in exports:
         kind = ex.get("kind") or "feishu_bitable"
+        if kind == "local_library":
+            r = local_library(db, ctx, ex, evs, dry_run)
+            results.append({"name": ex.get("name") or kind, "kind": kind, **r, "skipped": 0})
+            continue
         key_field = ex.get("key_field") or "记录号"
         fmap = dict(ex.get("field_map") or {})
         fmap.setdefault(key_field, "record.event_id")

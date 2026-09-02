@@ -241,7 +241,13 @@ def _scorecard(db, ctx, days: int | None = None):
     return kpi.quality_scorecard(db, ctx.id, days, ctx=ctx)
 
 
-@register("notify.feishu", "输出", "推一条文本到飞书群机器人(设置页 feishu_webhook)", {"text": "内容"})
+@register("notify.send", "组件", "通知组件:按渠道(email/feishu/webhook…;缺省=画像或设置里配置的)发送一段文本", {"subject": "标题", "text": "内容", "channels": "渠道列表(可省)"})
+def _notify_send(db, ctx, subject: str = "通知", text: str = "", channels: list | None = None):
+    from app.services import notify
+    return notify.send(subject, text, channels, ctx)
+
+
+@register("notify.feishu", "组件", "推一条文本到飞书群机器人(设置页 feishu_webhook)", {"text": "内容"})
 def _notify_feishu(db, ctx, text: str):
     from app.services import notify
     ok, note = notify.deliver_feishu(text)

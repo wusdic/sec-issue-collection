@@ -210,8 +210,12 @@ outputs:                    # ★ 非空即可
     group_roles: [dim1, grade]
     rank_role: grade
     advisory_split: true
-  exports: []               # (v1.3)导出通道,如 [{name: 法规表, kind: feishu_bitable, app_token: "", table_id: "", key_field: 记录号,
-                            #   field_map: {标题: title, 发布机关: subject, 主题: dim1, 状态: record.status}}]
+  notify:                   # (v1.3)通知组件:用哪些渠道送日报/告警;空 = 运行时设置里配齐的渠道
+    channels: []            # 如 [email, feishu, {kind: webhook, url: "https://…", template: dingtalk|wecom|generic}]
+  exports: []               # (v1.3)导出组件:
+                            #  - {name: 本地资料库, kind: local_library, root: "data/library", path_template: "{dim1}/{grade}/{year}", formats: [json, md]}
+                            #  - {name: 法规表, kind: feishu_bitable, app_token: "", table_id: "", key_field: 记录号,
+                            #     field_map: {标题: title, 发布机关: subject, 主题: dim1, 状态: record.status}}
   quality_scorecard:        # (v1.3)质量评分卡权重(完整性/准确性/一致性/时效性),空 = 0.4/0.3/0.2/0.1
     weights: {}
 

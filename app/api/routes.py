@@ -1344,9 +1344,11 @@ def run_digest(need_id: str = Depends(need_id_param), push: bool = False,
     from app.services import digest as digest_svc
     if push:
         d = digest_svc.generate_today(db, need_id)
-        from app.services.notify import deliver_email
+        from app.services.notify import send as notify_send
         title = (d.content or {}).get("title") or "日报"
-        ok, msg = deliver_email(f"{title} {d.day}", d.markdown or "")
+        res = notify_send(f"{title} {d.day}", d.markdown or "", ctx=need_ctx.get(db, need_id))
+        ok = any(v.get("ok") for v in res.values())
+        msg = ";".join(f"{k}:{v['note']}" for k, v in res.items()) or "没有配置任何通知渠道"
         return {"day": d.day.isoformat(), "pushed": ok, "push_detail": msg,
                 "events": d.content.get("events_total", 0)}
     d = digest_svc.upsert(db, need_id, __import__("datetime").datetime.utcnow().date())

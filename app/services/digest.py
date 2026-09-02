@@ -178,7 +178,7 @@ def generate_today(db: Session, need_id: str) -> DailyDigest:
     try:
         from app.services.notify import deliver_all
         title = (d.content or {}).get("title") or "日报"
-        r = deliver_all(f"{title} {d.day}", d.markdown or "")
+        r = deliver_all(f"{title} {d.day}", d.markdown or "", ctx=need_ctx.get(db, need_id))
         d.delivered = any(v.get("ok") for v in r.values())
     except Exception:  # noqa: BLE001
         pass
