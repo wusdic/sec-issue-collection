@@ -67,4 +67,4 @@ def need(db):
 def record_schema():
     from app.config import settings
     from app.services.extraction import load_record_schema
-    return load_record_schema(settings.schema_dir / "event.schema.json")
+    return load_record_schema(settings.schema_dir / "sec_event.schema.json")

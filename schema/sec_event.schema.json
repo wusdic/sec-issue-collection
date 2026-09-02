@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sec-issue-collection/schema/event.schema.json",
+  "$id": "https://sec-issue-collection/schema/sec_event.schema.json",
   "title": "国内行业安全事件记录",
   "description": "事件库单条事件的字段规范 v1.0。金额一律使用 MoneyTriState 对象,严禁把'要求/索赔/估算'金额写入 confirmed 通道。",
   "type": "object",
@@ -64,7 +64,7 @@
       "properties": {
         "level1": {
           "type": "string",
-          "description": "一级行业,见 dictionaries.yaml#industries"
+          "description": "一级行业,见 sec_dictionaries.yaml#industries"
         },
         "level2": {
           "type": "string",
@@ -89,7 +89,7 @@
     },
     "org_type": {
       "type": "string",
-      "description": "见 dictionaries.yaml#org_types"
+      "description": "见 sec_dictionaries.yaml#org_types"
     },
     "org_name": {
       "type": "string",
@@ -112,7 +112,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "description": "见 dictionaries.yaml#org_tags,多选,与 org_type 组合使用"
+        "description": "见 sec_dictionaries.yaml#org_tags,多选,与 org_type 组合使用"
       }
     },
     "severity": {
@@ -120,7 +120,7 @@
       "required": [
         "level"
       ],
-      "description": "事件整体严重度,定级阈值见 dictionaries.yaml#severity_levels。系统按已确认口径自动建议,人工可覆盖",
+      "description": "事件整体严重度,定级阈值见 sec_dictionaries.yaml#severity_levels。系统按已确认口径自动建议,人工可覆盖",
       "properties": {
         "level": {
           "enum": [
@@ -159,7 +159,7 @@
       "minItems": 1,
       "items": {
         "type": "string",
-        "description": "见 dictionaries.yaml#affected_systems,允许'未披露'"
+        "description": "见 sec_dictionaries.yaml#affected_systems,允许'未披露'"
       }
     },
     "attack_type": {
@@ -167,7 +167,7 @@
       "minItems": 1,
       "items": {
         "type": "string",
-        "description": "手段维度,见 dictionaries.yaml#attack_types"
+        "description": "手段维度,见 sec_dictionaries.yaml#attack_types"
       }
     },
     "consequences": {
@@ -175,7 +175,7 @@
       "minItems": 1,
       "items": {
         "type": "string",
-        "description": "后果维度,与手段正交,见 dictionaries.yaml#consequences,允许'未披露'"
+        "description": "后果维度,与手段正交,见 sec_dictionaries.yaml#consequences,允许'未披露'"
       }
     },
     "entry_vector": {
@@ -190,7 +190,7 @@
         "properties": {
           "vector": {
             "type": "string",
-            "description": "见 dictionaries.yaml#entry_vectors,允许'未知'"
+            "description": "见 sec_dictionaries.yaml#entry_vectors,允许'未知'"
           },
           "confidence": {
             "enum": [
@@ -242,7 +242,7 @@
       "properties": {
         "category": {
           "type": "string",
-          "description": "见 dictionaries.yaml#root_causes,允许'未披露'"
+          "description": "见 sec_dictionaries.yaml#root_causes,允许'未披露'"
         },
         "detail": {
           "type": "string"
@@ -295,7 +295,7 @@
         "properties": {
           "control": {
             "type": "string",
-            "description": "见 dictionaries.yaml#security_controls"
+            "description": "见 sec_dictionaries.yaml#security_controls"
           },
           "status": {
             "enum": [
@@ -330,7 +330,7 @@
           },
           "product_category": {
             "type": "string",
-            "description": "见 dictionaries.yaml#procurement_categories"
+            "description": "见 sec_dictionaries.yaml#procurement_categories"
           },
           "evidence_level": {
             "enum": [
@@ -486,7 +486,7 @@
           "items": {
             "type": "string"
           },
-          "description": "见 dictionaries.yaml#data_types"
+          "description": "见 sec_dictionaries.yaml#data_types"
         }
       }
     },
@@ -553,7 +553,7 @@
           },
           "legal_basis_code": {
             "type": "string",
-            "description": "规范化法规编码,见 dictionaries.yaml#legal_bases,用于聚合统计"
+            "description": "规范化法规编码,见 sec_dictionaries.yaml#legal_bases,用于聚合统计"
           },
           "doc_number": {
             "type": "string"
@@ -588,7 +588,7 @@
         "properties": {
           "category": {
             "type": "string",
-            "description": "采购/整改品类,见 dictionaries.yaml#procurement_categories"
+            "description": "采购/整改品类,见 sec_dictionaries.yaml#procurement_categories"
           },
           "vendor": {
             "type": "string"
@@ -647,7 +647,7 @@
       "type": "array",
       "items": {
         "type": "string",
-        "description": "见 dictionaries.yaml#sellable_products"
+        "description": "见 sec_dictionaries.yaml#sellable_products"
       }
     },
     "timeline": {

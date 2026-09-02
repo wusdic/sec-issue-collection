@@ -48,7 +48,7 @@ CATALOG: dict[str, Spec] = {
         "数据源页点『恢复启用』即可复原;到期体检也会自动复检恢复"),
     "source.auto_graded_out": Spec(
         "sources", HIGH, "试运行源因相关率过低被自动淘汰", 3,
-        "数据源页点『恢复启用』;若规则太严可调 config/discovery.yaml 的 grading 阈值"),
+        "数据源页点『恢复启用』;若规则太严可调 config/discovery_sec.yaml 的 grading 阈值"),
     "source.auto_trial": Spec(
         "sources", HIGH, "新源自动入库试运行", 8,
         "数据源页删除该源,或在候选池拉黑该域名"),
@@ -86,7 +86,7 @@ CATALOG: dict[str, Spec] = {
     "source.prospect_empty": Spec(
         "sources", HIGH, "主动找源一无所获", 0,
         "看结论里的原因:引擎被反爬就在设置页换搜索引擎/开浏览器渲染;"
-        "全是大平台就补充更精准的找源词(config/discovery.yaml 的 source_search_queries)"),
+        "全是大平台就补充更精准的找源词(config/discovery_sec.yaml 的 source_search_queries)"),
 
     # ---- 采集 ----
     "crawl.job_failed": Spec("crawl", CRITICAL, "采集任务整批失败", 0,

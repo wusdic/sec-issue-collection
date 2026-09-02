@@ -1,5 +1,7 @@
+-- 说明:本 DDL 为首个实例(安全事件库)时期的 PostgreSQL 设计稿;运行中的表结构以 app/models.py 为准,
+-- 查询列语义由画像 record.field_roles 决定(见 design/platform/01 §1.8)。
 -- 国内行业安全事件库 建库 DDL v0.1(PostgreSQL 16 + pgvector)
--- 依据: design/详细设计.md 第 3 节; 事件 payload 校验依据 schema/event.schema.json
+-- 依据: design/详细设计.md 第 3 节; 事件 payload 校验依据 schema/sec_event.schema.json
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -26,7 +28,7 @@ CREATE TABLE audit_log (
 );
 CREATE INDEX ON audit_log (target, at DESC);
 
--- ============ M9 词表版本(dictionaries.yaml 发布制) ============
+-- ============ M9 词表版本(sec_dictionaries.yaml 发布制) ============
 
 CREATE TABLE dictionary_release (
   id           BIGSERIAL PRIMARY KEY,
@@ -182,7 +184,7 @@ CREATE TABLE source_blacklist (
 
 CREATE TABLE event (
   event_id     TEXT PRIMARY KEY,        -- SEC-YYYYMMDD-NNNN
-  payload      JSONB NOT NULL,          -- 通过 event.schema.json 校验(应用层)
+  payload      JSONB NOT NULL,          -- 通过 sec_event.schema.json 校验(应用层)
   -- 高频查询列: 发布/更新触发器从 payload 同步
   status       TEXT NOT NULL DEFAULT 'draft'
                CHECK (status IN ('draft','published','monitoring','closed')),
@@ -305,7 +307,7 @@ CREATE INDEX ON followup_task (status, due_date);
 CREATE TABLE keyword_set (
   id          BIGSERIAL PRIMARY KEY,
   version     TEXT NOT NULL UNIQUE,
-  content     JSONB NOT NULL,           -- config/keyword_matrix.yaml 整包
+  content     JSONB NOT NULL,           -- config/keyword_matrix_sec.yaml 整包
   is_active   BOOLEAN NOT NULL DEFAULT FALSE,
   published_at TIMESTAMPTZ
 );

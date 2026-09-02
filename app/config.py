@@ -123,7 +123,7 @@ class Settings:
     rss_max_items: int = int(os.getenv("RSS_MAX_ITEMS", "50"))
 
     # 源自动发现:搜索/采集中出现的新域名累积证据评分≥此值即自动建 trial 源(自动入库,
-    # 仍 S4 待人工定级)。越低越激进(新源多但杂),越高越保守。留空则用 discovery.yaml 的值。
+    # 仍 S4 待人工定级)。越低越激进(新源多但杂),越高越保守。留空则用 discovery_sec.yaml 的值。
     discovery_auto_trial_threshold: float = float(os.getenv("DISCOVERY_AUTO_TRIAL_THRESHOLD", "4.0"))
     # 主动找源命中的渠道:LLM 初评相关度≥此值即视为"第二重证据",可单通道自动入库试运行。
     # 否则主动找源找到的渠道永远卡在候选池(单通道过不了多通道闸门)。0=关闭这条通路
@@ -194,7 +194,7 @@ class Settings:
     # 已有源站点上搜到的相关页面 → 反推该站漏采的栏目,每站最多补这么多个
     prospect_column_hint_max: int = int(os.getenv("PROSPECT_COLUMN_HINT_MAX", "30"))
     prospect_weekday: int = int(os.getenv("PROSPECT_WEEKDAY", "0"))            # 每日自动化里周几跑(0=周一)
-    # 候选源 LLM 相关度初评:抓候选站首页抽样标题,让模型判"是否持续产出国内安全事件内容"
+    # 候选源 LLM 相关度初评:抓候选站首页抽样标题,让模型判"是否持续产出本需求相关内容"(提示词来自画像)
     probe_llm_enabled: bool = os.getenv("PROBE_LLM_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     probe_sample_titles: int = int(os.getenv("PROBE_SAMPLE_TITLES", "12"))
     probe_ttl_days: int = int(os.getenv("PROBE_TTL_DAYS", "30"))               # 初评结果多久重评一次

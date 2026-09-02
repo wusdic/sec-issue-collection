@@ -64,8 +64,8 @@ DEFAULTS: dict = {
         "confidence_by_credibility": {"S1": "已证实", "S2": "多源印证", "S3": "单源待证", "S4": "单源待证"},
     },
     "dictionaries": {"relevance_term_fields": ["event_terms", "consequence_terms"]},
-    "coverage": {"dimension_role": "dim1", "dictionary_key": "industries", "query_templates": [],
-                 "short_names": {}, "placeholders": ["其他", "其它", "未分类", "未知", "词表外"],
+    "coverage": {"dimension_role": "dim1", "dictionary_key": "industries", "scope_kind": None,
+                 "query_templates": [], "short_names": {}, "placeholders": ["其他", "其它", "未分类", "未知", "词表外"],
                  "window_days": None, "min_records": None},
     "sources": {
         "discovery_file": None,               # None → 由关键词模块按 scope 生成配方
@@ -78,14 +78,19 @@ DEFAULTS: dict = {
         "skip_hosts_extra": [],
         "grading": None,                     # None → discovery_file.grading
         "discovery_scoring": None,           # None → discovery_file.scoring
+        # 真实性验证:空 → 平台常量(.gov.cn 等官方后缀、.org.cn 等机构后缀、内部/密级标记)
+        "verification": {"official_suffixes": [], "official_domains": [], "medium_suffixes": [], "sensitive_markers": []},
     },
     "quality": {
         "screen": {"goal": "", "include_rules": [], "exclude_rules": [], "reminder": ""},
         "extract_rules": [],
-        "scope_guard": {"exclude_patterns": [], "include_override_patterns": []},
+        "scope_guard": {"exclude_patterns": [], "include_override_patterns": [], "out_of_scope_reason": ""},
+        # 记录关系抽取规则(废止/替代/修订/依据):空 → 平台缺省正则;append_default=False 则只用画像的
+        "relations": {"patterns": [], "append_default": True},
         "assertions": {
             "tristate_fields": None,         # None → quality.assertion_tristate_fields
             "channels": {"claimed": "claimed_cny", "estimated": "estimated_cny", "confirmed": "confirmed_cny"},
+            "labels": {},                    # 三态字段显示名
             "claimed_markers": _GENERIC_CLAIMED,
             "confirmed_markers": _GENERIC_CONFIRMED,
             "isolation": [],
@@ -95,7 +100,7 @@ DEFAULTS: dict = {
     "update": {"followup_schedule": [30, 90, 180, 365], "followup_triggers": [],
                "followup_search": {"subject_role": "subject", "query_suffixes": [], "link_templates": {}}},
     "outputs": {
-        "leads_engine": {"enabled": False, "mapping_file": None, "subject_role": "subject",
+        "leads_engine": {"enabled": False, "mapping_file": None, "write_back_field": None, "subject_role": "subject",
                          "grade_weights": {}, "size_weights": {},
                          "window_stages": [{"name": "应急期", "max_days": 30, "weight": 1.0},
                                            {"name": "整改期", "max_days": 180, "weight": 0.9},
@@ -106,6 +111,10 @@ DEFAULTS: dict = {
                            "amount_sum": {"fields": None, "group_role": "dim1", "default_scope": "confirmed"},
                            "status_count": None, "missing_field": None},
         "digest": {"title": "", "group_roles": ["dim1", "grade"], "rank_role": "grade", "advisory_split": True},
+        # 组件:通知渠道(空 → 用运行时设置里配齐的渠道)、导出目标(空 → 不导出)、评分卡权重(空 → 0.4/0.3/0.2/0.1)
+        "notify": {"channels": []},
+        "exports": [],
+        "quality_scorecard": {"weights": {}},
     },
     "ui": {
         "record_label": "记录",

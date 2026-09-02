@@ -753,7 +753,7 @@ def test_seed_sources_are_broad_and_unique():
     """源本身要尽量全:种子清单够多、无重名、公众号/站内检索源都有各自唯一的目标键。"""
     import yaml
     from app.services import url_tools as ut
-    data = yaml.safe_load(open("config/seed_sources.yaml", encoding="utf-8"))
+    data = yaml.safe_load(open("config/seed_sources_sec.yaml", encoding="utf-8"))
     ss = data["sources"]
     assert len(ss) >= 80, f"种子源只有 {len(ss)} 个,太少"
     assert len({s["name"] for s in ss}) == len(ss), "种子源有重名"

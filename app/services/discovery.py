@@ -168,7 +168,7 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
     """日任务/每轮采集收尾:候选池评分,≥阈值自动建 trial 源(自动入库,转正仍需人工定级)。
 
     阈值优先取运行时设置 settings.discovery_auto_trial_threshold(设置页可调),
-    留空/0 才回退 discovery.yaml 的 auto_trial_threshold。调低→自动入库更激进。
+    留空/0 才回退 discovery_sec.yaml 的 auto_trial_threshold。调低→自动入库更激进。
     """
     from app.services import actions
     llm_scores = llm_scores or {}

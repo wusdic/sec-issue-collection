@@ -3,11 +3,11 @@
 此前的源发现是纯被动的:只有"已采到的文章引用过"的渠道才会进候选池——一个从没被
 引用过的好渠道永远发现不了,这是覆盖面的天花板。这里补上主动的一路:
 
-1) 用「找源专用检索词」(config/discovery.yaml 的 source_search_queries,加上覆盖度
+1) 用「找源专用检索词」(config/discovery_sec.yaml 的 source_search_queries,加上覆盖度
    空白自动生成的词)去搜索引擎捞结果,把结果域名以 channel="source_search" 登记进
    同一个候选池——复用现成的评分/多通道闸门/黑名单,不另起炉灶;
 2) 对候选域名做 LLM 相关度初评:抓其首页/列表页抽样标题,让模型判"是否持续产出国内
-   安全事件相关内容",0-1 打分。这个分按 discovery.yaml 的 weight_llm_relevance 计入
+   安全事件相关内容",0-1 打分。这个分按 discovery_sec.yaml 的 weight_llm_relevance 计入
    候选总分,让排序看内容而不只看被提及次数。结果按 probe_ttl_days 复用不重评。
 """
 import threading
@@ -973,7 +973,7 @@ def explain(r: dict) -> str:
     if not r.get("engines"):
         return "没有可用的搜索引擎:设置页「主动找源:用哪些搜索引擎」填的名字不在适配器列表里"
     if not q:
-        return "本轮没有找源词:检查画像 discovery_file(缺省 config/discovery.yaml)的 source_search_queries 是否为空"
+        return "本轮没有找源词:检查画像 discovery_file(缺省 config/discovery_sec.yaml)的 source_search_queries 是否为空"
     if st.get("pages", 0) == 0:
         return (f"所有搜索引擎都抓不到内容({st.get('fetch_fail', 0)} 次失败,通常是 403/反爬/"
                 "网络不通)。可在设置页换搜索引擎、或开启浏览器渲染后重试")

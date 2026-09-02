@@ -25,7 +25,7 @@ def now() -> datetime:
 
 class NeedProfile(Base):
     __tablename__ = "need_profile"
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)   # 如 sec_events
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)   # 画像 need.id
     name: Mapped[str] = mapped_column(String(128))
     config: Mapped[dict] = mapped_column(JSON)                      # 画像全文(need_profile yaml)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -226,7 +226,7 @@ class RawDocument(Base):
 
 class Event(Base):
     __tablename__ = "event"
-    event_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # SEC-YYYYMMDD-NNNN
+    event_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # <画像 id_prefix>-YYYYMMDD-NNNN
     need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
     payload: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft/published/monitoring/closed
@@ -241,8 +241,8 @@ class Event(Base):
     org_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     org_size: Mapped[str | None] = mapped_column(String(8), nullable=True)
     severity: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    # 记录类型:单一事件 / 通报情报(监管通报汇总·威胁情报·风险提示·态势统计,无单一受害方但有参考价值)
-    record_type: Mapped[str] = mapped_column(String(16), default="单一事件", index=True)
+    # 记录类型:画像 record.record_types.values(单一 / 汇总型 / 范畴外),取值语义由画像决定
+    record_type: Mapped[str] = mapped_column(String(16), default="单一记录", index=True)
     attack_types: Mapped[list] = mapped_column(JSON, default=list)
     consequences: Mapped[list] = mapped_column(JSON, default=list)
     confidence_overall: Mapped[str | None] = mapped_column(String(16), nullable=True)

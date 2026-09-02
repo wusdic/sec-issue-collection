@@ -28,7 +28,7 @@ compliance:                 # ★ 合规画像(框架级必填,collection_bounda
 
 # ---------- A. 记录:原型 / Schema / 角色 / 类型 / 去重 ----------
 record_schemas:             # ★ 至少一项;file 可省(→ 轻量 Schema,见 pipeline.extract_mode)
-  - file: ""                # JSON Schema 路径,如 schema/event.schema.json
+  - file: ""                # JSON Schema 路径,如 schema/sec_event.schema.json
     archetype: 事件型        # 事件型(发生一次,后续补全)/ 文档型(发布后不变,状态跃迁)/ 对象型(实体档案)/ 观测型(持续动态)
     min_publish_fields: []  # 最少可发布字段
     dedup_key: []           # 说明性:真正的去重规则在 record.dedup

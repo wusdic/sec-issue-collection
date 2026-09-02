@@ -7,7 +7,7 @@
 - 库里的监控名单 WatchTarget(org→entity_terms、topic→topic_terms、region→region_terms、product→entity_terms);
 - 可选:模型扩展同义/相关说法(keywords.expand_with_llm)。
 组合配方 keywords.compose 缺省时用平台缺省配方(主体×主题、地域×主题、行业×主题、主题单独…)。
-产物是与旧版 keyword_matrix.yaml 同构的 KeywordSet.content,日常检索(expand_queries)、找源配方
+产物是与旧版 keyword_matrix_sec.yaml 同构的 KeywordSet.content,日常检索(expand_queries)、找源配方
 (discovery_recipes)、栏目相关词都能直接用。也可单独调用:python -m app.cli keywords-generate --need X。
 """
 from __future__ import annotations
@@ -186,7 +186,7 @@ def expand_queries(content: dict, ctx=None) -> list[str]:
 
 
 def build_matrix(db, ctx, expand: bool | None = None) -> dict:
-    """生成与 keyword_matrix.yaml 同构的矩阵内容。"""
+    """生成与 keyword_matrix_sec.yaml 同构的矩阵内容。"""
     kc = ctx.keywords_cfg
     groups = term_groups(ctx, db, expand)
     recipes = list(kc.get("compose") or []) or default_recipes(groups)

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from app.config import settings
 from app.services import reputation
 
-_WECHAT_REGISTRY = settings.config_dir / "wechat_accounts.yaml"
+_WECHAT_REGISTRY = settings.config_dir / "wechat_accounts_sec.yaml"
 
 WECHAT_HOSTS = ("mp.weixin.qq.com",)
 

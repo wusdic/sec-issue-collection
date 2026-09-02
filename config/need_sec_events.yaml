@@ -20,7 +20,7 @@ compliance:
   usage_limit: 仅内部分析; 对外引用需法务审核; 竞争情报禁止贬损性使用
 
 record_schemas:
-  - file: schema/event.schema.json
+  - file: schema/sec_event.schema.json
     archetype: 事件型
     min_publish_fields: [event_id, title, occurred_date, disclosed_date, industry, region,
                          org_type, org_size, severity, affected_systems, attack_type,
@@ -74,8 +74,8 @@ record:
 
 # ---------- B. 词表与查询 ----------
 dictionaries:
-  file: schema/dictionaries.yaml
-  discovery_terms_file: config/keyword_matrix.yaml
+  file: schema/sec_dictionaries.yaml
+  discovery_terms_file: config/keyword_matrix_sec.yaml
   relevance_term_fields: [event_terms, consequence_terms]
 
 coverage:
@@ -88,10 +88,10 @@ coverage:
 
 # ---------- C. 来源与可信度 ----------
 sources:
-  seed_file: config/seed_sources.yaml
-  reputation_registry: config/wechat_accounts.yaml
+  seed_file: config/seed_sources_sec.yaml
+  reputation_registry: config/wechat_accounts_sec.yaml
   repost_detection: true
-  discovery_file: config/discovery.yaml          # 找源配方 / 候选评分 / 自动定级规则
+  discovery_file: config/discovery_sec.yaml          # 找源配方 / 候选评分 / 自动定级规则
   credibility_levels:
     confirm_allowed: [S1, S2]
     levels:
@@ -204,7 +204,7 @@ outputs:
   kpi: [金额字段可回溯率=100%, 存档覆盖率=100%, 披露到入库中位时延<=24h, 月度漏报率<=10%, 重复事件率<=1%]
   leads_engine:
     enabled: true
-    mapping_file: config/product_mapping.yaml
+    mapping_file: config/product_mapping_sec.yaml
     write_back_field: sellable_mapping           # 匹配到的产品回写到记录字段(报表 missing_field 看的就是它)
     subject_role: subject
     grade_weights: {特别重大: 1.0, 重大: 0.85, 较大: 0.65, 一般: 0.45, 未定级: 0.35}

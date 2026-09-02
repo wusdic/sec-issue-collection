@@ -438,9 +438,9 @@ async function loadReview(){
   const canReview=["reviewer","admin"].includes(ROLE);
   try{
     const rows=await api(`/review/queue?stage=${stage}`);
-    if(!rows.length){ document.getElementById("rvTable").innerHTML=`<p class="muted">该阶段暂无待办。新事件默认在「新抽取」,提交后进入「待一审」。</p>`; return; }
+    if(!rows.length){ document.getElementById("rvTable").innerHTML=`<p class="muted">该阶段暂无待办。新${esc(REC())}默认在「新抽取」,提交后进入「待一审」。</p>`; return; }
     document.getElementById("rvTable").innerHTML=`<table><thead><tr>
-      <th>事件</th><th>阶段</th><th>金额双签</th><th>操作</th></tr></thead><tbody>`+
+      <th>${esc(REC())}</th><th>阶段</th><th>双签</th><th>操作</th></tr></thead><tbody>`+
       rows.map(t=>`<tr>
         <td style="cursor:pointer" onclick="openEvent('${t.event_id}')"><span class="mono">${t.event_id}</span></td>
         <td>${stageLabel(t.stage)}</td><td>${t.needs_double?'<span class="pill warn">需双签</span>':'<span class="pill">否</span>'}</td>
@@ -467,13 +467,13 @@ async function rvReject(id){
 /* ---------- 回访 ---------- */
 async function vFollowups(){
   const v=document.getElementById("view");
-  v.innerHTML=`<h2>回访</h2><p class="sub">罚款、判决、整改采购等滞后信息,按 T+30/90/180/365 到期回访补全</p>
+  v.innerHTML=`<h2>${esc((UI&&UI.tabs&&UI.tabs.followups&&UI.tabs.followups.label)||"回访")}</h2><p class="sub">按画像回访触发器盯住"发布后才会落地"的字段(罚款/判决/生效日/中标人…),按回访节奏到期提醒补全</p>
     <div id="fuTable">加载中…</div>`;
   try{
     const rows=await api("/followups?due=2099-12-31");   // 拉全部未完成回访(含未来到期)
-    if(!rows.length){ document.getElementById("fuTable").innerHTML=`<p class="muted">暂无回访任务。事件发布且存在未落地字段(金额/采购/赎金等)时自动生成。</p>`; return; }
+    if(!rows.length){ document.getElementById("fuTable").innerHTML=`<p class="muted">暂无回访任务。${esc(REC())}发布且命中画像的回访触发器时自动生成。</p>`; return; }
     document.getElementById("fuTable").innerHTML=`<table><thead><tr>
-      <th>事件</th><th>类型</th><th>到期日</th><th>回访原因</th><th>一键检索</th></tr></thead><tbody>`+
+      <th>${esc(REC())}</th><th>类型</th><th>到期日</th><th>回访原因</th><th>一键检索</th></tr></thead><tbody>`+
       rows.map(t=>`<tr>
         <td class="mono" style="cursor:pointer" onclick="openEvent('${t.event_id}')">${t.event_id}</td>
         <td><span class="pill info">${esc(t.kind)}</span></td>
@@ -499,10 +499,10 @@ async function showPack(id){
 /* ---------- 线索 ---------- */
 async function vLeads(){
   const v=document.getElementById("view");
-  v.innerHTML=`<h2>销售线索</h2><p class="sub">事件→产品映射与评分,按采购窗口分阶段</p><div id="ldTable">加载中…</div>`;
+  v.innerHTML=`<h2>${esc((UI&&UI.tabs&&UI.tabs.leads&&UI.tabs.leads.label)||"线索")}</h2><p class="sub">${esc(REC())}→产品映射与评分,按窗口期分阶段(画像 leads_engine 开启才生成)</p><div id="ldTable">加载中…</div>`;
   try{
     const rows=await api(`/leads?need_id=${NEED}`);
-    if(!rows.length){ document.getElementById("ldTable").innerHTML=`<p class="muted">暂无线索。事件发布后自动生成。</p>`; return; }
+    if(!rows.length){ document.getElementById("ldTable").innerHTML=`<p class="muted">暂无线索。${esc(REC())}发布后自动生成(需画像开启线索引擎)。</p>`; return; }
     document.getElementById("ldTable").innerHTML=`<table><thead><tr>
       <th>目标单位</th><th>评分</th><th>采购窗口</th><th>建议产品</th><th>话术依据</th></tr></thead><tbody>`+
       rows.map(l=>`<tr>
@@ -1133,7 +1133,7 @@ async function showQueryLab(){
       <span class="sub" style="display:block;margin:4px 0">
         词表不是静态清单,而是按实际产出自我进化的:每条词按轮记账,「每轮产出」=
         5×进源库 + 1×新渠道 + 0.02×有效结果(原始结果条数权重压得很低,因为它最容易被页脚链之类灌水)。
-        <b>限定词增益</b>回答的正是「零售 数据泄露 到底不如 数据泄露 吗」——组合的每轮产出
+        <b>限定词增益</b>回答的正是「限定词+锚点 到底不如 锚点单独搜 吗」——组合的每轮产出
         除以锚点单独跑的每轮产出,小于 1 就是加了这个词反而更差;同一个词在多条组合上都拖后腿,
         才把它整个降级(仍可单独跑)。「歇着」不是淘汰,只是转低频复测——没有哪个网站天天都出一堆报道。</span>
       <div class="sub">共 ${r.total} 条词,跑过 ${r.ran} 条,没跑过 ${r.untried} 条｜
@@ -1366,10 +1366,10 @@ async function vDigest(){
   const v=document.getElementById("view");
   const canRun=["analyst","editor","admin"].includes(ROLE);
   v.innerHTML=`<h2>每日日报</h2>
-    <p class="sub">每天采集收尾自动生成;也可手动生成。内容:今日新增事件(按行业/严重度)、销售线索、行业热点、源健康。</p>
+    <p class="sub">每天采集收尾自动生成;也可手动生成。内容:今日新增${esc(REC())}(按画像分组维度)、${esc(L("dim1","分类"))}热点、线索(若开启)、源健康。</p>
     <div class="toolbar">
       ${canRun?`<button onclick="genDigest(false)" id="dgBtn">生成今日日报</button>
-      <button class="ghost" onclick="genDigest(true)" title="需在设置页配好 SMTP 和收件邮箱">生成并邮件推送</button>`:''}
+      <button class="ghost" onclick="genDigest(true)" title="按画像/设置里配置的通知渠道(邮件、飞书、webhook)推送">生成并推送</button>`:''}
       <button class="ghost" onclick="downloadFile('/digest/download','digest.md')">⬇ 下载 Markdown</button>
       <select id="dgDay" onchange="loadDigest(this.value)"><option value="">最新</option></select>
     </div>
@@ -1581,7 +1581,7 @@ async function loadDocs(){
 async function resolveDoc(id, action){
   let body={action};
   if(action==="attach"){
-    const ev=prompt("并入哪个事件?请输入事件号(如 SEC-20260723-0001):\n(可在「事件」页复制事件号)");
+    const ev=prompt(`并入哪个${REC()}?请输入${REC()}编号(如 ${(UI&&UI.id_prefix)||"REC"}-20260723-0001):\n(可在「${REC()}」页复制编号)`);
     if(!ev) return; body.event_id=ev.trim();
   }
   if(action==="discard" && !confirm("确认判为不相干并移出待人工队列?")) return;
@@ -1646,10 +1646,10 @@ async function vSettings(){
 }
 
 const KW_LISTS=[
-  ["event_terms","事件词","勒索病毒、数据泄露、被黑客攻击…(核心必填)"],
-  ["industry_terms","行业词","银行、医院、车企…(与事件词交叉)"],
-  ["consequence_terms","后果/处置词","网络安全法处罚、判决 侵犯公民个人信息…"],
-  ["org_terms","单位类型词","上市公司、央企、集团公司…(与后果词交叉)"],
+  ["event_terms","事件/主题词","本需求要找的事项本身的说法(含同义、口语、缩写);自动生成时来自 scope.topics"],
+  ["industry_terms","行业词","与事件/主题词交叉的行业限定;自动生成时来自 scope.industries"],
+  ["consequence_terms","后果/处置词","事情发生后的处置说法(处罚、判决、公告…),常出现在通报里"],
+  ["org_terms","主体类型词","主体类型限定(上市公司、集团、医院…),与后果词交叉"],
   ["negative_terms","排除词","招聘、课程、软件下载…(命中则降噪剔除)"],
 ];
 const KW_NUMS=[

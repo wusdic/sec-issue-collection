@@ -24,19 +24,21 @@
 
 ## 仓库结构
 
+> 表中带「实例」的文件属于首个实例(安全事件库)或其历史设计;平台通用设计只看 `design/platform/`(索引见 [design/README.md](design/README.md))。
+
 | 路径 | 内容 |
 |---|---|
-| [`docs/需求与解决方案.md`](docs/需求与解决方案.md) | 完整需求方案与解决方案(v1.0),后续采集软件设计的需求基线 |
-| [`schema/event.schema.json`](schema/event.schema.json) | 事件记录字段规范(JSON Schema,机器可读) |
-| [`schema/dictionaries.yaml`](schema/dictionaries.yaml) | 标准词表:行业、攻击类型、入口、数据类型、采购品类、来源可信度分级 |
-| [`design/详细设计.md`](design/详细设计.md) | 采集软件详细设计:技术选型、服务划分、流水线逻辑、REST API、排期 |
+| [`docs/需求与解决方案.md`](docs/需求与解决方案.md) | 实例 · 首个实例的需求方案(历史基线) |
+| [`schema/sec_event.schema.json`](schema/sec_event.schema.json) | 事件记录字段规范(JSON Schema,机器可读) |
+| [`schema/sec_dictionaries.yaml`](schema/sec_dictionaries.yaml) | 标准词表:行业、攻击类型、入口、数据类型、采购品类、来源可信度分级 |
+| [`design/详细设计.md`](design/详细设计.md) | 实例 · 平台化前的详细设计(历史) |
 | [`design/搜索行为逻辑与能力规范.md`](design/搜索行为逻辑与能力规范.md) | 八类搜索行为(B1–B8)× 十项通用能力(C1–C10)统一规范,含监控名单机制与待编写清单 |
 | [`design/通用信息搜索框架.md`](design/通用信息搜索框架.md) | 领域无关的泛化框架:信息需求六要素、通用流水线、G1–G8 泛化搜索行为、多需求并行架构 |
 | [`config/need_profile.template.yaml`](config/need_profile.template.yaml) | 信息需求画像模板(新需求实例化配置) |
-| [`design/schema.sql`](design/schema.sql) | PostgreSQL 建库 DDL(含发布硬校验触发器、pgvector 语义去重) |
-| [`config/seed_sources.yaml`](config/seed_sources.yaml) | 种子源清单(32 个,含适配器/频率/可信度/反爬备注) |
-| [`config/keyword_matrix.yaml`](config/keyword_matrix.yaml) | 每日定题检索关键词矩阵初版 |
-| [`config/discovery.yaml`](config/discovery.yaml) | 源发现引擎配置:导航/聚合站清单、找源检索词、候选评分与自动试运行阈值 |
+| [`design/schema.sql`](design/schema.sql) | 实例 · PostgreSQL DDL 设计稿(历史;运行表结构以 app/models.py 为准) |
+| [`config/seed_sources_sec.yaml`](config/seed_sources_sec.yaml) | 种子源清单(32 个,含适配器/频率/可信度/反爬备注) |
+| [`config/keyword_matrix_sec.yaml`](config/keyword_matrix_sec.yaml) | 每日定题检索关键词矩阵初版 |
+| [`config/discovery_sec.yaml`](config/discovery_sec.yaml) | 源发现引擎配置:导航/聚合站清单、找源检索词、候选评分与自动试运行阈值 |
 
 ## 核心设计要点
 

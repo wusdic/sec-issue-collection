@@ -81,7 +81,7 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 1. 被动(伴生):每篇入库文档顺手登记 3 类线索——搜索结果域名 `event_search`、正文
    「来源/转载自」`citation`、署名公众号 `wechat_reference`(`pipeline.ingest_item`);
 2. 主动(D5):每周用「找源专用检索词」去搜索引擎捞渠道(`prospect.run_once`)。词表 =
-   `config/discovery.yaml` 人工维护的基础词 **+ 覆盖空白自动生成的方向词**;
+   `config/discovery_sec.yaml` 人工维护的基础词 **+ 覆盖空白自动生成的方向词**;
 3. 覆盖度闭环:`coverage.industry_coverage` 按词表行业统计近 90 天事件数,低于下限判为
    空白 → `coverage.prospect_queries` 翻译成该行业的找源词喂回第 2 步,"缺哪块找哪块";
 4. 一站裂变多栏目(`columns.discover_and_persist`)、直连抓不到转站内检索兜底。
@@ -121,7 +121,7 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 
 每步落一行 `AutoOpsRun`(状态 + 结果摘要 + 失败原因),自动化但不黑箱;一步失败不影响其余步。
 
-**自动定级怎么守住红线**(`grading.decide`,规则在 `config/discovery.yaml` 的 `grading:`):
+**自动定级怎么守住红线**(`grading.decide`,规则在 `config/discovery_sec.yaml` 的 `grading:`):
 
 - **S1 自动给**——但只给"域名本身能证明官方身份"的:`.gov.cn`/`.mil.cn` 政务域名,
   或 `official_domains` 名录里的官方技术机构/法定披露平台(CNCERT、交易所、巨潮、裁判文书网…)。

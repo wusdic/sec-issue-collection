@@ -7,7 +7,7 @@
 
 需求画像声明自己的名录:
   sources:
-    reputation_registry: config/wechat_accounts.yaml   # 主体→可信度
+    reputation_registry: config/wechat_accounts_sec.yaml   # 主体→可信度
     repost_detection: true                             # 是否启用转载溯源
 
 名录文件格式(accounts 或 subjects 均可,兼容公众号名录):
