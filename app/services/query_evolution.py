@@ -167,22 +167,18 @@ _CJK_RUN = re.compile(r"[一-鿿]{2,12}")
 _CJK = re.compile(r"[一-鿿]+")
 
 
-_HARVEST_SYS = (
-    "你是中文安全资讯的检索词工程师。给你一批最近被判定为『相关』的文章标题,"
-    "请挑出最适合拿去搜索引擎**找新渠道**的关键词。要求:"
-    "①每个词 2-8 个汉字,是完整的说法(法规名/专项行动名/攻击手法名/监管动作名),"
-    "不要输出半截词或滑窗碎片;②要有检索区分度,不要『通报』『公司』『近日』这类泛词;"
-    "③不要人名、地名单独成词;④只输出 JSON:{\"terms\": [\"词1\", \"词2\"]}"
-)
+# 挖词提示词来自画像(sources.prospect.harvest_prompt,缺省按需求名生成),见 NeedContext.harvest_prompt
 
 
-def _harvest_llm(titles: list[str], top_n: int) -> list[str]:
+def _harvest_llm(titles: list[str], top_n: int, ctx=None) -> list[str]:
     """让模型从标题里抽检索词。没有分词库时这是最靠谱的一条路——n-gram 只会切出
     『某公司因』『公司因违』这种滑窗碎片,拿去搜索毫无意义。"""
     from app.services.llm import get_llm
     sample = titles[:120]
+    from app.services import need_ctx
+    c = ctx or need_ctx.get(None, need_ctx.default_need_id())
     r = get_llm().complete_json(
-        _HARVEST_SYS,
+        c.harvest_prompt,
         f"最多给我 {top_n} 个词。标题如下:\n" + "\n".join(f"- {t[:80]}" for t in sample))
     out = []
     for w in (r or {}).get("terms") or []:
@@ -239,10 +235,12 @@ def harvest_terms(db, need_id: str, top_n: int = 8, days: int = 90) -> list[str]
               .limit(3000).all() if t]
     if len(titles) < int(_cfg("harvest_min_titles", 30)):
         return []            # 语料太少,挖出来的都是噪声
-    known = set(_all_pool_terms())
+    from app.services import need_ctx
+    ctx = need_ctx.get(db, need_id)
+    known = set(_all_pool_terms(ctx))
     words: list[str] = []
     try:
-        words = _harvest_llm(titles, top_n)
+        words = _harvest_llm(titles, top_n, ctx)
     except Exception:  # noqa: BLE001 模型不可用就退回统计法,不该让整轮进化失败
         words = []
     if not words:
@@ -250,9 +248,9 @@ def harvest_terms(db, need_id: str, top_n: int = 8, days: int = 90) -> list[str]
     return [w for w in words if w not in known][:top_n]
 
 
-def _all_pool_terms() -> list[str]:
+def _all_pool_terms(ctx=None) -> list[str]:
     from app.services import prospect
-    r = prospect._recipes()
+    r = prospect._recipes(ctx)
     out = []
     for k in ("subject_terms", "action_terms", "event_terms", "channel_terms"):
         out += [str(x).strip() for x in (r.get(k) or []) if str(x).strip()]
@@ -267,7 +265,8 @@ def mutate(db, need_id: str, per_kind: int = 6) -> dict:
             if s.runs >= min_runs]
     rows.sort(key=value_of, reverse=True)
     good = [s for s in rows if value_of(s) > 0][:per_kind * 2]
-    acts = [str(x).strip() for x in (prospect._recipes().get("action_terms") or [])
+    from app.services import need_ctx
+    acts = [str(x).strip() for x in (prospect._recipes(need_ctx.get(db, need_id)).get("action_terms") or [])
             if str(x).strip()]
     weak = weak_terms(db, need_id)
     proposals: list[tuple[str, str, str]] = []      # (query, origin, parent)

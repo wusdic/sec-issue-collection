@@ -46,7 +46,7 @@ def test_prospect_registers_new_candidates(db, need, monkeypatch):
 
 def test_prospect_queries_include_coverage_gaps(db, need, monkeypatch):
     """找源词 = 人工维护的基础词 + 覆盖空白自动生成的方向词(缺哪块找哪块)。"""
-    monkeypatch.setattr(prospect, "base_queries", lambda: ["安全周报 汇总 推荐"])
+    monkeypatch.setattr(prospect, "base_queries", lambda *a, **k: ["安全周报 汇总 推荐"])
     monkeypatch.setattr(coverage, "prospect_queries", lambda *a, **k: ["医疗卫生 网络安全 事件 通报 公众号"])
     qs = prospect.build_queries(db, need.id)
     assert "安全周报 汇总 推荐" in qs and "医疗卫生 网络安全 事件 通报 公众号" in qs
@@ -54,7 +54,7 @@ def test_prospect_queries_include_coverage_gaps(db, need, monkeypatch):
 
 def test_prospect_query_cap(db, need, monkeypatch):
     monkeypatch.setattr(settings, "prospect_query_cap", 3)
-    monkeypatch.setattr(prospect, "base_queries", lambda: [f"词{i}" for i in range(20)])
+    monkeypatch.setattr(prospect, "base_queries", lambda *a, **k: [f"词{i}" for i in range(20)])
     monkeypatch.setattr(coverage, "prospect_queries", lambda *a, **k: [])
     assert len(prospect.build_queries(db, need.id)) == 3
 

@@ -10,19 +10,28 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from app.config import settings
-from app.services import fetcher, url_tools
+from app.services import fetcher, need_ctx, url_tools
 
-# 栏目相关词(命中越多越可能是目标栏目);与关键词矩阵的事件/后果词叠加
-COLUMN_HINT_WORDS = [
-    "执法", "处罚", "通报", "曝光", "案例", "网络安全", "数据安全", "信息安全", "个人信息",
-    "漏洞", "预警", "情况通报", "违法违规", "查处", "打击", "净网", "监管", "处置", "事件",
-    "安全", "泄露", "举报", "整治", "行政处罚", "监督管理", "风险提示", "安全通告", "公告",
-]
-# 明显无关的栏目词(直接排除)
-COLUMN_STOP_WORDS = [
-    "招聘", "关于我们", "联系", "网站地图", "版权", "登录", "注册", "English", "简介",
-    "机构设置", "领导", "党建", "会议", "视频", "图片", "专题", "首页", "邮箱", "服务",
-]
+# 栏目提示词/路径线索是领域知识,来自画像 sources.column_discovery(hint_words/path_hints);
+# 停用词(招聘/关于我们/登录...)是与领域无关的导航噪声,平台给缺省,画像可覆盖。
+COLUMN_STOP_WORDS = list(need_ctx.DEFAULTS["sources"]["column_discovery"]["stop_words"])
+COLUMN_HINT_WORDS: list[str] = []          # 兼容旧名:平台层不再内置领域提示词,请用 hint_words(ctx)
+
+
+def _ctx(ctx=None, need_id: str | None = None):
+    return ctx or need_ctx.get(None, need_id or need_ctx.default_need_id())
+
+
+def hint_words(ctx=None) -> list[str]:
+    return [str(w) for w in (_ctx(ctx).column_discovery.get("hint_words") or []) if str(w)]
+
+
+def stop_words(ctx=None) -> list[str]:
+    return [str(w) for w in (_ctx(ctx).column_discovery.get("stop_words") or COLUMN_STOP_WORDS) if str(w)]
+
+
+def path_hints(ctx=None) -> list[str]:
+    return [str(w).lower() for w in (_ctx(ctx).column_discovery.get("path_hints") or []) if str(w)]
 
 
 def is_root_only(url: str | None) -> bool:
@@ -33,20 +42,21 @@ def is_root_only(url: str | None) -> bool:
     return path == ""
 
 
-def _score(anchor: str, href_path: str, extra_terms: list[str]) -> int:
+def _score(anchor: str, href_path: str, extra_terms: list[str], ctx=None) -> int:
     blob = anchor
-    if any(w in blob for w in COLUMN_STOP_WORDS):
+    if any(w in blob for w in stop_words(ctx)):
         return -1
-    score = sum(1 for w in COLUMN_HINT_WORDS if w in blob)
+    score = sum(1 for w in hint_words(ctx) if w in blob)
     score += sum(1 for t in extra_terms if t and t in blob)
-    # 路径里带 zhifa/chufa/tongbao/aqbao 等拼音/栏目段也加分(弱信号)
-    if any(seg in href_path for seg in ("zhifa", "chufa", "tongbao", "aqfa", "wangan", "anquan")):
+    # 路径里带画像声明的拼音/栏目段也加分(弱信号)
+    hp = path_hints(ctx)
+    if hp and any(seg in (href_path or "").lower() for seg in hp):
         score += 1
     return score
 
 
 def find_columns(html: str, base_url: str, extra_terms: list[str] | None = None,
-                 limit: int | None = None) -> list[dict]:
+                 limit: int | None = None, ctx=None) -> list[dict]:
     """从页面 HTML 找同域相关栏目链接。返回 [{url, anchor, score}],按分降序,已按栏目URL去重。"""
     extra_terms = extra_terms or []
     limit = limit or settings.auto_column_max
@@ -67,7 +77,7 @@ def find_columns(html: str, base_url: str, extra_terms: list[str] | None = None,
         anchor = a.get_text(" ", strip=True)[:40]
         if not anchor or len(anchor) < 2:
             continue
-        sc = _score(anchor, urlparse(full).path.lower(), extra_terms)
+        sc = _score(anchor, urlparse(full).path.lower(), extra_terms, ctx)
         if sc <= 0:
             continue
         prev = seen.get(full)
@@ -82,14 +92,14 @@ def _abs(base: str, href: str) -> str:
     return urljoin(base, href)
 
 
-def discover_columns(source, extra_terms: list[str] | None = None) -> list[dict]:
+def discover_columns(source, extra_terms: list[str] | None = None, ctx=None) -> list[dict]:
     """抓根页 → 找相关栏目。返回栏目列表(可能为空)。"""
     if not source.entry_url:
         return []
     fr = fetcher.fetch(source.entry_url, render=(source.adapter_config or {}).get("render", "auto"))
     if not fr.ok:
         return []
-    return find_columns(fr.html, fr.final_url or source.entry_url, extra_terms)
+    return find_columns(fr.html, fr.final_url or source.entry_url, extra_terms, ctx=ctx)
 
 
 # ---------------- 栏目验证:文章一致性 ----------------
@@ -141,17 +151,20 @@ def _consistency(urls: list[str]) -> float:
 _TERMS_CACHE: dict[str, list[str]] = {}
 
 
-def relevance_terms(db=None, need_id: str = "sec_events") -> list[str]:
-    """判定"栏目内容是否相关"用的词表:栏目相关词 + 关键词矩阵里的事件/后果词(拆到单词粒度)。
+def relevance_terms(db=None, need_id: str | None = None, ctx=None) -> list[str]:
+    """判定"栏目内容是否相关"用的词表:画像栏目提示词 + 关键词矩阵里声明的词域(拆到单词粒度)。
 
-    优先读库里生效的关键词矩阵(设置页改了立即生效),读不到再回退 config/keyword_matrix.yaml。
+    优先读库里生效的关键词矩阵(设置页改了立即生效),读不到再回退画像的 discovery_terms_file。
     结果按 need 缓存,避免每验证一个栏目就查一次库。
     """
+    c = _ctx(ctx, need_id)
+    need_id = need_id or c.id
     # 库里的词表优先:没带 db 时若已缓存过库版本,直接复用,不要退回文件版
     if need_id in _TERMS_CACHE:
         return _TERMS_CACHE[need_id]
     if db is None and f"file:{need_id}" in _TERMS_CACHE:
         return _TERMS_CACHE[f"file:{need_id}"]
+    fields = c.relevance_term_fields or ["event_terms"]
     raw: list[str] = []
     from_db = False
     try:
@@ -159,20 +172,20 @@ def relevance_terms(db=None, need_id: str = "sec_events") -> list[str]:
             from app.models import KeywordSet
             ks = db.query(KeywordSet).filter_by(need_id=need_id, is_active=True).first()
             if ks:
-                for f in ("event_terms", "consequence_terms"):
+                for f in fields:
                     raw += [str(t) for t in (ks.content or {}).get(f) or []]
                 from_db = bool(raw)
     except Exception:  # noqa: BLE001 取词表失败不该影响栏目验证
         raw, from_db = [], False
-    if not raw:
+    if not raw and c.discovery_terms_file:
         try:
             import yaml
-            data = yaml.safe_load((settings.config_dir / "keyword_matrix.yaml").read_text(encoding="utf-8"))
-            for f in ("event_terms", "consequence_terms"):
+            data = yaml.safe_load(c.discovery_terms_file.read_text(encoding="utf-8"))
+            for f in fields:
                 raw += [str(t) for t in (data or {}).get(f) or []]
         except Exception:  # noqa: BLE001
             pass
-    terms = set(COLUMN_HINT_WORDS)
+    terms = set(hint_words(c))
     for t in raw:
         # "网络安全法 处罚" 这类组合词按空格拆开,标题里通常只出现其中一段
         for part in str(t).split():
@@ -225,7 +238,7 @@ def validate_column(url: str, render_pref="auto", terms: list[str] | None = None
     if valid:
         reason = ""
     elif not rel_ok:
-        reason = f"内容相关度{rel}(低于{settings.column_relevance_min}),疑似非安全类栏目"
+        reason = f"内容相关度{rel}(低于{settings.column_relevance_min}),疑似与需求无关的栏目"
     else:
         reason = f"文章{len(arts)}篇/一致性{cons},未达标"
     return {"url": url, "valid": valid, "article_count": len(arts), "consistency": cons,
@@ -271,10 +284,11 @@ def discover_and_persist(db, source, extra_terms: list[str] | None = None) -> tu
     import time as _time
     budget = int(getattr(settings, "column_discovery_budget_seconds", 0) or 0)
     deadline = (_time.time() + budget) if budget > 0 else None
-    need_id = (source.serves_needs or ["sec_events"])[0]
-    terms = relevance_terms(db, need_id)
+    need_id = (source.serves_needs or [need_ctx.default_need_id()])[0]
+    ctx = need_ctx.get(db, need_id)
+    terms = relevance_terms(db, need_id, ctx)
     validated = []
-    for c in discover_columns(source, extra_terms):
+    for c in discover_columns(source, extra_terms, ctx):
         if deadline and _time.time() > deadline:
             break                                    # 栏目发现自身也要有时间上限
         # 文章高度一致(是个栏目)且内容相关(是"安全"栏目)才确认入库

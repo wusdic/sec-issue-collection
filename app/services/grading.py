@@ -26,12 +26,10 @@ from app.services import actions, url_tools
 _OFFICIAL_SUFFIXES = (".gov.cn", ".mil.cn")
 
 
-def _cfg() -> dict:
-    try:
-        with open(settings.config_dir / "discovery.yaml", encoding="utf-8") as f:
-            return (yaml.safe_load(f) or {}).get("grading", {}) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
+def _cfg(need_id: str | None = None) -> dict:
+    """定级规则:画像 sources.grading,缺省取画像 discovery_file 的 grading 节。"""
+    from app.services import need_ctx
+    return need_ctx.get(None, need_id or need_ctx.default_need_id()).grading
 
 
 def official_domains() -> set[str]:
@@ -116,7 +114,7 @@ def decide(db, src: Source) -> dict:
 def auto_grade(db, need_id: str, dry_run: bool = False) -> dict:
     """扫描所有试运行源并执行决定。返回各类动作明细,供自动运维报告与页面展示。"""
     if not bool(_cfg().get("auto_grade_enabled", True)):
-        return {"skipped": "已在 config/discovery.yaml 关闭自动定级", "results": []}
+        return {"skipped": "已在画像 discovery_file 的 grading 里关闭自动定级", "results": []}
     from app.services import discovery
     rows = [s for s in db.query(Source).filter_by(lifecycle="trial").all()
             if need_id in (s.serves_needs or [])]

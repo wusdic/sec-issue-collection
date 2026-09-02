@@ -268,7 +268,7 @@ def test_autotune_keeps_only_usable_engines(db, monkeypatch):
     from app.services import prospect
     monkeypatch.setattr(settings, "prospect_engines", "bing_search,baidu_search")
     monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,baidu_search")
-    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x": {
+    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x", **_k: {
         "query": q, "usable": ["bing_search"], "advice": "",
         "engines": [{"engine": "bing_search", "ok": True, "blocked": False, "hint": ""},
                     {"engine": "baidu_search", "ok": False, "blocked": True, "hint": "验证页"}]})
@@ -289,7 +289,7 @@ def test_autotune_readds_recovered_engine(db, monkeypatch):
     from app.services import prospect
     monkeypatch.setattr(settings, "prospect_engines", "bing_search")
     monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,sogou_wechat")
-    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x": {
+    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x", **_k: {
         "query": q, "usable": ["bing_search", "sogou_wechat"], "advice": "",
         "engines": [{"engine": "bing_search", "ok": True, "blocked": False, "hint": ""},
                     {"engine": "sogou_wechat", "ok": True, "blocked": False, "hint": ""}]})
@@ -305,7 +305,7 @@ def test_autotune_never_empties_engine_list(db, monkeypatch):
     from app.services import prospect
     monkeypatch.setattr(settings, "prospect_engines", "bing_search,baidu_search")
     monkeypatch.setattr(settings, "prospect_engines_all", "bing_search,baidu_search")
-    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x": {
+    monkeypatch.setattr(prospect, "selftest", lambda _db, q="x", **_k: {
         "query": q, "usable": [], "advice": "",
         "engines": [{"engine": "bing_search", "ok": False, "blocked": True, "hint": "验证页"}]})
     monkeypatch.setattr("app.services.settings_service.save",
@@ -366,7 +366,7 @@ def test_autotune_records_tested_pool(db, monkeypatch):
     monkeypatch.setattr(settings, "prospect_engines", "bing_rss")
     monkeypatch.setattr(settings, "prospect_engines_all", "bing_rss,baidu_search")
     monkeypatch.setattr(prospect, "selftest",
-                        lambda db, q="x": {"usable": ["bing_rss"], "engines": [
+                        lambda db, q="x", **_k: {"usable": ["bing_rss"], "engines": [
                             {"engine": "bing_rss", "ok": True, "blocked": False, "hint": "可用"},
                             {"engine": "baidu_search", "ok": False, "blocked": True, "hint": "验证页"}]})
     prospect.autotune_engines(db)

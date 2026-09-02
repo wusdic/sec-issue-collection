@@ -65,8 +65,8 @@ def test_digest_counts_today_events(db, need):
     _mk_event(db, need.id, sev="重大", industry="金融", org="A银行")
     c = digest_svc.build_content(db, need.id, datetime.utcnow().date())
     assert c["events_total"] >= 2
-    assert c["events_by_industry"].get("金融", 0) >= 1
-    assert c["top_events"][0]["severity"] == "重大"  # 高严重度排前(即便它后创建)
+    assert c["by_group"]["dim1"].get("金融", 0) >= 1
+    assert c["top_events"][0]["grade"] == "重大"  # 高严重度排前(即便它后创建)
     md = digest_svc.render_markdown(c)
     assert "安全事件日报" in md and "行业热点" in md
 

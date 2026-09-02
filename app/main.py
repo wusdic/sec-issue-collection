@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from app.api.routes import api
 from app.db import init_db
 
-app = FastAPI(title="通用信息搜索框架 · 安全事件库", version="0.1.0")
+app = FastAPI(title="通用数据采集平台(需求画像驱动)", version="0.2.0")
 app.include_router(api)
 
 _WEB = Path(__file__).resolve().parent / "web" / "index.html"
@@ -25,12 +25,13 @@ def _startup():
         # 启动即把内置种子源清单载入(幂等:已有的不动,只补新的)。
         # 升级后新增的内置源不该还要人去跑一次 CLI;自动运维里也有同名任务按周期兜底。
         try:
-            from app.models import NeedProfile
+            from pathlib import Path as _P
             from app.services import profiles
-            if db.get(NeedProfile, "sec_events"):
-                profiles.load_seed_sources(db, "sec_events",
-                                           profiles.default_sec_events_paths()["sources"])
-                db.commit()
+            for nid in profiles.active_need_ids(db):
+                seeds = profiles.need_paths(nid)["sources"]
+                if seeds and _P(seeds).exists():
+                    profiles.load_seed_sources(db, nid, seeds)
+            db.commit()
         except Exception:  # noqa: BLE001 种子载入失败不阻断启动
             db.rollback()
         # 升级新加的找源引擎补进在用列表(只补"从没被自检评价过"的,

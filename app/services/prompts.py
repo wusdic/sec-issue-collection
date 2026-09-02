@@ -1,64 +1,72 @@
 """提示词库:粗筛 / 结构化抽取 / 源相关度 / 列表模板生成。
 
-与需求画像绑定:screen_prompt 要点与词表由画像注入,prompt 版本随词表版本走。
+与需求画像绑定(通用平台):粗筛的判定目标、算相关/必须判否清单,抽取的领域规则、
+record_type 取值,全部来自 NeedContext;引擎只保留与领域无关的"平台通用硬规则"
+(不臆造、未披露用 status、附原文片段、日期精度、来源链接真实)。
+提示词里嵌 NEED_ID/SCHEMA_FILE 标记,供离线 Mock 模型按画像规则产出。
 """
 import json
 
 from app.config import settings
+from app.services import need_ctx
 
 
-def screen_prompts(profile_cfg: dict, title: str, text: str) -> tuple[str, str]:
-    goal = (profile_cfg.get("quality") or {}).get("screen_prompt") or "判断是否为国内发生的网络/信息安全事件报道"
+def _ctx(profile_cfg: dict | None, ctx=None):
+    return ctx or need_ctx.from_config(profile_cfg or {})
+
+
+def screen_prompts(profile_cfg: dict, title: str, text: str, ctx=None) -> tuple[str, str]:
+    c = _ctx(profile_cfg, ctx)
+    sc = c.screen
+    goal = sc.get("goal") or f"判断这篇内容是否属于『{c.name}』要收集的目标记录"
+    inc = [str(r) for r in (sc.get("include_rules") or []) if str(r).strip()]
+    exc = [str(r) for r in (sc.get("exclude_rules") or []) if str(r).strip()]
+    reminder = str(sc.get("reminder") or "").strip()
     system = (
-        "TASK=screen\n"
-        "你是网络安全事件库的粗筛分类器。仅输出 JSON:"
+        f"TASK=screen\nNEED_ID={c.id}\n"
+        f"你是『{c.name}』的粗筛分类器。仅输出 JSON:"
         '{"is_candidate": bool, "relevance": 0-1, "confidence": 0-1, "reason": "一句话"}\n'
-        "字段含义(务必区分):relevance=这篇与『网络安全事件库』的相关程度(1=高度相关,0=完全无关);"
+        f"字段含义(务必区分):relevance=这篇与『{c.name}』的相关程度(1=高度相关,0=完全无关);"
         "confidence=你对本次判断的把握程度。判为不相关时 relevance 必须给低分(而不是把把握程度写进去)。\n"
         f"判定标准:{goal}。\n"
-        "【算相关 is_candidate=true】仅限网络/数据/信息安全:安全事件(攻击/入侵/泄露/勒索/篡改/宕机/"
-        "供应链投毒)、安全监管处罚决定、威胁情报(木马/僵尸网络/黑产/钓鱼/漏洞利用)、漏洞公告、"
-        "安全风险提示预警、网络安全态势/统计通报。\n"
-        "【必须判 false,不得放行】以下不属于网络安全事件库:\n"
-        "· 网络内容治理/意识形态治理:清朗专项、集中整治、未成年人网络保护、团播直播乱象、AI内容乱象、"
-        "短视频/账号名称/不良信息 整治处置;\n"
-        "· 备案/评估/遴选名单:算法备案公告、服务安全评估『通过名单』、支撑单位遴选结果、认证机构名单;\n"
-        "· 政策宣贯/解读/报告:专家解读、政策阐释、白皮书或报告发布;\n"
-        "· 栏目/目录/列表导航页(无单篇正文)、会议/赛事/报名通知、招聘、营销、产品宣传。\n"
-        "关键:『网络空间内容治理』≠『网络安全』,网信办发布≠安全事件;缺明确安全要素时一律判 false。"
     )
+    if inc:
+        system += "【算相关 is_candidate=true】\n" + "\n".join(f"· {r}" for r in inc) + "\n"
+    if exc:
+        system += "【必须判 false,不得放行】\n" + "\n".join(f"· {r}" for r in exc) + "\n"
+    if reminder:
+        system += f"关键:{reminder}"
     user = f"标题:{title}\n正文:\n{text[:6000]}"
     return system, user
 
 
+# 平台通用硬规则:与领域无关,任何需求都必须遵守;画像只能追加,不能删除
+_PLATFORM_EXTRACT_RULES = [
+    "未披露的字段用 status='未披露' 或枚举『未披露/未知/不明』,不留空、不猜测",
+    "每个关键抽取值在 _source_spans 里附原文片段(字段名→原文引句)",
+    "日期类字段若 Schema 定义为 {\"date\":\"YYYY-MM-DD\",\"precision\":\"日|月|季|年|未知\"} 结构,按该结构填;"
+    "只知年月的用 precision 标注,不要另造字段;Schema 为纯日期字符串的直接填 YYYY-MM-DD",
+    "不得编造可核验字段:sources 的 url 必须用文中给出的真实链接(不确定就留空,禁止占位符如 XXXXX);"
+    "机构/主体名称按原文",
+]
+
+
 def extract_prompts(profile_cfg: dict, dictionaries: dict, record_schema: dict,
-                    title: str, text: str) -> tuple[str, str]:
-    dict_brief = {k: v for k, v in dictionaries.items() if k != "version"}
+                    title: str, text: str, ctx=None) -> tuple[str, str]:
+    c = _ctx(profile_cfg, ctx)
+    dict_brief = {k: v for k, v in (dictionaries or {}).items() if k != "version"}
+    rt = c.record_types
+    rules = list(_PLATFORM_EXTRACT_RULES)
+    rules.append(
+        f"另输出 record_type,取值只能是 {rt.get('values')};"
+        f"若本文不属于『{c.name}』的收集范畴,填『{rt.get('out_of_scope')}』(此时其余字段可留空、不要强填)")
+    rules += c.extract_rules
+    numbered = "\n".join(f"{i + 1}) {r}" for i, r in enumerate(rules))
     system = (
-        "TASK=extract\n"
-        "你是结构化抽取器。把文章内容按给定 JSON Schema 抽取为一条记录,仅输出 JSON。\n"
-        "硬规则(违反即废):\n"
-        "1) 金额三态:文中出现『要求/索赔/勒索/拟处罚/预计/或将/传闻/主张』语境的金额,"
-        "只能写入 claimed 通道;『判决/裁定/处罚决定书/公告确认/年报披露』语境的金额写入 confirmed,"
-        "并在 note 注明依据语句。任何情况下不得臆造金额。\n"
-        "2) 赎金『要求金额』写入 ransom.demanded_amount,绝不写入任何 loss_* 字段;"
-        "只有明确『已支付』才填 paid_amount。\n"
-        "3) 未披露的字段用 status='未披露' 或枚举『未披露/未知/不明』,不留空、不猜测。\n"
-        "4) 每个关键抽取值在 _source_spans 里附原文片段(字段名→原文引句)。\n"
-        "5) 另输出 record_type:有明确单一受害方/单起安全事件→『单一事件』;安全威胁情报、漏洞、"
-        "风险提示、安全态势统计、明确安全处罚决定(无单一受害方)→『通报情报』;"
-        "若本文属内容治理/意识形态治理(清朗/整治/未成年人保护等)、备案或评估『名单』、遴选结果、"
-        "政策解读/报告发布、会议名单等非网络安全范畴→『不该入库』(此时其余字段可留空、不要强填)。\n"
-        "6) occurred_date/disclosed_date 用 {\"date\":\"YYYY-MM-DD\",\"precision\":\"日|月|季|年|未知\"};"
-        "只知年月填月末不知的用 precision 标注,不要另造 value 等字段;发布日只填 disclosed_date。\n"
-        "7) consequences 只记『已确认发生』的后果;原文用『容易造成/可能/风险/预计/或将/不得』等表述的属"
-        "潜在风险或预防警示,不得计入 consequences。约谈/预警类未确认发生的,不得填 被攻陷系统/确认攻击方/业务中断。\n"
-        "8) 不得编造可核验字段:sources 的 url 必须用文中给出的真实链接(不确定就留空,禁止占位符如 XXXXX);"
-        "法规依据只能引用正文出现过的法规名;机构缩写按原文(如 CNCERT)。sellable_mapping 仅当原文确有相关"
-        "安全需求时才填,非安全内容留空。\n"
-        # Schema 必须完整给出:$defs 里定义了金额三态(MoneyTriState)、日期精度等结构,
-        # 此前硬截断到 6000 字(仅覆盖 48%)会把 $defs 整段切掉,模型看不到金额三态怎么写,
-        # 导致金额结构崩坏、schema 校验全部失败。
+        f"TASK=extract\nNEED_ID={c.id}\nSCHEMA_FILE={c.schema_file}\n"
+        f"你是『{c.name}』的结构化抽取器。把文章内容按给定 JSON Schema 抽取为一条记录,仅输出 JSON。\n"
+        f"硬规则(违反即废):\n{numbered}\n"
+        # Schema 必须完整给出:$defs 里的结构(三态/日期精度等)截掉模型就看不到怎么写
         f"词表(枚举值必须取自词表):\n{json.dumps(dict_brief, ensure_ascii=False)[:settings.prompt_dict_chars]}\n"
         f"JSON Schema(务必完整遵守,含 $defs 引用的结构):\n"
         f"{json.dumps(record_schema, ensure_ascii=False)[:settings.prompt_schema_chars]}"

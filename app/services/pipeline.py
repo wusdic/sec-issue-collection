@@ -14,7 +14,7 @@ from app.models import (
     CrawlRun, DocCluster, KeywordRun, NeedProfile, RawDocument, SearchWatermark, Source,
 )
 from app.services import (
-    archive, columns, dedup, diagnostics, discovery, fetcher, health, reputation, url_tools,
+    archive, columns, dedup, diagnostics, discovery, fetcher, health, need_ctx, reputation, url_tools,
 )
 from app.services.adapters import DiscoveredItem, SearchEngineAdapter, get_adapter
 from app.services.errors import error_headline
@@ -209,7 +209,8 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
                            detail={"cluster_id": doc.cluster_id})
 
     cfg = need.config
-    verdict = screen_document(cfg, doc.title or "", doc.content_text or "")
+    ctx = need_ctx.for_need(need)
+    verdict = screen_document(cfg, doc.title or "", doc.content_text or "", ctx=ctx)
     conf = verdict["confidence"]
     doc.screen_score = conf
     doc.screen_reason = verdict["reason"]
@@ -231,25 +232,24 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         return result
     doc.screen_status = "screened_in"
 
-    schema_file = (cfg.get("record_schemas") or [{}])[0].get("file") or str(settings.schema_dir / "event.schema.json")
-    record_schema = load_record_schema(schema_file)
+    record_schema = load_record_schema(ctx.schema_file)
     dictionaries = get_active_dictionaries(db, need.id)
-    extraction = extract_record(cfg, dictionaries, record_schema, doc.title or "", doc.content_text or "")
+    extraction = extract_record(cfg, dictionaries, record_schema, doc.title or "", doc.content_text or "", ctx=ctx)
     payload = extraction["payload"]
     diagnostics.record("extract", "结构化抽取完成",
                        detail={"payload": payload, "violations": extraction["violations"],
                                "schema_errors": extraction["schema_errors"]})
-    # 非网络安全范畴(内容治理/名单/政策)→ 不入库,直接过滤(粗筛漏网时的兜底闸门)
-    if _is_out_of_scope(payload, doc.title or "", doc.content_text or ""):
+    # 范畴闸门(画像 quality.scope_guard):粗筛漏网时抽取后再兜一道,不入库
+    if _is_out_of_scope(payload, doc.title or "", doc.content_text or "", ctx):
         doc.screen_status = "screened_out"
-        doc.screen_reason = "非网络安全范畴(内容治理/名单/政策解读),不入库"
+        doc.screen_reason = _out_of_scope_reason(ctx)
         result["action"] = "screened_out"
-        diagnostics.record("extract", "判为非安全范畴,过滤不入库",
+        diagnostics.record("extract", "判为范畴外,过滤不入库",
                            detail={"record_type": payload.get("record_type"), "title": doc.title})
         db.flush()
         return result
-    # 抽取空壳(标题/单位/要素全无)→ 不建空事件,转人工待定,避免仪表盘一堆空记录
-    if not _payload_has_content(payload):
+    # 抽取空壳(标题/主体/要素全无)→ 不建空记录,转人工待定,避免仪表盘一堆空记录
+    if not _payload_has_content(payload, ctx):
         doc.screen_status = "manual_queue"
         doc.screen_reason = "抽取结果为空(疑似模型输出异常/正文不足),待人工确认"
         result["action"] = "manual_queue"
@@ -259,7 +259,7 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         return result
 
     # 记录级去重:指纹 → 语义召回
-    existing = dedup.fingerprint_match(db, need.id, payload)
+    existing = dedup.fingerprint_match(db, need.id, payload, ctx=ctx)
     if existing:
         # 疑似同一事件:不建新记录,文档转人工队列并挂明疑似目标,等待人工合并(10.3 跨时间合并)
         doc.screen_status = "manual_queue"
@@ -281,7 +281,7 @@ def process_document(db: Session, need: NeedProfile, doc: RawDocument) -> dict:
         src_cred = reputation.subject_credibility(reg, doc.publisher, src_cred)
     ev = create_draft(db, need.id, payload, doc=doc,
                       source_credibility=src_cred,
-                      dict_version=str(dictionaries.get("version") or ""))
+                      dict_version=str(dictionaries.get("version") or ""), ctx=ctx)
     recall = dedup.semantic_recall(db, need.id, ev.embedding, exclude_event_id=ev.event_id)
     if recall:
         result["semantic_suspects"] = [(e.event_id, round(s, 3)) for e, s in recall]
@@ -371,36 +371,54 @@ def _item_pub(item: DiscoveredItem):
     return _parse_dt(item.published) or url_tools.date_from_url(item.url)
 
 
-# 非网络安全范畴的强排除特征(内容治理/名单/政策),粗筛漏网时抽取后再兜一道
-_OUT_OF_SCOPE_RE = re.compile(
-    "清朗|专项行动|集中整治|不良信息|未成年人网络保护|团播|直播乱象|账号名称|短视频|"
-    "算法备案|备案信息|评估.{0,4}名单|通过.{0,4}名单|遴选结果|支撑单位|认证机构名单|"
-    "专家解读|政策解读|报告发布|白皮书")
+_SCOPE_RE_CACHE: dict[str, re.Pattern] = {}
 
 
-def _is_out_of_scope(payload: dict, title: str, text: str) -> bool:
-    """判定是否非网络安全范畴(不该入库):优先信 LLM 的 record_type,再用关键词兜底。"""
-    if payload.get("record_type") == "不该入库":
+def _rx(pat: str) -> re.Pattern:
+    r = _SCOPE_RE_CACHE.get(pat)
+    if r is None:
+        try:
+            r = re.compile(pat)
+        except re.error:
+            r = re.compile(re.escape(pat))
+        _SCOPE_RE_CACHE[pat] = r
+    return r
+
+
+def _out_of_scope_reason(ctx) -> str:
+    return str(ctx.scope_guard.get("out_of_scope_reason") or f"非『{ctx.name}』范畴,不入库")
+
+
+def _is_out_of_scope(payload: dict, title: str, text: str, ctx=None) -> bool:
+    """范畴闸门(通用):优先信 LLM 的 record_type=画像 out_of_scope 值;再用画像 scope_guard 的
+    排除正则兜底——命中排除特征且未命中『强相关覆盖特征』(include_override_patterns)才判范畴外。"""
+    c = ctx or need_ctx.get(None, need_ctx.default_need_id())
+    oos = c.record_types.get("out_of_scope")
+    if oos and isinstance(payload, dict) and payload.get("record_type") == oos:
         return True
-    blob = f"{title or ''} {payload.get('title') or ''}"
-    # 标题命中内容治理/名单/政策特征,且无明确安全事件要素(攻击/漏洞/泄露等)
-    if _OUT_OF_SCOPE_RE.search(blob):
-        sec = re.search("漏洞|攻击|入侵|勒索|木马|僵尸网络|钓鱼|泄露|篡改|黑客|后门|挖矿|C2|窃取", blob)
-        if not sec:
-            return True
-    return False
+    sg = c.scope_guard
+    excl = [str(x) for x in (sg.get("exclude_patterns") or []) if str(x)]
+    if not excl:
+        return False
+    blob = f"{title or ''} {(payload or {}).get('title') or ''}"
+    if not any(_rx(x).search(blob) for x in excl):
+        return False
+    override = [str(x) for x in (sg.get("include_override_patterns") or []) if str(x)]
+    return not any(_rx(x).search(blob) for x in override)
 
 
-def _payload_has_content(p: dict) -> bool:
-    """抽取结果是否有实质内容(至少有标题、或具体单位、或攻击/后果要素)。"""
+def _payload_has_content(p: dict, ctx=None) -> bool:
+    """抽取结果是否有实质内容(至少有标题、或具体主体、或标签要素)。"""
     if not isinstance(p, dict):
         return False
-    if (p.get("title") or "").strip():
+    c = ctx or need_ctx.get(None, need_ctx.default_need_id())
+    if str(p.get("title") or c.get_role(p, "title") or "").strip():
         return True
-    org = (p.get("org_name") or "").strip()
-    if org and org not in ("未披露", "未知", "不明", ""):
+    blank = {str(x) for x in ((c.record_types.get("advisory") or {}).get("subject_blank_values") or [""])}
+    subject = str(c.get_role(p, "subject") or "").strip()
+    if subject and subject not in blank:
         return True
-    return bool(p.get("attack_type") or p.get("consequences"))
+    return bool(c.get_role(p, "tags_a") or c.get_role(p, "tags_b"))
 
 
 def _consume_paginated(db, need, source, run, fetch_page, max_pages,

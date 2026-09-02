@@ -61,5 +61,6 @@ def test_fingerprint_match_tolerates_bad_dates(db, need):
 
 
 def test_org_key_tolerates_string_region():
-    assert dedup._org_key({"org_name": "某行", "region": "广东省"}) == "某行|"
+    # region 是字符串时退回父级标量当省份(比丢掉更保守),不抛异常
+    assert dedup._org_key({"org_name": "某行", "region": "广东省"}) == "某行|广东省"
     assert dedup._org_key({"org_name": "某行", "region": {"province": "广东"}}) == "某行|广东"

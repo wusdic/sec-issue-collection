@@ -345,17 +345,153 @@ def _parse_json(raw: str) -> dict:
     raise json.JSONDecodeError("未找到 JSON 对象", cleaned[:120], 0)
 
 
-class MockLLM(BaseLLM):
-    """离线确定性模拟:粗筛按安全关键词;抽取产出最小合法骨架。
+_ENVELOPE = {"event_id", "status", "review", "confidence_overall", "completeness_score", "change_log", "sources"}
+_UNINFORMATIVE_PREF = ("未披露", "未知", "不明", "其他", "无", "未定级")
+_NEED_RE = re.compile(r"NEED_ID=(\S+)")
+_SCHEMA_RE = re.compile(r"SCHEMA_FILE=(\S+)")
 
-    仅用于测试与离线演示,产出质量不代表真实 LLM;
-    真实部署设 LLM_PROVIDER=openai_compat。
+
+def _resolve_node(node: dict, root: dict) -> dict:
+    """展开 $ref / allOf / anyOf / oneOf,得到一个可直接生成骨架的节点。"""
+    seen = 0
+    while isinstance(node, dict) and seen < 8:
+        seen += 1
+        if "$ref" in node:
+            ref = str(node["$ref"])
+            cur = root
+            for part in ref.lstrip("#/").split("/"):
+                cur = (cur or {}).get(part) if isinstance(cur, dict) else None
+            node = cur or {}
+            continue
+        if "allOf" in node and node["allOf"]:
+            merged: dict = {}
+            for sub in node["allOf"]:
+                sub = _resolve_node(sub, root)
+                for k, v in sub.items():
+                    if k == "properties":
+                        merged.setdefault("properties", {}).update(v)
+                    elif k == "required":
+                        merged["required"] = list(dict.fromkeys(list(merged.get("required") or []) + list(v)))
+                    else:
+                        merged.setdefault(k, v)
+            node = {**{k: v for k, v in node.items() if k != "allOf"}, **merged}
+            continue
+        for key in ("anyOf", "oneOf"):
+            if key in node and node[key]:
+                cands = [c for c in node[key] if _resolve_node(c, root).get("type") != "null"]
+                node = _resolve_node(cands[0] if cands else node[key][0], root)
+                break
+        else:
+            break
+    return node if isinstance(node, dict) else {}
+
+
+def _skeleton(node: dict, root: dict, depth: int = 0):
+    """按 Schema 生成最小合法值:required 子键全填;枚举优先取『未披露/未知』类;数组给空。"""
+    node = _resolve_node(node, root)
+    if "enum" in node:
+        enum = [e for e in node["enum"] if e is not None]
+        for pref in _UNINFORMATIVE_PREF:
+            if pref in enum:
+                return pref
+        return enum[0] if enum else None
+    t = node.get("type")
+    if isinstance(t, list):
+        t = next((x for x in t if x != "null"), "null")
+    if t == "object" or (t is None and node.get("properties")):
+        out = {}
+        props = node.get("properties") or {}
+        for r in node.get("required") or []:
+            if depth == 0 and r in _ENVELOPE:
+                continue
+            out[r] = _skeleton(props.get(r, {}), root, depth + 1)
+        return out
+    if t == "array":
+        # minItems≥1 的数组给一个"未披露"型条目,否则 strict 校验过不去
+        if int(node.get("minItems") or 0) >= 1 and depth < 6:
+            item = _skeleton(node.get("items") or {"type": "string"}, root, depth + 1)
+            return [item] if item not in (None, {}) else ["未披露"]
+        return []
+    if t == "string":
+        if node.get("format") == "date":
+            from datetime import date as _d
+            return _d.today().isoformat()
+        if node.get("format") == "date-time":
+            from datetime import datetime as _dt
+            return _dt.utcnow().isoformat(timespec="seconds")
+        return "未披露"
+    if t in ("number", "integer"):
+        return None if isinstance(node.get("type"), list) else 0
+    if t == "boolean":
+        return False
+    return None
+
+
+def _set_path(obj: dict, path: str, value, append: bool = False):
+    parts = [x for x in str(path).split(".") if x]
+    cur = obj
+    for k in parts[:-1]:
+        if not isinstance(cur.get(k), dict):
+            cur[k] = {}
+        cur = cur[k]
+    last = parts[-1]
+    if append:
+        lst = cur.get(last)
+        if not isinstance(lst, list):
+            lst = []
+        if value not in lst:
+            lst.append(value)
+        cur[last] = lst
+    else:
+        cur[last] = value
+
+
+def _get_path(obj, path: str):
+    cur = obj
+    for k in [x for x in str(path).split(".") if x]:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _transform(v, how):
+    if how in (None, "", "str"):
+        return v
+    try:
+        if how == "wan":
+            return float(v) * 10000
+        if how == "float":
+            return float(v)
+        if how == "int":
+            return int(float(v))
+    except (TypeError, ValueError):
+        return v
+    return v
+
+
+class MockLLM(BaseLLM):
+    """离线确定性模拟(通用平台):粗筛按画像 mock.screen_keywords 的命中数打分;抽取按记录 Schema
+    生成最小合法骨架,再套画像 mock.extract_rules(正则 / 包含词 → 字段)。用哪个画像由提示词里的
+    NEED_ID / SCHEMA_FILE 标记决定(prompts.py 注入),没有标记就用默认需求。
+
+    仅用于测试与离线演示,产出质量不代表真实 LLM;真实部署设 LLM_PROVIDER=openai_compat。
     """
 
-    SEC_KEYWORDS = ["勒索", "数据泄露", "信息泄露", "泄露", "攻击", "网络攻击", "网络安全",
-                    "数据安全", "黑客", "入侵", "瘫痪", "宕机", "故障", "处罚", "罚款", "约谈",
-                    "通报", "内鬼", "倒卖", "个人信息", "篡改", "DDoS", "木马", "漏洞", "暗网",
-                    "拖库", "撞库", "钓鱼", "诈骗", "判决", "侵犯公民个人信息"]
+    def _ctx_from(self, system: str):
+        from app.services import need_ctx
+        m = _NEED_RE.search(system or "")
+        return need_ctx.get(None, m.group(1) if m else need_ctx.default_need_id())
+
+    def _keywords(self, ctx) -> list[str]:
+        kws = [str(k) for k in (ctx.mock.get("screen_keywords") or []) if str(k)]
+        if kws:
+            return kws
+        # 画像没给 mock 关键词:退回找源词表里的事件词/主体词,再不行就空(视为一律相关)
+        r = ctx.query_recipes
+        for k in ("event_terms", "subject_terms"):
+            kws += [str(x) for x in (r.get(k) or []) if str(x)]
+        return kws
 
     def complete_json(self, system: str, user: str, retries: int = 2) -> dict:
         out = self._mock_json(system, user)
@@ -364,82 +500,87 @@ class MockLLM(BaseLLM):
 
     def _mock_json(self, system: str, user: str) -> dict:
         if "TASK=screen" in system:
-            hit = sum(1 for k in self.SEC_KEYWORDS if k in user)
+            ctx = self._ctx_from(system)
+            kws = self._keywords(ctx)
+            if not kws:
+                return {"is_candidate": True, "relevance": 0.6, "confidence": 0.6,
+                        "reason": "画像无 mock 关键词,默认相关(mock)"}
+            hit = sum(1 for k in kws if k in user)
             score = min(0.95, 0.25 + hit * 0.2)
             return {"is_candidate": score >= 0.55, "confidence": round(score, 2),
-                    "reason": f"关键词命中 {hit} 个(mock)"}
+                    "relevance": round(score, 2), "reason": f"关键词命中 {hit} 个(mock)"}
         if "TASK=extract" in system:
-            return self._mock_extract(user)
+            ctx = self._ctx_from(system)
+            m = _SCHEMA_RE.search(system or "")
+            return self._mock_extract(user, ctx=ctx, schema_path=m.group(1) if m else None)
         if "TASK=relevance" in system:
-            hit = sum(1 for k in self.SEC_KEYWORDS if k in user)
+            ctx = self._ctx_from(system)
+            hit = sum(1 for k in self._keywords(ctx) if k in user)
             return {"score": min(1.0, hit * 0.2), "reason": "mock"}
         if "TASK=list_template" in system:
             return {"item_selector": "a", "title_from": "text", "url_from": "href", "confidence": 0.5}
+        if "terms" in system and "JSON" in system:      # 挖词提示词(query_evolution.harvest)
+            return {"terms": []}
         return {}
 
-    def _mock_extract(self, text: str) -> dict:
-        org = None
-        m = re.search(r"([一-鿿]{2,12}(?:医院|银行|集团|公司|大学|厂))", text)
-        if m:
-            org = m.group(1)
-        ransom_amount = None
-        rm = re.search(r"(?:勒索|要求支付|索要)[^。]{0,20}?(\d+(?:\.\d+)?)\s*万", text)
-        if rm:
-            ransom_amount = float(rm.group(1)) * 10000
-        attack = []
-        if "勒索" in text:
-            attack.append("勒索软件")
-        if "泄露" in text:
-            attack.append("数据泄露(渠道未明)")
-        if not attack:
-            attack = ["其他"]
-        consequences = []
-        if "加密" in text or "勒索" in text:
-            consequences.append("数据被加密或破坏")
-        if "停" in text or "瘫痪" in text:
-            consequences.append("业务中断")
-        if "泄露" in text:
-            consequences.append("数据泄露")
-        if not consequences:
-            consequences = ["未披露"]
-        return {
-            "title": (org or "未披露单位") + attack[0] + "事件",
-            "occurred_date": {"date": "2026-07-01", "precision": "月"},
-            "disclosed_date": "2026-07-15",
-            "industry": {"level1": "医疗卫生" if org and "医院" in org else "其他"},
-            "region": {"province": "未知"},
-            "org_type": "医院" if org and "医院" in org else "其他",
-            "org_name": org or "未披露",
-            "org_size": "未知",
-            "severity": {"level": "未定级", "auto_suggested": True},
-            "affected_systems": ["未披露"],
-            "attack_type": attack,
-            "consequences": consequences,
-            "entry_vector": [{"vector": "未知", "confidence": "推测"}],
-            "root_cause": {"category": "未披露"},
-            "security_controls": [{"control": "整体不明", "status": "不明"}],
-            "downtime_hours": {"value": None, "status": "未披露"},
-            "loss_L1": {"status": "未披露"},
-            "loss_L2": {"status": "未披露"},
-            "loss_L3": {"status": "未披露"},
-            "loss_L4": {"status": "未披露"},
-            "loss_L5": {"status": "未披露"},
-            "loss_L6": {"severity": "无"},
-            "ransom": {
-                "applicable": bool(ransom_amount),
-                "demanded_amount": ransom_amount,
-                "demanded_currency": "CNY" if ransom_amount else None,
-                "paid": "未披露" if ransom_amount else None,
-            },
-            "affected_users": {"status": "未披露"},
-            "affected_records": {"status": "未披露"},
-            "secondary_impact": ["未披露"],
-            "disclosure_channel": ["媒体曝光"],
-            "remediation_actions": [],
-            "accountability": {"budget_approver": "未披露"},
-            "sellable_mapping": [],
-            "_source_spans": {"ransom": rm.group(0) if rm else None},
-        }
+    def _mock_extract(self, text: str, ctx=None, schema_path: str | None = None) -> dict:
+        from app.services import need_ctx
+        c = ctx or need_ctx.get(None, need_ctx.default_need_id())
+        try:
+            from app.services.extraction import load_record_schema
+            schema = load_record_schema(schema_path or c.schema_file)
+        except Exception:  # noqa: BLE001 没有 Schema 也要能产出(测试/演示)
+            schema = {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}
+        out = _skeleton(schema, schema) or {}
+        m = re.search(r"标题[::]\s*([^\n]+)", text or "")
+        title = (m.group(1).strip() if m else (text or "").strip().split("\n")[0][:60]).strip()
+        out["title"] = title or "未披露"
+        rt = c.record_types
+        if "record_type" in (schema.get("properties") or {}) or rt.get("values"):
+            out["record_type"] = rt.get("default") or ((rt.get("values") or ["单一记录"])[0])
+        spans: dict[str, str] = {}
+        for rule in c.mock.get("extract_rules") or []:
+            path = str(rule.get("path") or "")
+            if not path:
+                continue
+            value = None
+            hit = False
+            if rule.get("regex"):
+                try:
+                    mm = re.search(str(rule["regex"]), text or "")
+                except re.error:
+                    mm = None
+                if mm:
+                    hit = True
+                    value = mm.group(1) if mm.groups() else mm.group(0)
+                    spans.setdefault(path.split(".")[0], mm.group(0))
+            elif rule.get("when_contains"):
+                needles = rule["when_contains"] if isinstance(rule["when_contains"], list) else [rule["when_contains"]]
+                hit = any(str(n) in (text or "") for n in needles)
+            elif rule.get("when_path_contains"):
+                wp = rule["when_path_contains"] or {}
+                cur = _get_path(out, str(wp.get("path") or ""))
+                hit = bool(cur) and str(wp.get("needle") or "") in str(cur)
+            else:
+                hit = True
+            if not hit:
+                continue
+            if "value" in rule:
+                value = rule["value"]
+            if "append" in rule:
+                _set_path(out, path, rule["append"], append=True)
+                continue
+            if value is None:
+                continue
+            _set_path(out, path, _transform(value, rule.get("transform")))
+        # 抽到了赎金/金额之类的『要求/声称』值时,标记 applicable(若 Schema 有该布尔位)
+        for k, v in list(out.items()):
+            if isinstance(v, dict) and "applicable" in v and any(
+                    vv not in (None, "", [], {}, False, 0) for kk, vv in v.items() if kk != "applicable"):
+                v["applicable"] = True
+        if spans:
+            out["_source_spans"] = spans
+        return out
 
     def embed(self, text: str) -> list[float]:
         """确定性伪向量:字符 n-gram 哈希桶,可用于相似度(非语义,仅测试)。"""

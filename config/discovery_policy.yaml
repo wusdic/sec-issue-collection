@@ -1,0 +1,40 @@
+# 政策库的找源配方 / 候选评分 / 自动定级(通用数据采集平台 · 第二实例)
+# 与 discovery.yaml 结构相同,内容随需求变——证明这三块是"需求参数"而非引擎逻辑
+version: "1.0"
+
+query_recipes:
+  subject_terms: [网信办, 工信部, 公安部, 国家标准委, 全国人大, 国务院, 人民银行, 密码管理局, 市场监管总局]
+  action_terms: [发布, 征求意见, 印发, 施行, 修订, 废止, 解读, 公告]
+  event_terms: [数据安全, 网络安全, 个人信息保护, 关键信息基础设施, 数据出境, 等级保护, 密码应用, 人工智能安全]
+  channel_terms: [政策法规库, 法规汇编, 标准全文公开]
+  max_combos: 120
+
+source_search_queries:
+  - 网络安全 征求意见稿
+  - 数据安全 管理办法 发布
+  - 个人信息保护 规定 印发
+  - 国家标准 网络安全 发布公告
+
+scoring:
+  weight_channels: 2.0
+  weight_hits30d: 0.5
+  weight_cluster_primary: 3.0
+  weight_llm_relevance: 2.0
+  weight_freshness: 1.0
+  auto_trial_threshold: 8.0
+  trial_days: 14
+
+grading:
+  auto_grade_enabled: true
+  trial_days: 14
+  promote_min_docs: 3
+  promote_min_relevant_ratio: 0.3
+  retire_min_docs: 20
+  retire_max_relevant_ratio: 0.05
+  official_domains:
+    - npc.gov.cn
+    - gov.cn
+    - samr.gov.cn
+    - openstd.samr.gov.cn
+    - tc260.org.cn         # 全国网安标委
+    - pbc.gov.cn

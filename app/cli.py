@@ -1,7 +1,7 @@
 """运维 CLI:python -m app.cli <命令>
 
 命令:
-  init          建库 + 加载 sec_events 画像/词表/关键词/种子源 + 建默认账号
+  init          建库 + 按画像装载需求(默认需求;--all 装载 config/need_*.yaml 全部)+ 建默认账号
   run-daily     执行每日采集与处理(真实网络)
   demo          离线端到端演示(MockLLM,无网络):采集→抽取→复核→发布→回访→线索
   verify-archives  存档抽样校验
@@ -15,25 +15,37 @@ from app.db import SessionLocal, init_db
 
 cli = typer.Typer(no_args_is_help=True)
 
-NEED_ID = "sec_events"
+def _need_id() -> str:
+    from app.services import need_ctx
+    return need_ctx.default_need_id()
+
+
+NEED_ID = _need_id()
 
 
 @cli.command()
-def init(with_users: bool = True):
-    """初始化:建库、注册 sec_events 需求、导入词表/关键词/种子源、建默认账号。"""
+def init(with_users: bool = True, need: str = typer.Option(None, help="要装载的需求 id(缺省=平台默认需求)"),
+         all_needs: bool = typer.Option(False, "--all", help="装载 config/need_*.yaml 里的全部画像")):
+    """初始化:建库、按画像装载需求(注册+词表+关键词+种子源)、建默认账号。"""
     init_db()
     from app.auth import hash_password
     from app.models import AppUser
-    from app.services import profiles
+    from app.services import need_ctx, profiles
 
     db = SessionLocal()
     try:
-        paths = profiles.default_sec_events_paths()
-        cfg = profiles.load_profile_file(paths["profile"])
-        np = profiles.register_need(db, cfg)
-        profiles.load_dictionaries(db, np.id, paths["dictionaries"])
-        profiles.load_keyword_set(db, np.id, paths["keywords"])
-        n = profiles.load_seed_sources(db, np.id, paths["sources"])
+        ids = []
+        if all_needs:
+            for f in profiles.all_profile_files():
+                cfg = need_ctx.load_profile_config_file(f) or {}
+                nid = (cfg.get("need") or {}).get("id")
+                if nid:
+                    ids.append(nid)
+        else:
+            ids = [need or NEED_ID]
+        loaded = [profiles.setup_need(db, nid) for nid in ids]
+        np = db.get(__import__("app.models", fromlist=["NeedProfile"]).NeedProfile, ids[0])
+        n = sum(x["seed_sources"] for x in loaded)
         users = 0
         if with_users:
             for uname, role in [("admin", "admin"), ("editor1", "editor"),
@@ -44,7 +56,7 @@ def init(with_users: bool = True):
                                    password_hash=hash_password("ChangeMe!2026"), role=role))
                     users += 1
         db.commit()
-        typer.echo(f"初始化完成: 需求={np.id} 新增源={n} 新增账号={users}(默认口令 ChangeMe!2026,请立即修改)")
+        typer.echo(f"初始化完成: 需求={','.join(ids)} 新增源={n} 新增账号={users}(默认口令 ChangeMe!2026,请立即修改)")
     finally:
         db.close()
 
@@ -84,18 +96,22 @@ def demo():
         if need is None:
             typer.echo("先运行 init")
             raise typer.Exit(1)
-        src = db.query(Source).filter_by(adapter="freebuf").first() or db.query(Source).first()
-        demo_url = f"https://example.com/demo-incident-{datetime.utcnow():%Y%m%d%H%M%S}"
-        article = (
-            "某市第三人民医院遭勒索软件攻击,HIS 系统瘫痪超过 36 小时,门诊一度停诊。"
-            "攻击者要求支付 200 万元赎金。医院表示未支付赎金,数据由备份恢复,"
-            "但部分备份也被加密。初步判断入侵与某 VPN 设备未修补漏洞有关。"
-            "目前监管部门已介入调查。"
-        )
+        from app.services import need_ctx
+        ctx = need_ctx.for_need(need)
+        src = db.query(Source).first()
+        if src is None:
+            typer.echo("库里还没有数据源,先运行 init")
+            raise typer.Exit(1)
+        samples = ctx.demo_samples
+        if not samples:
+            typer.echo("画像未声明 demo.samples,无法演示")
+            raise typer.Exit(1)
+        demo_url = f"https://example.com/demo-record-{datetime.utcnow():%Y%m%d%H%M%S}"
+        article = str(samples[0].get("text") or "")
         doc = RawDocument(
             need_id=NEED_ID, source_id=src.id, url=demo_url,
             url_normalized=demo_url, final_url=demo_url,
-            title="某三甲医院遭勒索攻击 系统瘫痪36小时", publisher=src.name,
+            title=str(samples[0].get("title") or ""), publisher=src.name,
             published_at=datetime.utcnow(), content_text=article, screen_status="pending",
         )
         db.add(doc)
@@ -106,16 +122,17 @@ def demo():
         result = process_document(db, need, doc)
         typer.echo(json.dumps({k: v for k, v in result.items() if k != "extraction"},
                               ensure_ascii=False, indent=1))
-        event_id = result["event_id"]
+        event_id = result.get("event_id")
+        if not event_id:
+            typer.echo(f"样例未生成记录(action={result.get('action')}),演示到此为止")
+            raise typer.Exit(1)
         from app.models import Event
         ev = db.get(Event, event_id)
-        ransom = (ev.payload.get("ransom") or {})
-        typer.echo(f"赎金要求={ransom.get('demanded_amount')} / loss_L1 状态={ev.payload['loss_L1'].get('status')}"
-                   "(要求≠损失 ✓)")
+        for f in ctx.tristate_fields:
+            typer.echo(f"{f} 状态={(ev.payload.get(f) or {}).get('status')}(三态守卫 ✓)")
 
         typer.echo("== ② 复核发布(编辑提交→复核通过) ==")
-        schema = load_record_schema((need.config["record_schemas"][0]).get("file")
-                                    or str(settings.schema_dir / "event.schema.json"))
+        schema = load_record_schema(ctx.schema_file)
         reviewer = db.query(AppUser).filter_by(username="reviewer1").one()
         try:
             approve(db, event_id, reviewer.id, schema)
@@ -129,7 +146,7 @@ def demo():
                                for t in tasks], ensure_ascii=False, indent=1))
 
         typer.echo("== ④ 线索 ==")
-        leads = generate_leads(db, ev)
+        leads = generate_leads(db, ev) if ctx.leads.get("enabled") else []
         typer.echo(json.dumps([{"org": l.target_org, "score": l.score, "stage": l.window_stage,
                                 "products": l.products} for l in leads], ensure_ascii=False, indent=1))
         db.commit()

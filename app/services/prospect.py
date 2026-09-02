@@ -20,7 +20,7 @@ import yaml
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Source, SourceBlacklist, SourceProbe
-from app.services import discovery, fetcher, url_tools
+from app.services import need_ctx, discovery, fetcher, url_tools
 
 _lock = threading.Lock()
 _state: dict = {"running": False}
@@ -43,32 +43,27 @@ def _set(**kw):
 
 # ---------------- 找源检索词 ----------------
 
-def base_queries() -> list[str]:
-    """config/discovery.yaml 里人工维护的找源专用检索词。"""
-    try:
-        with open(settings.config_dir / "discovery.yaml", encoding="utf-8") as f:
-            return [str(q).strip() for q in (yaml.safe_load(f) or {}).get("source_search_queries") or []
-                    if str(q).strip()]
-    except (OSError, yaml.YAMLError):
-        return []
+def _ctx(ctx=None, need_id: str | None = None):
+    return ctx or need_ctx.get(None, need_id or need_ctx.default_need_id())
 
 
-def _recipes() -> dict:
-    try:
-        with open(settings.config_dir / "discovery.yaml", encoding="utf-8") as f:
-            return (yaml.safe_load(f) or {}).get("query_recipes", {}) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
+def base_queries(ctx=None) -> list[str]:
+    """画像 discovery_file(缺省 config/discovery.yaml)里人工维护的找源专用检索词。"""
+    return _ctx(ctx).source_search_queries
 
 
-def combo_queries() -> list[str]:
+def _recipes(ctx=None) -> dict:
+    return _ctx(ctx).query_recipes
+
+
+def combo_queries(ctx=None) -> list[str]:
     """按配方生成 **2 词** 找源组合:主体×动作、事件×动作、渠道词。
 
     词堆太多会把召回压死——搜索引擎对多词是 AND 收紧,「网信办 处罚 解读 公众号」几乎搜不到,
     而「网警 处罚」能捞到一批典型执法通报号。所以这里刻意只组两词,用组合数换广度。
     交叉顺序做了打散(不是先把"网警"配完所有动作),保证在 max_combos 截断时主体覆盖面仍均匀。
     """
-    r = _recipes()
+    r = _recipes(ctx)
     subj = [str(x).strip() for x in r.get("subject_terms") or [] if str(x).strip()]
     act = [str(x).strip() for x in r.get("action_terms") or [] if str(x).strip()]
     ev = [str(x).strip() for x in r.get("event_terms") or [] if str(x).strip()]
@@ -111,15 +106,16 @@ def seed_queries(db, need_id: str) -> list[str]:
 
     这些只是"可以跑什么",跑不跑、按什么顺序跑由 query_evolution 按历史表现决定。
     """
-    qs = list(base_queries())
+    ctx = need_ctx.get(db, need_id)
+    qs = list(base_queries(ctx))
     try:
         from app.services import coverage
-        qs += coverage.prospect_queries(db, need_id)
+        qs += coverage.prospect_queries(db, need_id, ctx=ctx)
     except Exception:  # noqa: BLE001 覆盖度算不出来不该挡住找源
         pass
-    qs += combo_queries()
+    qs += combo_queries(ctx)
     # 每个锚点单独也要能跑:增益(加了限定词到底是帮忙还是帮倒忙)全靠这个分母
-    r = _recipes()
+    r = _recipes(ctx)
     qs += [str(x).strip() for x in (r.get("event_terms") or []) if str(x).strip()]
     seen, out = set(), []
     for q in qs:
@@ -253,35 +249,30 @@ def _wechat_account(url: str) -> str | None:
 
 _CJK = _re.compile(r"[一-鿿]")
 _CJK_ALL = _re.compile(r"[一-鿿]")     # 数汉字个数用(_query_ok)
-# 国内渠道的常见后缀:命中就不看标题语言(有些政务站标题被引擎截成英文)
-_CN_TLD = (".cn", ".com.cn", ".gov.cn", ".org.cn", ".net.cn", ".edu.cn", ".中国")
-# 明确是境外的国家顶级域。我们只做国内事件,这些站不可能是对口渠道。
-# 光看"标题里有没有汉字"判不出来——日文标题里也有汉字(「企業のIT戦略アドバイザー」),
-# 实测必应 RSS 就是这么把一家日本 IT 咨询公司和加拿大税务局塞进候选池的。
-# 刻意不含 .hk/.tw/.mo:那是中国的地区域名,不按境外处理。
-_FOREIGN_TLD = (".jp", ".kr", ".ca", ".us", ".uk", ".de", ".fr", ".au", ".in", ".ru",
-                ".br", ".sg", ".my", ".th", ".vn", ".id", ".ph", ".nz", ".it", ".es",
-                ".nl", ".se", ".ch", ".il", ".za", ".pl", ".tr", ".mx", ".ar")
 
 
-def _looks_domestic(url: str, title: str | None) -> bool:
-    """这条结果像不像"国内中文渠道"。
+def _looks_domestic(url: str, title: str | None, ctx=None) -> bool:
+    """这条结果符不符合画像的地域/语言范围(need.regions / languages → sources.region_policy)。
 
     我们喂的全是中文找源词,搜索引擎却会跨语言给出 Thesaurus.com 这类纯英文站。
-    判定放得很松——域名是 .cn 系,或标题里有一个汉字,就算数——只挡明显的语言噪声;
-    但境外国家域名一律不收,因为日文/韩文标题同样含汉字,躲得过语言判定。
+    判定放得很松——域名是本地后缀,或标题里有一个本地文字,就算数——只挡明显的语言噪声;
+    但画像拒绝的境外国家域名一律不收,因为日文/韩文标题同样含汉字,躲得过语言判定。
+    画像不限地域(region_policy 全空)时一律放行。
     """
     if url_tools.platform_account(url):
         return True          # 公众号/百家号/微博号:身份是"号"不是站,标题短且常是英文,不参与语言判定
+    pol = _ctx(ctx).region_policy
     host = (urlparse(url).netloc or "").lower()
-    if host.endswith(_FOREIGN_TLD):
+    if any(host.endswith(t) for t in pol.get("reject_tlds") or []):
         return False
-    if host.endswith(_CN_TLD):
+    if any(host.endswith(t) for t in pol.get("domestic_tlds") or []):
         return True
-    return bool(_CJK.search(title or ""))
+    if (pol.get("require_script") or "none") == "cjk":
+        return bool(_CJK.search(title or ""))
+    return True
 
 
-def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
+def _candidate(url: str, budget: dict, ctx=None) -> tuple[str | None, str, dict]:
     """搜索结果 URL → (候选源标识键, 丢弃原因, 额外信息)。
 
     关键点:公众号文章 / 百家号作者页 / 微博用户页要识别成"某个号",不能按注册域退化成
@@ -312,8 +303,8 @@ def _candidate(url: str, budget: dict) -> tuple[str | None, str, dict]:
         # (注意要看 URL 本身是不是跳转链——baike.baidu.com 归一化后也叫 baidu.com,
         #  但它是真结果、只是没价值,那属于"大平台"而不是"还原失败"。)
         return None, "redirect_unresolved", {}
-    if key in _SKIP_HOSTS:
-        return None, "platform", {}      # 知乎/CSDN/门户等通用大平台,不作为专业源
+    if key in _SKIP_HOSTS or (ctx is not None and key in ctx.skip_hosts_extra):
+        return None, "platform", {}      # 知乎/CSDN/门户等通用大平台(+画像追加的),不作为专业源
     return key, "", {}
 
 
@@ -335,6 +326,7 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
     全是大平台 / 全是已有源),否则页面上一排 0 等于什么都没说。
     """
     engines = _engines()
+    ctx = need_ctx.get(db, need_id)
     queries = build_queries(db, need_id)
     pages = max(1, int(getattr(settings, "prospect_pages_per_query", 1) or 1))
     resolve_cap = int(getattr(settings, "prospect_resolve_max", 60) or 0)
@@ -470,12 +462,12 @@ def run_once(db, need_id: str, on_progress=None) -> dict:
                             # 备案/举报中心这类页脚模板链:任何中文站底部都有,永远不是搜索结果
                             st["boilerplate"] += 1
                             continue
-                        if not _looks_domestic(url, it.title):
+                        if not _looks_domestic(url, it.title, ctx):
                             # 中文词搜出来的纯英文外站(Thesaurus.com 之类)是引擎的跨语言噪声,
                             # 不该占候选池名额,也不值得再花一次 LLM 初评
                             st["non_chinese"] += 1
                             continue
-                        key, why, extra = _candidate(url, budget)
+                        key, why, extra = _candidate(url, budget, ctx)
                         if not key:
                             st[why if why in st else "bad_url"] += 1
                             if why in ("platform", "redirect_unresolved"):
@@ -586,7 +578,7 @@ def _columns_from_hints(db, hints: dict[str, set]) -> list[dict]:
             col = f"{pr.scheme}://{pr.netloc}/" + "/".join(segs[:-1]) + "/"
             cand[col] = cand.get(col, 0) + 1
         ranked = sorted(cand.items(), key=lambda kv: -kv[1])[:cap]
-        terms = columns.relevance_terms(db, (parent.serves_needs or ["sec_events"])[0])
+        terms = columns.relevance_terms(db, (parent.serves_needs or [need_ctx.default_need_id()])[0])
         for col_url, n in ranked:
             ik = url_tools.normalize_url(col_url)
             if db.query(Source).filter_by(identity_key=ik).first():
@@ -653,7 +645,7 @@ def _on_topic_rate(query: str, titles: list) -> float:
     return sum(1 for x in ts if any(g in x for g in grams)) / len(ts)
 
 
-def selftest(db, query: str = "网警 处罚", on_progress=None) -> dict:
+def selftest(db, query: str | None = None, on_progress=None, ctx=None) -> dict:
     """找源路径可行性自检:每个引擎只跑一条词,报告这条路到底通不通。
 
     先验证路径再铺关键词——否则铺了几百个词,发现引擎全被反爬,白跑几十分钟。
@@ -661,6 +653,8 @@ def selftest(db, query: str = "网警 处罚", on_progress=None) -> dict:
     """
     # 测整个候选池,不只是当前在用的那几个:被上一次自检踢掉的引擎(反爬是临时的)
     # 和升级新加的引擎都必须有机会重新证明自己,否则一旦误判就永远回不来。
+    c = _ctx(ctx)
+    query = query or c.selftest_query
     out = {"query": query, "engines": [], "usable": [], "tested": [], "advice": ""}
     pool = all_engine_names()
     for name, eng in _engines(pool):
@@ -691,10 +685,10 @@ def selftest(db, query: str = "网警 处罚", on_progress=None) -> dict:
                         # 走和正式跑一样的过滤链,否则自检的结论预测不了真实行为
                         if not acct and _is_boilerplate(u):
                             key, why = None, "boilerplate"
-                        elif not acct and not _looks_domestic(u, it.title):
+                        elif not acct and not _looks_domestic(u, it.title, c):
                             key, why = None, "non_chinese"
                         else:
-                            key, why, _x = _candidate(u, {"wechat": 10 ** 6})
+                            key, why, _x = _candidate(u, {"wechat": 10 ** 6}, c)
                         row["samples"].append(
                             {"title": (it.title or "")[:60],
                              "key": (f"mp:{acct}" if acct else (key or "")),
@@ -785,8 +779,9 @@ def selftest_status(db=None) -> dict:
     return out
 
 
-def selftest_start(need_id: str, query: str = "网警 处罚", apply: bool = True) -> dict:
-    """后台起一次自检(幂等)。"""
+def selftest_start(need_id: str, query: str | None = None, apply: bool = True) -> dict:
+    """后台起一次自检(幂等)。测试词缺省取画像 sources.prospect.selftest_query。"""
+    query = query or need_ctx.get(None, need_id).selftest_query
     with _st_lock:
         if _st_state.get("running"):
             return dict(_st_state)
@@ -815,7 +810,8 @@ def _selftest_run(need_id: str, query: str, apply: bool):
         db.rollback()
     try:
         with fetcher.render_session():
-            r = selftest(db, query, on_progress=lambda d, t, c: _st_set(done=d, total=t, current=c))
+            r = selftest(db, query, on_progress=lambda d, t, c: _st_set(done=d, total=t, current=c),
+                         ctx=need_ctx.get(db, need_id))
         if apply and getattr(settings, "prospect_autotune", True):
             r["applied"] = apply_selftest(db, r)
         row.status, row.summary = "done", r
@@ -900,7 +896,7 @@ def sync_new_engines(db) -> dict:
     return {"added": fresh, "engines": cur + fresh}
 
 
-def autotune_engines(db, query: str = "网警 处罚") -> dict:
+def autotune_engines(db, query: str | None = None, need_id: str | None = None) -> dict:
     """自动调优搜索引擎:测一遍候选池,把 prospect_engines 设为当前可用的那些。
 
     人不该每次都先点自检、再去设置页手改引擎列表。这里每轮自己测:
@@ -911,7 +907,8 @@ def autotune_engines(db, query: str = "网警 处罚") -> dict:
     from app.services import settings_service
     pool = all_engine_names()
     prev = [x.strip() for x in str(getattr(settings, "prospect_engines", "")).split(",") if x.strip()]
-    r = selftest(db, query)      # selftest 本身就测整池,不必再临时改配置
+    c = need_ctx.get(db, need_id or need_ctx.default_need_id())
+    r = selftest(db, query or c.selftest_query, ctx=c)      # selftest 本身就测整池,不必再临时改配置
     usable = r["usable"]
     detail = {e["engine"]: ("可用" if e["ok"] else ("验证页/反爬" if e["blocked"] else e["hint"][:60]))
               for e in r["engines"]}
@@ -971,7 +968,7 @@ def explain(r: dict) -> str:
     if not r.get("engines"):
         return "没有可用的搜索引擎:设置页「主动找源:用哪些搜索引擎」填的名字不在适配器列表里"
     if not q:
-        return "本轮没有找源词:检查 config/discovery.yaml 的 source_search_queries 是否为空"
+        return "本轮没有找源词:检查画像 discovery_file(缺省 config/discovery.yaml)的 source_search_queries 是否为空"
     if st.get("pages", 0) == 0:
         return (f"所有搜索引擎都抓不到内容({st.get('fetch_fail', 0)} 次失败,通常是 403/反爬/"
                 "网络不通)。可在设置页换搜索引擎、或开启浏览器渲染后重试")
@@ -1030,14 +1027,7 @@ def explain(r: dict) -> str:
 
 _SITE_TITLES: dict[str, str] = {}     # 初评时顺手记下的站点标题,用作候选的展示名
 
-_PROBE_SYS = (
-    "你在评估一个网站/公众号是否值得作为『国内企业网络安全事件』的持续采集源。"
-    "依据给出的站点名与最近文章标题样本,判断它是否持续产出与国内安全事件"
-    "(数据泄露、勒索攻击、网络入侵、监管处罚通报、漏洞被利用等)相关的内容。\n"
-    "注意:综合安全资讯站、监管机构通报栏目、行业安全媒体都算相关;"
-    "纯技术教程、招聘、产品推广、境外纯技术研究、与安全无关的门户资讯算不相关。\n"
-    '只输出 JSON:{"relevance": 0.0~1.0, "reason": "一句话理由"}'
-)
+# 候选源初评提示词来自画像(sources.prospect.probe_prompt,缺省按需求名与粗筛目标生成),见 NeedContext.probe_prompt
 
 
 def _wechat_titles(account: str, limit: int) -> list[str]:
@@ -1090,7 +1080,7 @@ def _sample_titles(key: str, limit: int) -> list[str]:
     return out
 
 
-def probe_one(db, key: str, force: bool = False) -> SourceProbe | None:
+def probe_one(db, key: str, force: bool = False, ctx=None) -> SourceProbe | None:
     """对一个候选域名做 LLM 相关度初评(TTL 内直接复用已有结果)。"""
     row = db.get(SourceProbe, key)
     ttl = int(getattr(settings, "probe_ttl_days", 0) or 0)
@@ -1104,7 +1094,7 @@ def probe_one(db, key: str, force: bool = False) -> SourceProbe | None:
         try:
             from app.services.llm import get_screen_llm
             out = get_screen_llm().complete_json(
-                _PROBE_SYS, f"站点:{key}\n最近文章标题:\n" + "\n".join(f"- {t}" for t in titles))
+                _ctx(ctx).probe_prompt, f"站点:{key}\n最近文章标题:\n" + "\n".join(f"- {t}" for t in titles))
             rel = max(0.0, min(1.0, float(out.get("relevance") or 0)))
             reason = str(out.get("reason") or "")[:300]
         except Exception as e:  # noqa: BLE001 评不了不该阻断,记为未初评
@@ -1126,6 +1116,7 @@ def _noop_progress(*_a, **_k):
 
 def probe_pending(db, need_id: str, on_progress=None) -> dict:
     """给还没初评(或初评过期)的候选域名补上 LLM 相关度分。"""
+    ctx = need_ctx.get(db, need_id)
     if not getattr(settings, "probe_llm_enabled", True):
         return {"probed": 0, "skipped": "已在设置页关闭候选源LLM初评"}
     from app.models import SourceDiscoveryEvidence
@@ -1148,7 +1139,7 @@ def probe_pending(db, need_id: str, on_progress=None) -> dict:
             break
         if on_progress:
             on_progress(i + 1, len(todo), k)
-        probe_one(db, k)
+        probe_one(db, k, ctx=ctx)
         n += 1
         try:
             db.commit()

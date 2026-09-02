@@ -1,5 +1,6 @@
-# 需求画像:国内行业安全事件库(通用信息搜索框架 · 第一实例)
-# 依据 config/need_profile.template.yaml 实例化
+# 需求画像:国内行业安全事件库(通用数据采集平台 · 第一实例,事件型)
+# 依据 config/need_profile.template.yaml 与 design/platform/02 的 52 项维度实例化。
+# 本文件把原先写死在引擎里的全部行业个性搬进画像;引擎不再含任何安全行业字面量。
 
 need:
   id: sec_events
@@ -13,7 +14,7 @@ need:
 
 compliance:
   data_categories: [企业公开信息, 监管处罚公示, 司法公开文书, 公开报道]
-  personal_info: false          # 责任人仅记录公开披露的职务信息
+  personal_info: false
   collection_boundary: 仅公开渠道
   retention: 已发布事件来源存档永久保留; 淘汰候选原文保留90天
   usage_limit: 仅内部分析; 对外引用需法务审核; 竞争情报禁止贬损性使用
@@ -28,43 +29,169 @@ record_schemas:
 
 entity_links: [org, product]
 
+# ---------- A. 记录与字段 ----------
+record:
+  id_prefix: SEC
+  field_roles:
+    title: title
+    subject: org_name
+    subject_key: org_uscc
+    subject_type: org_type
+    subject_size: org_size
+    dim1: industry.level1
+    dim2: industry.level2
+    region: region.province
+    region2: region.city
+    grade: severity.level
+    tags_a: attack_type
+    tags_b: consequences
+    occurred_date: occurred_date
+    disclosed_date: disclosed_date
+    record_type: record_type
+  role_labels: {title: 标题, subject: 单位, subject_type: 单位类型, subject_size: 规模, dim1: 行业, dim2: 细分,
+                region: 地区, grade: 严重度, tags_a: 手段, tags_b: 后果, occurred_date: 发生日,
+                disclosed_date: 披露日, record_type: 类型}
+  record_types:
+    values: [单一事件, 通报情报, 不该入库]
+    default: 单一事件
+    out_of_scope: 不该入库
+    advisory:
+      value: 通报情报
+      hints: [通报, 情况通报, 风险提示, 预警, 威胁情报, 态势, 盘点, 统计, 上半年, 下半年, 季度, 月报, 周报, 专报, 综述, 汇总]
+      subject_blank_values: ["", 未披露, 未知, 不明, 无, 多家, 多个, 若干]
+  grade_order: [特别重大, 重大, 较大, 一般, 未定级]
+  completeness_weights: {loss_L1: 8, loss_L2: 8, loss_L3: 6, loss_L4: 8, loss_L5: 5, loss_L6: 3,
+                         ransom: 5, downtime_hours: 5, affected_users: 4, affected_records: 4,
+                         remediation_actions: 8, accountability: 5, regulatory_actions: 5,
+                         root_cause: 5, security_controls: 6, entry_vector: 4,
+                         org_name: 4, industry: 3, region: 2, severity: 3, sellable_mapping: 4}
+  dedup:
+    subject_roles: [subject_key, subject+region]   # 统一社会信用代码优先;否则 单位名|省份
+    type_role: tags_a                              # 手段有交集
+    date_role: occurred_date
+    window_days: 14
+  confidence_by_credibility: {S1: 已证实, S2: 多源印证, S3: 单源待证, S4: 单源待证}
+
+# ---------- B. 词表与查询 ----------
 dictionaries:
   file: schema/dictionaries.yaml
   discovery_terms_file: config/keyword_matrix.yaml
-  source_search_terms_file: config/discovery.yaml
+  relevance_term_fields: [event_terms, consequence_terms]
 
+coverage:
+  dimension_role: dim1
+  dictionary_key: industries
+  query_templates: ["{ind} 数据泄露", "{ind} 网络安全 通报", "{ind} 信息安全 处罚"]
+  short_names: {医疗卫生: 医疗, 交通物流: 物流, 文化传媒: 传媒, 批发零售: 零售, 住宿餐饮: 餐饮,
+                信息技术服务: IT服务, 零售消费: 零售, 建筑地产: 房地产, 电信运营: 运营商}
+  placeholders: [其他, 其它, 未分类, 未知, 其他行业, 词表外]
+
+# ---------- C. 来源与可信度 ----------
 sources:
   seed_file: config/seed_sources.yaml
-  reputation_registry: config/wechat_accounts.yaml   # 发布主体信誉名录(公众号→可信度)
-  repost_detection: true                             # 启用转载溯源(追原始出处)
+  reputation_registry: config/wechat_accounts.yaml
+  repost_detection: true
+  discovery_file: config/discovery.yaml          # 找源配方 / 候选评分 / 自动定级规则
   credibility_levels:
-    confirm_allowed: [S1, S2]   # 已确认金额只认监管/司法/公告(S1)与企业自披露支出(S2)
+    confirm_allowed: [S1, S2]
     levels:
       S1: 监管处罚/司法文书/官方通报/上市公司公告
       S2: 企业自披露
       S3: 主流媒体/厂商报告
       S4: 社媒爆料/泄露站列名(需佐证)
+  column_discovery:
+    hint_words: [执法, 处罚, 通报, 曝光, 案例, 网络安全, 数据安全, 信息安全, 个人信息, 漏洞, 预警,
+                 情况通报, 违法违规, 查处, 打击, 净网, 监管, 处置, 事件, 安全, 泄露, 举报, 整治,
+                 行政处罚, 监督管理, 风险提示, 安全通告, 公告]
+    stop_words: [招聘, 关于我们, 联系, 网站地图, 版权, 登录, 注册, English, 简介, 机构设置, 领导,
+                 党建, 会议, 视频, 图片, 专题, 首页, 邮箱, 服务]
+    path_hints: [zhifa, chufa, tongbao, aqfa, wangan, anquan]
+  prospect:
+    selftest_query: 网警 处罚
+    probe_prompt: >-
+      你在评估一个网站/公众号是否值得作为『国内企业网络安全事件』的持续采集源。
+      依据给出的站点名与最近文章标题样本,判断它是否持续产出与国内安全事件
+      (数据泄露、勒索攻击、网络入侵、监管处罚通报、漏洞被利用等)相关的内容。
+      注意:综合安全资讯站、监管机构通报栏目、行业安全媒体都算相关;
+      纯技术教程、招聘、产品推广、境外纯技术研究、与安全无关的门户资讯算不相关。
+      只输出 JSON:{"relevance": 0.0~1.0, "reason": "一句话理由"}
+    harvest_prompt: >-
+      你是中文安全资讯的检索词工程师。给你一批最近被判定为『相关』的文章标题,
+      请挑出最适合拿去搜索引擎**找新渠道**的关键词。要求:
+      ①每个词 2-8 个汉字,是完整的说法(法规名/专项行动名/攻击手法名/监管动作名),
+      不要输出半截词或滑窗碎片;②要有检索区分度,不要『通报』『公司』『近日』这类泛词;
+      ③不要人名、地名单独成词;④只输出 JSON:{"terms": ["词1", "词2"]}
+  # region_policy 留空 → 由 need.regions/languages 推导:.cn 系放行、境外 ccTLD 拒绝、需汉字
+  skip_hosts_extra: []
 
+# ---------- D. 粗筛 / 抽取 / 守卫 ----------
+quality:
+  model: 事实核实型
+  assertion_tristate_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5]
+  double_review_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5, regulatory_actions]
+  screen:
+    goal: 判断是否为发生在中国大陆(或受害主体为中国企业/机构)的网络安全事件报道;漏洞预警(无受害方)、营销软文、纯趋势分析不算
+    include_rules:
+      - "仅限网络/数据/信息安全:安全事件(攻击/入侵/泄露/勒索/篡改/宕机/供应链投毒)"
+      - "安全监管处罚决定、威胁情报(木马/僵尸网络/黑产/钓鱼/漏洞利用)、漏洞公告"
+      - "安全风险提示预警、网络安全态势/统计通报"
+    exclude_rules:
+      - "网络内容治理/意识形态治理:清朗专项、集中整治、未成年人网络保护、团播直播乱象、AI内容乱象、短视频/账号名称/不良信息 整治处置"
+      - "备案/评估/遴选名单:算法备案公告、服务安全评估『通过名单』、支撑单位遴选结果、认证机构名单"
+      - "政策宣贯/解读/报告:专家解读、政策阐释、白皮书或报告发布"
+      - "栏目/目录/列表导航页(无单篇正文)、会议/赛事/报名通知、招聘、营销、产品宣传"
+    reminder: "『网络空间内容治理』≠『网络安全』,网信办发布≠安全事件;缺明确安全要素时一律判 false"
+  extract_rules:
+    - "金额三态:文中出现『要求/索赔/勒索/拟处罚/预计/或将/传闻/主张』语境的金额,只能写入 claimed 通道;『判决/裁定/处罚决定书/公告确认/年报披露』语境的金额写入 confirmed,并在 note 注明依据语句。任何情况下不得臆造金额"
+    - "赎金『要求金额』写入 ransom.demanded_amount,绝不写入任何 loss_* 字段;只有明确『已支付』才填 paid_amount"
+    - "record_type:有明确单一受害方/单起安全事件→『单一事件』;安全威胁情报、漏洞、风险提示、安全态势统计、明确安全处罚决定(无单一受害方)→『通报情报』;若本文属内容治理/意识形态治理(清朗/整治/未成年人保护等)、备案或评估『名单』、遴选结果、政策解读/报告发布、会议名单等非网络安全范畴→『不该入库』(此时其余字段可留空、不要强填)"
+    - "consequences 只记『已确认发生』的后果;原文用『容易造成/可能/风险/预计/或将/不得』等表述的属潜在风险或预防警示,不得计入。约谈/预警类未确认发生的,不得填 被攻陷系统/确认攻击方/业务中断"
+    - "法规依据只能引用正文出现过的法规名;机构缩写按原文(如 CNCERT)。sellable_mapping 仅当原文确有相关安全需求时才填,非安全内容留空"
+  scope_guard:
+    out_of_scope_reason: "非网络安全范畴(内容治理/名单/政策解读),不入库"
+    exclude_patterns: ["清朗|专项行动|集中整治|不良信息|未成年人网络保护|团播|直播乱象|账号名称|短视频|算法备案|备案信息|评估.{0,4}名单|通过.{0,4}名单|遴选结果|支撑单位|认证机构名单|专家解读|政策解读|报告发布|白皮书"]
+    include_override_patterns: ["漏洞|攻击|入侵|勒索|木马|僵尸网络|钓鱼|泄露|篡改|黑客|后门|挖矿|C2|窃取"]
+  assertions:
+    tristate_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5]
+    labels: {loss_L1: L1 直接资金, loss_L2: L2 收入/产量, loss_L3: L3 处置成本, loss_L4: L4 罚款诉讼, loss_L5: L5 商业机会}
+    channels: {claimed: claimed_cny, estimated: estimated_cny, confirmed: confirmed_cny}
+    claimed_markers: "要求|索赔|勒索|拟处罚|拟罚|预计|或将|据传|传闻|主张|声称|估计|约合"
+    confirmed_markers: "判决|裁定|处罚决定|决定书|行政处罚|公告(?:披露|确认)|年报(?:披露|确认)|已支付|已缴纳"
+    isolation:
+      - {source_path: ransom.demanded_amount, must_not_match: tristate, reason: 赎金要求金额≠损失}
+    paid_check: {flag_path: ransom.paid, flag_value: 已支付, amount_path: ransom.paid_amount}
+
+# ---------- E. 生命周期与更新 ----------
 update:
   lagged_fields:
     - {field: loss_L4, typical_lag_days: 180}
     - {field: remediation_actions, typical_lag_days: 120}
     - {field: ransom.paid, typical_lag_days: 60}
   followup_schedule: [30, 90, 180, 365]
+  followup_triggers:
+    - {field: loss_L1, when: status_in, values: [仅声称, 仅估算, 待回访], reason: "loss_L1 金额未落地"}
+    - {field: loss_L2, when: status_in, values: [仅声称, 仅估算, 待回访], reason: "loss_L2 金额未落地"}
+    - {field: loss_L3, when: status_in, values: [仅声称, 仅估算, 待回访], reason: "loss_L3 金额未落地"}
+    - {field: loss_L4, when: status_in, values: [仅声称, 仅估算, 待回访], reason: "loss_L4 金额未落地"}
+    - {field: loss_L5, when: status_in, values: [仅声称, 仅估算, 待回访], reason: "loss_L5 金额未落地"}
+    - {field: regulatory_actions, when: list_item_missing, item_key: fine_amount, item_match: {action: 立案}, reason: 监管已立案未处罚}
+    - {field: remediation_actions, when: empty, reason: 事故后采购未知}
+    - {field: ransom, when: flag_unknown, flag_key: applicable, unknown_key: paid, unknown_values: [null, 未披露], reason: 赎金是否支付未披露}
+  followup_search:
+    subject_role: subject
+    query_suffixes: [处罚, 判决, 中标, 招标, 整改]
+    link_templates:
+      信用中国: "https://www.creditchina.gov.cn/xinyongxinxi/index.html?keyword={q}"
+      裁判文书网: "https://wenshu.court.gov.cn/website/wenshu/181217BMTKHNT2W0/index.html?s21={q}"
+      政府采购网: "http://search.ccgp.gov.cn/bxsearch?searchtype=1&kw={q}"
+      百度: "https://www.baidu.com/s?wd={q}%20%E4%B8%AD%E6%A0%87%20OR%20%E5%A4%84%E7%BD%9A"
   watch_kinds: [org, product, attacker_group, topic]
   expansion_rules:
     - {trigger: affected_products, behavior: B6, query_template: "{product} 漏洞 OR 被利用 OR 中标"}
   burst_signals: [微博热搜, 百度热榜]
   close_condition: 全部金额通道落定 或 24个月无新信息
 
-quality:
-  model: 事实核实型
-  assertion_tristate_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5,
-                              affected_users, affected_records]
-  screen_prompt: 判断是否为发生在中国大陆(或受害主体为中国企业/机构)的网络安全事件报道;
-    漏洞预警(无受害方)、营销软文、纯趋势分析不算
-  double_review_fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5, regulatory_actions]
-
+# ---------- F. 输出物 ----------
 outputs:
   reports:
     - {name: 月度行业风险简报, cycle: 月, audience: 管理层}
@@ -74,8 +201,110 @@ outputs:
   api_subscriptions: [CRM]
   alerts:
     - {condition: "severity in [特别重大,重大]", channel: 内部IM, latency: 小时}
-  kpi: [金额字段可回溯率=100%, 存档覆盖率=100%, 披露到入库中位时延<=24h,
-        月度漏报率<=10%, 重复事件率<=1%]
+  kpi: [金额字段可回溯率=100%, 存档覆盖率=100%, 披露到入库中位时延<=24h, 月度漏报率<=10%, 重复事件率<=1%]
+  leads_engine:
+    enabled: true
+    mapping_file: config/product_mapping.yaml
+    write_back_field: sellable_mapping           # 匹配到的产品回写到记录字段(报表 missing_field 看的就是它)
+    subject_role: subject
+    grade_weights: {特别重大: 1.0, 重大: 0.85, 较大: 0.65, 一般: 0.45, 未定级: 0.35}
+    size_weights: {特大: 1.0, 大: 0.85, 中: 0.6, 小微: 0.35, 未知: 0.5}
+    window_stages:
+      - {name: 应急期, max_days: 30, weight: 1.0}
+      - {name: 整改期, max_days: 180, weight: 0.9}
+      - {name: 预算期, max_days: 540, weight: 0.6}
+      - {name: 已过窗, max_days: null, weight: 0.2}
+    match_dims:
+      attack_type: {path: attack_type}
+      consequences: {path: consequences}
+      entry_vector: {path: entry_vector, item_key: vector}
+      root_cause: {path: root_cause.category}
+      security_controls: {path: security_controls, item_key: control, status_key: status, status_in: [缺位, 在位但失效, 在位被绕过]}
+    talk_track:
+      facts:
+        - {kind: dim1, template: "同行业({v})近期发生:{title}"}
+        - {kind: tristate_status, fields: [loss_L4, loss_L2, loss_L1], template: "{f} 状态:{status}"}
+        - {kind: path, path: ransom.demanded_amount, template: "攻击者要求赎金 {v}(注意:要求≠损失)"}
+        - {kind: products, template: "建议切入:{products}"}
+        - {kind: text, template: "话术仅引用公开来源事实,禁止贬损任何在位厂商"}
+  reports_engine:
+    crosstab: {row_role: dim1, col_roles: [tags_a, tags_b]}
+    amount_sum: {fields: [loss_L1, loss_L2, loss_L3, loss_L4, loss_L5], group_role: dim1, default_scope: confirmed}
+    status_count: {field: security_controls, item_key: control, status_key: status, statuses: [缺位, 在位但失效, 在位被绕过]}
+    missing_field: {field: sellable_mapping}
+  digest:
+    title: 安全事件日报
+    group_roles: [dim1, grade]
+    rank_role: grade
+    advisory_split: true
+
+# ---------- G. 界面 ----------
+ui:
+  record_label: 事件
+  tabs:
+    dashboard: {label: 仪表盘, enabled: true}
+    events: {label: 事件, enabled: true}
+    review: {label: 复核台, enabled: true}
+    followups: {label: 回访, enabled: true}
+    leads: {label: 销售线索, enabled: true}
+    sources: {label: 数据源, enabled: true}
+    crawl: {label: 采集, enabled: true}
+    actions: {label: 系统动作, enabled: true}
+    digest: {label: 日报, enabled: true}
+    settings: {label: 设置, enabled: true}
+  list_columns:
+    - {role: title}
+    - {role: record_type}
+    - {role: dim1}
+    - {role: grade}
+    - {role: tags_a}
+    - {role: status, label: 状态}
+    - {role: completeness, label: 完备度}
+    - {role: disclosed_date}
+  filters:
+    - {role: status, label: 状态}
+    - {role: grade}
+  detail_sections:
+    - {kind: kv, roles: [subject, dim1, region, grade]}
+    - {kind: tags, roles: [tags_a, tags_b]}
+    - {kind: object, path: ransom, label: 赎金(要求≠损失), keys: {demanded_amount: 要求金额, paid: 是否支付, paid_amount: 支付金额}}
+    - {kind: tristate}
+    - {kind: list, path: sellable_mapping, label: 可售产品映射}
+    - {kind: sources}
+  dashboard_tiles:
+    - {key: events_total, label: 事件总数, go: events, desc: "库里全部安全事件(草稿+已发布)"}
+    - {key: events_published, label: 已发布, go: events, filter: {status: live}, desc: "已复核发布 / 跟踪中的事件"}
+    - {key: docs_total, label: 采集文档, go: crawl, desc: "从各数据源采集入库的原始网页/文章"}
+    - {key: pending_review, label: 待复核, go: review, desc: "已抽取、等人工核对后才能发布的事件"}
+    - {key: leads_new, label: 新线索, go: leads, desc: "事件自动匹配出的、待销售跟进的商机"}
+    - {key: avg_completeness, label: 完备度均分, go: events, desc: "事件字段填充完整度平均分"}
+    - {key: followups_open, label: 回访待办, go: followups, desc: "待回访补全罚款/判决/整改采购等滞后信息"}
+    - {key: traceability, label: 金额可追溯, click: trace, desc: "红线校验:所有『已确认金额』是否都挂了权威来源"}
+
+demo:
+  samples:
+    - {title: 某三甲医院遭勒索攻击 HIS系统瘫痪36小时,
+       text: "某市第三人民医院遭勒索软件攻击,HIS 系统瘫痪超过36小时,门诊停诊。攻击者要求支付200万元赎金,医院未支付,数据由备份恢复,部分备份也被加密。初步判断与某VPN设备未修补漏洞有关,监管部门已介入。"}
+    - {title: 某城商行网银系统遭DDoS攻击 交易中断3小时,
+       text: "某城市商业银行网上银行遭大规模DDoS攻击,交易系统中断约3小时,大量客户无法转账。银行称已启用流量清洗,未造成资金损失。"}
+    - {title: 某车企供应商数据泄露 涉及生产数据,
+       text: "某汽车零部件供应商因第三方运维通道被入侵导致生产数据泄露,攻击者在泄露站列名索要赎金。企业尚未公开回应。"}
+
+# 离线/测试用 Mock 模型规则(不参与真实运行):粗筛关键词 + 抽取规则(正则→字段)
+mock:
+  screen_keywords: [勒索, 数据泄露, 信息泄露, 泄露, 攻击, 网络攻击, 网络安全, 数据安全, 黑客, 入侵, 瘫痪, 宕机,
+                    故障, 处罚, 罚款, 约谈, 通报, 内鬼, 倒卖, 个人信息, 篡改, DDoS, 木马, 漏洞, 暗网, 拖库,
+                    撞库, 钓鱼, 诈骗, 判决, 侵犯公民个人信息]
+  extract_rules:
+    - {path: org_name, regex: "([一-鿿]{2,12}(?:医院|银行|集团|公司|大学|厂))"}
+    - {path: ransom.demanded_amount, regex: "(?:勒索|要求支付|索要)[^。]{0,20}?(\\d+(?:\\.\\d+)?)\\s*万", transform: wan}
+    - {path: attack_type, when_contains: [勒索], append: 勒索软件}
+    - {path: attack_type, when_contains: [泄露], append: "数据泄露(渠道未明)"}
+    - {path: consequences, when_contains: [加密, 勒索], append: 数据被加密或破坏}
+    - {path: consequences, when_contains: [停, 瘫痪], append: 业务中断}
+    - {path: consequences, when_contains: [泄露], append: 数据泄露}
+    - {path: industry.level1, when_path_contains: {path: org_name, needle: 医院}, value: 医疗卫生}
+    - {path: org_type, when_path_contains: {path: org_name, needle: 医院}, value: 医院}
 
 benchmark:
   baselines:

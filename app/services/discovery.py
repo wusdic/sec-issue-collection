@@ -9,12 +9,10 @@ from app.models import Source, SourceBlacklist, SourceDiscoveryEvidence
 from app.services import url_tools
 
 
-def _load_scoring() -> dict:
-    try:
-        with open(settings.config_dir / "discovery.yaml", encoding="utf-8") as f:
-            return yaml.safe_load(f).get("scoring", {})
-    except FileNotFoundError:
-        return {}
+def _load_scoring(need_id: str | None = None) -> dict:
+    """候选评分权重:画像 sources.discovery_scoring,缺省取画像 discovery_file 的 scoring 节。"""
+    from app.services import need_ctx
+    return need_ctx.get(None, need_id or need_ctx.default_need_id()).discovery_scoring
 
 
 import re as _re
@@ -176,7 +174,7 @@ def evaluate_candidates(db: Session, need_id: str, llm_scores: dict[str, float] 
     llm_scores = llm_scores or {}
     auto_added: list[str] = []
     threshold = float(getattr(settings, "discovery_auto_trial_threshold", 0)
-                      or _load_scoring().get("auto_trial_threshold", 8.0))
+                      or _load_scoring(need_id).get("auto_trial_threshold", 8.0))
     keys = {r.identity_key for r in db.query(SourceDiscoveryEvidence).all()}
     results = []
     for key in keys:

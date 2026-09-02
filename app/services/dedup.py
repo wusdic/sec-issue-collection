@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import DocCluster, Event, RawDocument
-from app.services import url_tools
+from app.services import need_ctx, url_tools
+from app.services.need_ctx import ROLE_COLUMNS
 from app.services.llm import cosine
 from app.services.simhash import hamming, simhash64
 
@@ -96,33 +97,75 @@ def assign_cluster(db: Session, doc: RawDocument, lookback_days: int | None = No
     return cluster
 
 
-def _org_key(payload: dict) -> str:
-    return payload.get("org_uscc") or (
-        (payload.get("org_name") or "未披露") + "|" + (url_tools.dget(payload, "region", "province") or "")
-    )
+def _as_list(v) -> list:
+    if v in (None, "", {}):
+        return []
+    if isinstance(v, list):
+        return [str(x) for x in v if x not in (None, "")]
+    if isinstance(v, dict):
+        return [str(x) for x in v.values() if x not in (None, "")]
+    return [str(v)]
 
 
-def fingerprint_match(db: Session, need_id: str, payload: dict) -> Event | None:
-    """10.3 记录层第一步:单位键 + 攻击类型交集 + 时间窗 ±N 天。"""
-    org = _org_key(payload)
-    attack = set(payload.get("attack_type") or [])
+def _scalar(v) -> str:
+    if isinstance(v, dict):
+        v = v.get("value") or v.get("name") or v.get("level") or ""
+    if isinstance(v, list):
+        v = "、".join(str(x) for x in v if x)
+    return str(v).strip() if v not in (None, "") else ""
+
+
+def subject_key(payload: dict, ctx) -> str:
+    """记录主体键:按画像 dedup.subject_roles 顺序取第一个能算出来的。
+
+    单角色(如 subject_key=统一社会信用代码/文号)非空即用;复合角色 `a+b` 用 `|` 拼接,
+    至少一个分量非空才成立。都算不出 → ""(视为无法指纹,不做记录级去重)。
+    """
+    blank = ctx.subject_blank_values
+    for spec in ctx.dedup.get("subject_roles") or []:
+        parts = [x.strip() for x in str(spec).split("+") if x.strip()]
+        vals = [_scalar(ctx.get_role(payload, r)) for r in parts]
+        vals = ["" if v in blank else v for v in vals]       # 『未披露/未知』不是主体,不能当键
+        if not vals[0]:
+            continue                                          # 首分量(主体本身)必须非空
+        return vals[0] if len(parts) == 1 else "|".join(vals)
+    return ""
+
+
+def _org_key(payload: dict, ctx=None) -> str:
+    """兼容旧名。"""
+    return subject_key(payload, ctx or need_ctx.get(None, need_ctx.default_need_id()))
+
+
+def fingerprint_match(db: Session, need_id: str, payload: dict, ctx=None) -> Event | None:
+    """10.3 记录层第一步:主体键 + (可选)类型交集 + 时间窗 ±N 天。键/角色/窗口来自画像 record.dedup。"""
+    c = ctx or need_ctx.get(db, need_id)
+    d = c.dedup
+    key = subject_key(payload, c)
+    if not key:
+        return None
+    type_role = d.get("type_role")
+    types = set(_as_list(c.get_role(payload, type_role))) if type_role else None
+    date_role = d.get("date_role") or "occurred_date"
     # 容错解析:LLM 可能给纯字符串、月精度("2026-04")或嵌套对象,直接 fromisoformat 会抛异常
     # 导致整篇处理失败被丢进人工队列(实测已发生),故统一走 url_tools.to_date。
-    d = url_tools.to_date(payload.get("occurred_date"))
-    if d is None:
+    dt = url_tools.to_date(c.get_role(payload, date_role))
+    if dt is None:
         return None
-    window = timedelta(days=settings.fingerprint_window_days)
+    window = timedelta(days=c.dedup_window_days)
+    col = getattr(Event, ROLE_COLUMNS.get(date_role, "occurred_date"))
     candidates = (
         db.query(Event)
-        .filter(Event.need_id == need_id,
-                Event.occurred_date.isnot(None),
-                Event.occurred_date >= d - window,
-                Event.occurred_date <= d + window)
+        .filter(Event.need_id == need_id, col.isnot(None), col >= dt - window, col <= dt + window)
         .all()
     )
     for ev in candidates:
-        if _org_key(ev.payload) == org and (attack & set(ev.attack_types or [])):
-            return ev
+        if subject_key(ev.payload or {}, c) != key:
+            continue
+        if type_role:
+            if not (types & set(_as_list(c.get_role(ev.payload or {}, type_role)))):
+                continue
+        return ev
     return None
 
 

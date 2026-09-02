@@ -232,7 +232,11 @@ class Settings:
     daily_auto_enabled: bool = os.getenv("DAILY_AUTO_ENABLED", "false").lower() in ("1", "true", "yes", "on")
     daily_auto_hour: int = int(os.getenv("DAILY_AUTO_HOUR", "1"))          # 每天几点(UTC)跑,默认 01:00 UTC≈北京9点
     daily_auto_limit_sources: int = int(os.getenv("DAILY_AUTO_LIMIT_SOURCES", "999"))  # 每日全量跑
-    daily_need_id: str = os.getenv("DAILY_NEED_ID", "sec_events")
+    # 通用平台:默认需求(所有"没指定 need_id"的入口都用它)与画像文件发现规则。
+    # 引擎里不再出现任何具体需求 id;想换默认需求改这里即可。
+    default_need_id: str = os.getenv("DEFAULT_NEED_ID", "sec_events")
+    need_profile_glob: str = os.getenv("NEED_PROFILE_GLOB", "config/need_*.yaml")
+    daily_need_id: str = os.getenv("DAILY_NEED_ID", "") or os.getenv("DEFAULT_NEED_ID", "sec_events")
 
     # 日报邮件推送(可选):未配置 smtp_host 则不发,仅页面查看/下载
     smtp_host: str = os.getenv("SMTP_HOST", "")

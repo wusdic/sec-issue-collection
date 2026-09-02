@@ -1,62 +1,87 @@
-"""覆盖度盘点:按行业看近 N 天有没有事件,空白就是"该去找源的方向"。
+"""覆盖度盘点(通用平台):按画像声明的覆盖维度看近 N 天有没有记录,空白就是"该去找源的方向"。
 
-以前只知道"现在有什么源、采到了什么",不知道"缺哪块"。这里拿词表里的行业分类
-(schema/dictionaries.yaml 的 industries)去比对近 coverage_window_days 天的事件分布,
-低于 coverage_min_events 的行业判为覆盖空白,并自动生成对应的找源检索词交给
-prospect.py——"缺哪块就去找哪块的源",形成闭环而不是每周搜同样的词。
+维度角色(coverage.dimension_role,默认 dim1)、维度取值(词表文件里 coverage.dictionary_key 那一节)、
+找源词模板(query_templates,{ind} 占位)、短名映射、占位桶,全部来自画像;窗口/门槛缺省用运行时设置。
 """
 from datetime import datetime, timedelta
 
-import yaml
-
-from app.config import settings
 from app.models import Event, RawDocument, Source
+from app.services import need_ctx
+from app.services.need_ctx import ROLE_COLUMNS
+
+
+def _ctx(db, need_id, ctx=None):
+    return ctx or need_ctx.get(db, need_id)
+
+
+def dimension_values(ctx) -> dict[str, list[str]]:
+    """覆盖维度的取值 → 子项列表。词表里可写成 {一级: [二级...]} 或 [值...] 或 [{name: 值}]。"""
+    data = ctx.load_dictionaries_file()
+    v = data.get(ctx.coverage.get("dictionary_key") or "industries")
+    if isinstance(v, dict):
+        return {str(k): [str(x) for x in vv] if isinstance(vv, list) else [] for k, vv in v.items()}
+    if isinstance(v, list):
+        out = {}
+        for x in v:
+            if isinstance(x, dict):
+                name = x.get("name") or x.get("value") or x.get("label")
+                if name:
+                    out[str(name)] = [str(s) for s in (x.get("sub") or x.get("children") or [])]
+            elif x not in (None, ""):
+                out[str(x)] = []
+        return out
+    return {}
 
 
 def _industries() -> dict[str, list[str]]:
-    try:
-        with open(settings.schema_dir / "dictionaries.yaml", encoding="utf-8") as f:
-            return dict((yaml.safe_load(f) or {}).get("industries") or {})
-    except (OSError, yaml.YAMLError):
-        return {}
+    """兼容旧名:默认需求的覆盖维度取值。"""
+    return dimension_values(need_ctx.get(None, need_ctx.default_need_id()))
 
 
-def industry_coverage(db, need_id: str, days: int | None = None) -> list[dict]:
-    """每个一级行业近 N 天的事件数 / 源覆盖情况,按"最缺"排前面。"""
-    days = int(days or settings.coverage_window_days)
+def industry_coverage(db, need_id: str, days: int | None = None, ctx=None) -> list[dict]:
+    """覆盖维度每个取值近 N 天的记录数 / 覆盖等级,按"最缺"排前面。键名 industry 沿用(=维度值)。"""
+    c = _ctx(db, need_id, ctx)
+    days = int(days or c.coverage_window_days)
+    role = c.coverage.get("dimension_role") or "dim1"
+    col = ROLE_COLUMNS.get(role) or ROLE_COLUMNS["dim1"]
     since = datetime.utcnow() - timedelta(days=days)
-    rows = (db.query(Event)
-            .filter(Event.need_id == need_id, Event.created_at >= since).all())
+    rows = db.query(Event).filter(Event.need_id == need_id, Event.created_at >= since).all()
     counts: dict[str, int] = {}
     for e in rows:
-        counts[e.industry_l1 or "未分类"] = counts.get(e.industry_l1 or "未分类", 0) + 1
-    floor = int(settings.coverage_min_events)
+        v = getattr(e, col, None)
+        for x in (v if isinstance(v, list) else [v]):
+            k = str(x) if x else "未分类"
+            counts[k] = counts.get(k, 0) + 1
+    floor = c.coverage_min_records
     out = []
-    for l1, l2s in _industries().items():
+    for l1, l2s in dimension_values(c).items():
         n = counts.get(l1, 0)
-        out.append({"industry": l1, "sub": l2s, "events": n,
+        out.append({"industry": l1, "value": l1, "sub": l2s, "events": n,
                     "gap": n < floor,
                     "level": "空白" if n == 0 else ("偏少" if n < floor else "有覆盖")})
-    # 词表里没有但事件里出现的分类(含"未分类")也列出来,便于发现词表该补
+    # 词表里没有但记录里出现的取值(含"未分类")也列出来,便于发现词表该补
     for k, n in counts.items():
         if k not in {o["industry"] for o in out}:
-            out.append({"industry": k, "sub": [], "events": n, "gap": False, "level": "词表外"})
+            out.append({"industry": k, "value": k, "sub": [], "events": n, "gap": False, "level": "词表外"})
     return sorted(out, key=lambda o: (o["events"], o["industry"]))
 
 
-def summary(db, need_id: str, days: int | None = None) -> dict:
-    """覆盖度总览:行业分布 + 源结构 + 该补什么。页面与日报都用这一份。"""
-    days = int(days or settings.coverage_window_days)
-    cov = industry_coverage(db, need_id, days)
-    gaps = [c for c in cov if c["gap"]]
+def summary(db, need_id: str, days: int | None = None, ctx=None) -> dict:
+    """覆盖度总览:维度分布 + 源结构 + 该补什么。页面与日报都用这一份。"""
+    c = _ctx(db, need_id, ctx)
+    days = int(days or c.coverage_window_days)
+    cov = industry_coverage(db, need_id, days, c)
+    gaps = [x for x in cov if x["gap"]]
     srcs = [s for s in db.query(Source).all() if need_id in (s.serves_needs or [])]
     active = [s for s in srcs if s.lifecycle in ("active", "trial")]
     since = datetime.utcnow() - timedelta(days=days)
     producing = {r[0] for r in db.query(RawDocument.source_id)
                  .filter(RawDocument.need_id == need_id, RawDocument.fetched_at >= since).distinct().all()}
+    role = c.coverage.get("dimension_role") or "dim1"
     return {
         "window_days": days,
-        "min_events": int(settings.coverage_min_events),
+        "min_events": c.coverage_min_records,
+        "dimension_role": role, "dimension_label": c.role_label(role),
         "industries": cov,
         "gap_count": len(gaps),
         "gap_industries": [g["industry"] for g in gaps],
@@ -64,29 +89,27 @@ def summary(db, need_id: str, days: int | None = None) -> dict:
         "sources_active": len(active),
         "sources_producing": len([s for s in active if s.id in producing]),
         "sources_silent": [s.name for s in active if s.id not in producing][:50],
-        "prospect_queries": prospect_queries(db, need_id, days),
+        "prospect_queries": prospect_queries(db, need_id, days, ctx=c),
     }
 
 
-# 每个空白行业生成的找源词:**只两词**。此前是 "{ind} 网络安全 事件 通报 公众号" 这种五词长串,
-# 搜索引擎按 AND 收紧后几乎搜不到东西——词越多召回越窄,找源恰恰需要广度。
-_Q_TPL = ["{ind} 数据泄露", "{ind} 网络安全 通报", "{ind} 信息安全 处罚"]
-# 行业名取短:词表里的"医疗卫生/交通物流"在语料里不如"医疗/物流"常见
-_SHORT = {"医疗卫生": "医疗", "交通物流": "物流", "文化传媒": "传媒",
-          "批发零售": "零售", "住宿餐饮": "餐饮", "信息技术服务": "IT服务",
-          "零售消费": "零售", "建筑地产": "房地产", "电信运营": "运营商"}
-# 占位/兜底分类:它们只是词表里的"其余"桶,不是真实行业,拿去组词毫无意义
-# (「其他 网络安全」搜不到任何有价值的渠道),必须排除。
-_PLACEHOLDER = {"其他", "其它", "未分类", "未知", "其他行业", "词表外"}
+def prospect_queries(db, need_id: str, days: int | None = None, per_industry: int = 2, ctx=None) -> list[str]:
+    """把覆盖空白翻译成找源检索词(交给 prospect.run_once 去搜索引擎捞渠道)。
 
-
-def prospect_queries(db, need_id: str, days: int | None = None, per_industry: int = 2) -> list[str]:
-    """把覆盖空白翻译成找源检索词(交给 prospect.run_once 去搜索引擎捞渠道)。"""
+    模板只组 **两三个词**:搜索引擎按 AND 收紧,词越多召回越窄,找源恰恰需要广度。
+    占位桶(其他/未分类)不是真实取值,组出来的词毫无意义,必须排除。
+    """
+    c = _ctx(db, need_id, ctx)
+    tpls = [str(t) for t in (c.coverage.get("query_templates") or []) if "{ind}" in str(t)]
+    if not tpls:
+        tpls = ["{ind} " + c.name]
+    short = {str(k): str(v) for k, v in (c.coverage.get("short_names") or {}).items()}
+    placeholders = {str(x) for x in (c.coverage.get("placeholders") or [])}
     out = []
-    for c in industry_coverage(db, need_id, days):
-        if not c["gap"] or c["industry"] in _PLACEHOLDER:
-            continue          # "其他/未分类"是兜底桶不是行业,组出来的词是废词
-        ind = _SHORT.get(c["industry"], c["industry"])
-        for tpl in _Q_TPL[:per_industry]:
+    for x in industry_coverage(db, need_id, days, c):
+        if not x["gap"] or x["industry"] in placeholders:
+            continue
+        ind = short.get(x["industry"], x["industry"])
+        for tpl in tpls[:per_industry]:
             out.append(tpl.format(ind=ind))
     return out

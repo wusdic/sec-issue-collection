@@ -1,30 +1,60 @@
-"""KPI 与报表(方案 12.1 / 16.1):看板数据与硬约束校验。"""
+"""KPI 与报表(通用平台):交叉表 / 金额汇总 / 状态计数 / 缺字段清单 / 可追溯校验 / 仪表盘。
+
+口径全部来自画像 outputs.reports_engine(见 design/platform/02 F2);声明为 null 的报表返回
+enabled=False 而不是报错,前端按此隐藏。物理列经 ROLE_COLUMNS 由角色映射。
+"""
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
 from app.models import Event, EventSource, FollowupTask, Lead, RawDocument
-from app.services.money_guard import LOSS_FIELDS, confirmed_fields
-from app.services import url_tools
+from app.services import need_ctx, url_tools
+from app.services.money_guard import confirmed_fields
+from app.services.need_ctx import ROLE_COLUMNS
+
+LIVE_STATUSES = ["published", "monitoring", "closed"]
 
 
-def heatmap(db: Session, need_id: str, days: int = 365) -> dict:
-    """行业 × 手段 × 后果 热力图数据。"""
+def _ctx(db, need_id, ctx=None):
+    return ctx or need_ctx.get(db, need_id)
+
+
+def _live(db, need_id):
+    return db.query(Event).filter(Event.need_id == need_id, Event.status.in_(LIVE_STATUSES)).all()
+
+
+def _col(ev: Event, role: str):
+    col = ROLE_COLUMNS.get(role)
+    return getattr(ev, col, None) if col else None
+
+
+def _as_list(v) -> list:
+    if v in (None, "", [], {}):
+        return []
+    return [str(x) for x in v if x] if isinstance(v, list) else [str(v)]
+
+
+def heatmap(db: Session, need_id: str, days: int = 365, ctx=None) -> dict:
+    """交叉表:行角色 × 各列角色 的计数(默认 分类 × 标签A / 标签B)。"""
+    c = _ctx(db, need_id, ctx)
+    ct = c.reports.get("crosstab") or {}
+    row_role = ct.get("row_role") or "dim1"
+    col_roles = [r for r in (ct.get("col_roles") or ["tags_a", "tags_b"]) if r in ROLE_COLUMNS]
     since = date.today() - timedelta(days=days)
-    by_attack, by_consequence = Counter(), Counter()
-    for ev in db.query(Event).filter(Event.need_id == need_id,
-                                     Event.status.in_(["published", "monitoring", "closed"])).all():
+    counters = {r: Counter() for r in col_roles}
+    for ev in _live(db, need_id):
         if ev.disclosed_date and ev.disclosed_date < since:
             continue
-        ind = ev.industry_l1 or "未知"
-        for a in ev.attack_types or []:
-            by_attack[(ind, a)] += 1
-        for c in ev.consequences or []:
-            by_consequence[(ind, c)] += 1
+        rv = _col(ev, row_role) or "未知"
+        for cr in col_roles:
+            for v in _as_list(_col(ev, cr)):
+                counters[cr][(rv, v)] += 1
     return {
-        "industry_x_attack": [{"industry": k[0], "attack_type": k[1], "count": v} for k, v in by_attack.most_common()],
-        "industry_x_consequence": [{"industry": k[0], "consequence": k[1], "count": v} for k, v in by_consequence.most_common()],
+        "row_role": row_role, "row_label": c.role_label(row_role),
+        "col_roles": col_roles, "col_labels": {r: c.role_label(r) for r in col_roles},
+        "tables": {r: [{"row": k[0], "col": k[1], "count": n} for k, n in counters[r].most_common()]
+                   for r in col_roles},
     }
 
 
@@ -38,72 +68,113 @@ def _amount(channel) -> float:
     return 0.0
 
 
-def loss_stats(db: Session, need_id: str, scope: str = "confirmed") -> dict:
-    """损失分布:默认口径只汇总已确认;声称/估算需显式选择且报表标注。"""
+def amount_stats(db: Session, need_id: str, scope: str | None = None, ctx=None) -> dict:
+    """金额(三态字段)汇总:默认口径只汇总已确认;声称/估算需显式选择且报表标注。"""
+    c = _ctx(db, need_id, ctx)
+    cfg = c.reports.get("amount_sum")
+    if not cfg or not (cfg.get("fields") or c.tristate_fields):
+        return {"enabled": False, "note": "本需求未声明金额汇总(outputs.reports_engine.amount_sum)"}
+    scope = scope or cfg.get("default_scope") or "confirmed"
     assert scope in ("confirmed", "claimed", "estimated")
-    channel_key = f"{scope}_cny"
-    per_loss = defaultdict(float)
-    per_industry = defaultdict(float)
+    channel_key = (c.assertions.get("channels") or {}).get(scope) or f"{scope}_cny"
+    fields = list(cfg.get("fields") or c.tristate_fields)
+    group_role = cfg.get("group_role") or "dim1"
+    per_field, per_group = defaultdict(float), defaultdict(float)
     n_events = 0
-    for ev in db.query(Event).filter(Event.need_id == need_id,
-                                     Event.status.in_(["published", "monitoring", "closed"])).all():
+    for ev in _live(db, need_id):
         p = ev.payload or {}
         touched = False
-        for f in LOSS_FIELDS:
+        for f in fields:
             amt = _amount(url_tools.dget(p, f, channel_key))
             if amt:
-                per_loss[f] += amt
-                per_industry[ev.industry_l1 or "未知"] += amt
+                per_field[f] += amt
+                per_group[_col(ev, group_role) or "未知"] += amt
                 touched = True
         if touched:
             n_events += 1
-    return {"scope": scope, "scope_note": "默认统计口径=已确认;本报表口径=" + scope,
-            "events_counted": n_events,
-            "by_loss_category": dict(per_loss), "by_industry": dict(per_industry)}
+    labels = c.assertions.get("labels") or {}
+    return {"enabled": True, "scope": scope, "scope_note": "默认统计口径=已确认;本报表口径=" + scope,
+            "events_counted": n_events, "group_role": group_role, "group_label": c.role_label(group_role),
+            "by_field": {f: {"amount": v, "label": labels.get(f, f)} for f, v in per_field.items()},
+            "by_group": dict(per_group),
+            # 兼容旧键
+            "by_loss_category": dict(per_field), "by_industry": dict(per_group)}
 
 
-def controls_stats(db: Session, need_id: str) -> dict:
-    """控制缺失统计(B9):建设类 vs 效果类产品方向信号。"""
+def loss_stats(db: Session, need_id: str, scope: str = "confirmed", ctx=None) -> dict:
+    """兼容旧名。"""
+    return amount_stats(db, need_id, scope, ctx)
+
+
+def status_count(db: Session, need_id: str, ctx=None) -> dict:
+    """列表字段里各条目的状态计数(如 安全控制 × 缺位/失效;画像 status_count 声明)。"""
+    c = _ctx(db, need_id, ctx)
+    cfg = c.reports.get("status_count")
+    if not cfg or not cfg.get("field"):
+        return {"enabled": False, "items": []}
+    item_key, status_key = cfg.get("item_key") or "name", cfg.get("status_key") or "status"
+    wanted = set(str(x) for x in (cfg.get("statuses") or []))
     counter = Counter()
-    for ev in db.query(Event).filter(Event.need_id == need_id,
-                                     Event.status.in_(["published", "monitoring", "closed"])).all():
-        for c in (ev.payload or {}).get("security_controls") or []:
-            if c.get("status") in ("缺位", "在位但失效", "在位被绕过"):
-                counter[(c.get("control"), c.get("status"))] += 1
-    return {"items": [{"control": k[0], "status": k[1], "count": v} for k, v in counter.most_common()]}
+    for ev in _live(db, need_id):
+        v = url_tools.dget(ev.payload or {}, *str(cfg["field"]).split("."))
+        for it in (v if isinstance(v, list) else []):
+            if not isinstance(it, dict):
+                continue
+            st = it.get(status_key)
+            if wanted and str(st) not in wanted:
+                continue
+            counter[(it.get(item_key), st)] += 1
+    return {"enabled": True, "field": cfg["field"],
+            "items": [{"item": k[0], "status": k[1], "count": n} for k, n in counter.most_common()]}
 
 
-def whitespace(db: Session, need_id: str) -> list[dict]:
-    """白区清单:无产品映射的已发布事件(产品缺口信号)。"""
+def controls_stats(db: Session, need_id: str, ctx=None) -> dict:
+    """兼容旧名。"""
+    return status_count(db, need_id, ctx)
+
+
+def missing_field(db: Session, need_id: str, ctx=None) -> dict:
+    """缺失字段清单:已发布记录里某字段为空的(如 无产品映射 = 产品缺口信号)。"""
+    c = _ctx(db, need_id, ctx)
+    cfg = c.reports.get("missing_field")
+    if not cfg or not cfg.get("field"):
+        return {"enabled": False, "items": []}
+    field = str(cfg["field"])
     out = []
     for ev in db.query(Event).filter(Event.need_id == need_id,
                                      Event.status.in_(["published", "monitoring"])).all():
-        if not (ev.payload or {}).get("sellable_mapping"):
+        if not url_tools.dget(ev.payload or {}, *field.split(".")):
             out.append({"event_id": ev.event_id, "title": (ev.payload or {}).get("title"),
-                        "attack_types": ev.attack_types})
-    return out
+                        "tags_a": _col(ev, "tags_a") or []})
+    return {"enabled": True, "field": field, "items": out}
 
 
-def traceability_check(db: Session, need_id: str) -> dict:
-    """硬约束回归(11.4):任何 confirmed 金额必须可回溯到 S1/S2 来源。违规>0 时报表层拒绝出数。"""
+def whitespace(db: Session, need_id: str, ctx=None) -> list[dict]:
+    """兼容旧名(返回清单)。"""
+    return missing_field(db, need_id, ctx).get("items") or []
+
+
+def traceability_check(db: Session, need_id: str, ctx=None) -> dict:
+    """硬约束回归(11.4):任何 confirmed 断言必须可回溯到画像 confirm_allowed 等级的来源。违规>0 时报表层拒绝出数。"""
+    c = _ctx(db, need_id, ctx)
+    allowed = set(c.confirm_allowed)
     violations = []
-    for ev in db.query(Event).filter(Event.need_id == need_id,
-                                     Event.status.in_(["published", "monitoring", "closed"])).all():
-        conf = confirmed_fields(ev.payload or {})
+    for ev in _live(db, need_id):
+        conf = confirmed_fields(ev.payload or {}, ctx=c)
         if not conf:
             continue
         creds = {es.credibility for es in db.query(EventSource).filter_by(event_id=ev.event_id).all()}
-        creds |= {s.get("credibility") for s in (ev.payload or {}).get("sources") or []}
-        if not (creds & {"S1", "S2"}):
+        creds |= {s.get("credibility") for s in (ev.payload or {}).get("sources") or [] if isinstance(s, dict)}
+        if not (creds & allowed):
             violations.append({"event_id": ev.event_id, "fields": conf})
-    return {"ok": not violations, "violations": violations}
+    return {"ok": not violations, "violations": violations, "confirm_allowed": sorted(allowed)}
 
 
-def dashboard(db: Session, need_id: str) -> dict:
+def dashboard(db: Session, need_id: str, ctx=None) -> dict:
     from app.models import ReviewTask
+    c = _ctx(db, need_id, ctx)
     total = db.query(Event).filter_by(need_id=need_id).count()
-    published = db.query(Event).filter(Event.need_id == need_id,
-                                       Event.status.in_(["published", "monitoring", "closed"])).count()
+    published = db.query(Event).filter(Event.need_id == need_id, Event.status.in_(LIVE_STATUSES)).count()
     docs = db.query(RawDocument).filter_by(need_id=need_id).count()
     # 待复核 = 复核队列未完成(新抽取/待一审/待二审),与复核台"待复核(全部)"口径一致
     pending_review = (
@@ -111,7 +182,6 @@ def dashboard(db: Session, need_id: str) -> dict:
         .filter(Event.need_id == need_id,
                 ReviewTask.stage.in_(["extracted", "first_review", "second_review"])).count()
     )
-    # 回访待办按 need 过滤(经 event 关联)
     open_followups = (
         db.query(FollowupTask).join(Event, Event.event_id == FollowupTask.event_id)
         .filter(Event.need_id == need_id, FollowupTask.status == "open").count()
@@ -120,8 +190,10 @@ def dashboard(db: Session, need_id: str) -> dict:
     scores = [ev.completeness_score for ev in db.query(Event).filter(
         Event.need_id == need_id, Event.completeness_score.isnot(None)).all()]
     return {
+        "need_id": need_id, "need_name": c.name,
         "events_total": total, "events_published": published, "docs_total": docs,
         "pending_review": pending_review, "followups_open": open_followups, "leads_new": leads_new,
         "avg_completeness": round(sum(scores) / len(scores), 1) if scores else None,
-        "traceability": traceability_check(db, need_id),
+        "traceability": traceability_check(db, need_id, c),
+        "tiles": list(c.ui.get("dashboard_tiles") or []),
     }

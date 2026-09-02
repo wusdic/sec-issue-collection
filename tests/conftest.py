@@ -23,7 +23,7 @@ def _init():
     from app.models import AppUser
     from app.services import profiles
     db = SessionLocal()
-    paths = profiles.default_sec_events_paths()
+    paths = profiles.need_paths("sec_events")
     cfg = profiles.load_profile_file(paths["profile"])
     np = profiles.register_need(db, cfg)
     profiles.load_dictionaries(db, np.id, paths["dictionaries"])

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>国内行业安全事件库 · 管理后台</title>
+<title>数据采集平台 · 管理后台</title>
 <style>
   :root{--bg:#0f172a;--panel:#fff;--muted:#64748b;--line:#e2e8f0;--brand:#2563eb;
         --ok:#16a34a;--warn:#d97706;--bad:#dc2626;--soft:#f1f5f9;}
@@ -76,7 +76,7 @@
 
 <!-- 登录 -->
 <div id="login">
-  <h1>国内行业安全事件库</h1>
+  <h1>数据采集平台</h1>
   <p>管理后台 · 请登录</p>
   <label>用户名</label><input id="u" value="admin" autocomplete="username">
   <label>口令</label><input id="p" type="password" value="ChangeMe!2026" autocomplete="current-password">
@@ -88,7 +88,8 @@
 <!-- 主应用 -->
 <div id="app">
   <header>
-    <span class="logo">🛡️ 安全事件库</span>
+    <span class="logo" id="logo">🗂️ 数据采集平台</span>
+    <select id="needSel" class="sm" onchange="switchNeed(this.value)" style="display:none;margin-left:8px" title="切换需求(画像)"></select>
     <nav id="nav"></nav>
     <span class="user" id="whoami"></span>
     <button class="sm ghost" onclick="logout()">退出</button>
@@ -101,14 +102,40 @@
 <div id="toast"></div>
 
 <script>
-const NEED = "sec_events";
+let NEED = localStorage.getItem("need") || "";   // 当前需求 id;空 → 用服务端默认(loadNeed 里定)
+let UI = null;        // /needs/{id}/ui:页签/列/筛选/详情分区/仪表盘卡片/角色标签——全部画像驱动
+let NEEDS = [];
 let TOKEN = localStorage.getItem("tok") || "";
 let ROLE = localStorage.getItem("role") || "";
-const TABS = [
-  ["dashboard","仪表盘"],["events","事件"],["review","复核台"],
-  ["followups","回访"],["leads","销售线索"],["sources","数据源"],["crawl","采集"],
+const TABS_DEFAULT = [
+  ["dashboard","仪表盘"],["events","记录"],["review","复核台"],
+  ["followups","回访"],["leads","线索"],["sources","数据源"],["crawl","采集"],
   ["actions","系统动作"],["digest","日报"],["settings","设置"],
 ];
+let TABS = TABS_DEFAULT.slice();
+/* 角色 → 标签/取值(前端只认角色,不认行业字段名) */
+function L(role, fb){ return (UI&&UI.role_labels&&UI.role_labels[role])||fb||role; }
+function REC(){ return (UI&&UI.record_label)||"记录"; }
+function rolePath(role){ const p=UI&&UI.field_roles&&UI.field_roles[role]; return Array.isArray(p)?p[0]:p; }
+function getPath(obj, path){
+  if(!obj||!path) return undefined; let cur=obj;
+  for(const seg of String(path).split(".")){
+    const m=seg.match(/^([^\[]+)(?:\[(\d+)\])?$/); if(!m) return undefined;
+    cur = (cur==null)?undefined:cur[m[1]];
+    if(m[2]!=null) cur = Array.isArray(cur)?cur[+m[2]]:undefined;
+    if(cur===undefined) return undefined;
+  }
+  return cur;
+}
+function roleVal(p, role){
+  const path=rolePath(role); let v=getPath(p, path);
+  if((v===undefined||v===null)&&path&&path.includes(".")){
+    const parent=getPath(p, path.split(".").slice(0,-1).join("."));
+    if(typeof parent==="string"||typeof parent==="number") v=parent;   // 模型给了标量(severity:"重大")
+  }
+  if(v&&typeof v==="object"&&!Array.isArray(v)) v = v.value??v.name??v.level??v.label??JSON.stringify(v);
+  return v;
+}
 let PENDING = {};   // 下钻时携带的预设筛选,由目标页读取后清空
 function drill(tab, filter){ PENDING = filter || {}; go(tab); }
 
@@ -159,14 +186,34 @@ function logout(){ TOKEN=""; localStorage.clear();
   document.getElementById("app").style.display="none";
   document.getElementById("login").style.display="block"; }
 
-function boot(){
+async function boot(){
   document.getElementById("login").style.display="none";
   document.getElementById("app").style.display="block";
   document.getElementById("whoami").textContent = (localStorage.getItem("user")||"")+" · "+ROLE;
+  await loadNeed();
+  renderNav();
+  go("dashboard");
+}
+async function loadNeed(){
+  try{ NEEDS = await api("/needs"); }catch(e){ NEEDS=[]; }
+  const reg = NEEDS.filter(n=>n.registered!==false);
+  const saved = localStorage.getItem("need");
+  const pick = reg.find(n=>n.id===saved) || reg.find(n=>n.default) || reg[0] || NEEDS[0];
+  if(pick) NEED = pick.id;
+  UI = null;
+  if(NEED){ try{ UI = await api(`/needs/${NEED}/ui`); }catch(e){ UI=null; } }
+  TABS = TABS_DEFAULT.map(([k,l])=>{ const t=UI&&UI.tabs&&UI.tabs[k]; return (t&&t.enabled===false)?null:[k,(t&&t.label)||l]; }).filter(Boolean);
+  const sel=document.getElementById("needSel");
+  if(sel){ sel.innerHTML = reg.map(n=>`<option value="${esc(n.id)}" ${n.id===NEED?"selected":""}>${esc(n.name||n.id)}</option>`).join("");
+    sel.style.display = reg.length>1?"":"none"; }
+  const logo=document.getElementById("logo"); if(logo) logo.textContent = "🗂️ "+((UI&&UI.name)||"数据采集平台");
+  document.title = (UI&&UI.name)||"数据采集平台";
+}
+function switchNeed(id){ localStorage.setItem("need", id); loadNeed().then(()=>{ renderNav(); go("dashboard"); }); }
+function renderNav(){
   const nav=document.getElementById("nav"); nav.innerHTML="";
   TABS.forEach(([k,label])=>{ const a=document.createElement("a"); a.textContent=label;
     a.dataset.k=k; a.onclick=()=>go(k); nav.appendChild(a); });
-  go("dashboard");
 }
 function go(k){
   if(k!=="crawl" && typeof crawlStopPoll==="function") crawlStopPoll();  // 离开采集页停轮询(重进自动恢复)
@@ -221,12 +268,13 @@ async function ackModule(module){
 /* ---------- 仪表盘 ---------- */
 async function vDashboard(){
   const v=document.getElementById("view");
+  const rec=REC();
   v.innerHTML=`<h2>仪表盘</h2>
-    <p class="sub">国内行业安全事件库(sec_events)· 每个卡片是一个关键指标,鼠标悬停有说明,点击卡片直接进对应明细页。数据流:采集文档 → 抽取成事件 → 待复核 → 发布 → 生成线索/回访。</p>
+    <p class="sub">${esc((UI&&UI.name)||NEED)}(${esc(NEED)})· 每个卡片是一个关键指标,鼠标悬停有说明,点击卡片直接进对应明细页。数据流:采集文档 → 抽取成${esc(rec)} → 待复核 → 发布${(UI&&UI.leads_enabled)?" → 生成线索/回访":" → 回访"}。</p>
     <div id="dashAlert"></div>
     <div id="seedBanner" class="banner">第一次使用、库里还没数据?先点
       <button class="sm" onclick="seedDemo()">一键载入演示数据</button>
-      &nbsp;即可在各页面看到事件、线索、复核任务的样子(纯本地样例,不联网)。</div>
+      &nbsp;即可在各页面看到${esc(rec)}、复核任务的样子(纯本地样例,不联网)。</div>
     <div class="cards" id="cards">加载中…</div>`;
   moduleAlert("dashAlert", "");        // 不限模块:仪表盘看全局
   try{
@@ -234,29 +282,24 @@ async function vDashboard(){
     window.__trace = d.traceability;
     const trace = d.traceability.ok
       ? `<span class="pill ok">通过</span>` : `<span class="pill bad">违规 ${d.traceability.violations.length}</span>`;
-    // 每张卡片:go=下钻目标 tab,f=预设筛选,click=自定义动作,desc=这个框是什么
-    const cards=[
-      {k:"事件总数", v:d.events_total, go:"events",
-        desc:"库里全部安全事件(草稿+已发布)。点击 → 事件列表(全部)"},
-      {k:"已发布", v:d.events_published, go:"events", f:{status:"live"},
-        desc:"已复核发布 / 跟踪中的事件,是能用于分析的正式数据。点击 → 事件列表(已发布)"},
-      {k:"采集文档", v:d.docs_total, go:"crawl",
-        desc:"从各数据源采集入库的原始网页/文章,是事件的原料。点击 → 采集页看文档与采集记录"},
-      {k:"待复核", v:d.pending_review, go:"review",
-        desc:"已抽取、等人工核对后才能发布的事件。点击 → 复核台处理"},
-      {k:"新线索", v:d.leads_new, go:"leads",
-        desc:"事件自动匹配出的、待销售跟进的商机。点击 → 线索列表"},
-      {k:"完备度均分", v:d.avg_completeness??"-", go:"events",
-        desc:"事件字段填充完整度平均分(满分100),越高信息越全。点击 → 事件列表"},
-      {k:"回访待办", v:d.followups_open, go:"followups",
-        desc:"待回访补全罚款/判决/整改采购等滞后信息的任务。点击 → 回访页"},
-      {k:"金额可追溯", v:trace, small:true, click:"trace",
-        desc:"红线校验:所有『已确认金额』是否都挂了权威来源(S1/S2)。点击查看详情"},
+    // 卡片定义来自画像 ui.dashboard_tiles(key=指标名,go=下钻页,filter=预设筛选,click=自定义动作);画像没写就用平台缺省
+    const tiles = (d.tiles&&d.tiles.length)?d.tiles:[
+      {key:"events_total",label:rec+"总数",go:"events",desc:"库里全部"+rec+"(草稿+已发布)。点击 → 列表(全部)"},
+      {key:"events_published",label:"已发布",go:"events",filter:{status:"live"},desc:"已复核发布 / 跟踪中的"+rec+",是能用于分析的正式数据"},
+      {key:"docs_total",label:"采集文档",go:"crawl",desc:"从各数据源采集入库的原始网页/文章,是"+rec+"的原料"},
+      {key:"pending_review",label:"待复核",go:"review",desc:"已抽取、等人工核对后才能发布的"+rec},
+      {key:"leads_new",label:"新线索",go:"leads",desc:"自动匹配出的、待跟进的线索"},
+      {key:"avg_completeness",label:"完备度均分",go:"events",desc:"字段填充完整度平均分(满分100),越高信息越全"},
+      {key:"followups_open",label:"回访待办",go:"followups",desc:"待回访补全滞后信息的任务"},
+      {key:"traceability",label:"断言可追溯",click:"trace",desc:"红线校验:所有『已确认』断言是否都挂了权威来源"},
     ];
+    const cards = tiles.filter(t=>!(t.key==="leads_new"&&UI&&!UI.leads_enabled)).map(t=>({
+      k:t.label, v:(t.key==="traceability")?trace:(d[t.key]??"-"), go:t.go, f:t.filter, click:t.click,
+      small:t.key==="traceability", desc:t.desc||""}));
     const box=document.getElementById("cards");
     box.innerHTML = cards.map((c,i)=>
       `<div class="card clickable" data-i="${i}" title="${esc(c.desc)}">
-         <div class="k">${c.k}<span class="arrow">›</span></div>
+         <div class="k">${esc(c.k)}<span class="arrow">›</span></div>
          <div class="v ${c.small?'small':''}">${c.v??"-"}</div>
          <div class="cardDesc">${esc(c.desc)}</div></div>`).join("");
     box.querySelectorAll(".card").forEach((el,i)=>{
@@ -267,92 +310,110 @@ async function vDashboard(){
 }
 function showTrace(){
   const t=window.__trace||{};
-  if(t.ok){ toast("金额可追溯:全部已确认金额均有 S1/S2 权威来源支撑 ✓"); return; }
-  drawer(`<h3>金额可追溯性违规</h3>
-    <p class="muted">以下事件存在“已确认金额”但缺少 S1/S2 权威来源,报表层会拒绝出数,请复核补来源或降级金额通道。</p>
+  const allowed=((UI&&UI.confirm_allowed)||t.confirm_allowed||["S1","S2"]).join("/");
+  if(t.ok){ toast(`断言可追溯:全部已确认断言均有 ${allowed} 权威来源支撑 ✓`); return; }
+  drawer(`<h3>断言可追溯性违规</h3>
+    <p class="muted">以下${esc(REC())}存在“已确认”断言但缺少 ${esc(allowed)} 权威来源,报表层会拒绝出数,请复核补来源或降级通道。</p>
     ${(t.violations||[]).map(v=>`<div class="lossbox"><span class="mono" style="cursor:pointer" onclick="openEvent('${v.event_id}')">${v.event_id}</span> · 字段:${(v.fields||[]).join(", ")}</div>`).join("")}`);
 }
 async function seedDemo(){
   try{ const r=await api("/demo/seed?need_id="+NEED,{method:"POST"});
-    toast(`已载入 ${r.created.length} 条演示事件`); go("dashboard"); }
+    toast(r.note||`已载入 ${r.created.length} 条演示${REC()}`); go("dashboard"); }
   catch(e){ toast("失败:"+e.message); }
 }
 
-/* ---------- 事件 ---------- */
+/* ---------- 记录列表(列/筛选/详情分区全部来自画像 ui) ---------- */
+function gradeClass(g){ const order=(UI&&UI.grade_order)||[]; const i=order.indexOf(g); if(i<0) return ""; if(i<=1) return "bad"; if(i===2) return "warn"; return "info"; }
+function sevPill(s){ return s?`<span class="pill ${gradeClass(s)}">${esc(s)}</span>`:"-"; }
+function statusPill(s){ const m={published:"ok",monitoring:"info",draft:"",closed:""};
+  const t={published:"已发布",monitoring:"跟踪中",draft:"草稿",closed:"已关闭"};
+  return `<span class="pill ${m[s]||''}">${t[s]||s}</span>`; }
 async function vEvents(){
+  const filters=(UI&&UI.filters&&UI.filters.length)?UI.filters:[{role:"status",label:"状态"},{role:"grade"}];
+  const gradeF=filters.find(f=>f.role==="grade");
+  const gvals=(gradeF&&gradeF.values&&gradeF.values.length)?gradeF.values:((UI&&UI.grade_order)||[]);
   const v=document.getElementById("view");
-  v.innerHTML=`<h2>事件</h2><p class="sub">采集抽取后的安全事件记录</p>
+  v.innerHTML=`<h2>${esc(REC())}</h2><p class="sub">采集抽取后的${esc(REC())}记录</p>
     <div class="toolbar">
       <select id="fStatus" onchange="loadEvents()">
         <option value="">全部状态</option><option value="draft">草稿</option>
         <option value="live">已发布/跟踪中</option>
         <option value="published">仅已发布</option><option value="monitoring">仅跟踪中</option></select>
-      <select id="fSev" onchange="loadEvents()">
-        <option value="">全部严重度</option><option>特别重大</option><option>重大</option>
-        <option>较大</option><option>一般</option><option>未定级</option></select>
+      ${gradeF&&gvals.length?`<select id="fSev" onchange="loadEvents()">
+        <option value="">全部${esc(gradeF.label||L("grade"))}</option>${gvals.map(x=>`<option>${esc(x)}</option>`).join("")}</select>`:""}
     </div><div id="evTable">加载中…</div>`;
   // 应用仪表盘下钻带来的预设筛选
   if(PENDING.status) document.getElementById("fStatus").value = PENDING.status;
-  if(PENDING.severity) document.getElementById("fSev").value = PENDING.severity;
+  const fs=document.getElementById("fSev");
+  if(fs&&(PENDING.grade||PENDING.severity)) fs.value = PENDING.grade||PENDING.severity;
   PENDING = {};
   loadEvents();
 }
 async function loadEvents(){
-  const st=document.getElementById("fStatus").value, sv=document.getElementById("fSev").value;
-  let q=`/events?need_id=${NEED}&limit=200`; if(st)q+=`&status=${st}`; if(sv)q+=`&severity=${encodeURIComponent(sv)}`;
+  const st=document.getElementById("fStatus").value, fs=document.getElementById("fSev"), sv=fs?fs.value:"";
+  let q=`/events?need_id=${NEED}&limit=200`; if(st)q+=`&status=${st}`; if(sv)q+=`&grade=${encodeURIComponent(sv)}`;
   try{
     const rows=await api(q);
-    if(!rows.length){ document.getElementById("evTable").innerHTML=`<p class="muted">暂无事件。去「仪表盘」点“一键载入演示数据”,或到「采集」页跑一轮真实采集。</p>`; return; }
-    document.getElementById("evTable").innerHTML=`<table><thead><tr>
-      <th>标题</th><th>类型</th><th>行业</th><th>严重度</th><th>手段</th><th>状态</th><th>完备度</th><th>披露日</th></tr></thead><tbody>`+
-      rows.map(e=>`<tr style="cursor:pointer" onclick="openEvent('${e.event_id}')">
-        <td>${esc(e.title||e.event_id)}</td>
-        <td>${e.record_type==="通报情报"?'<span class="pill info">通报情报</span>':'<span class="pill">事件</span>'}</td>
-        <td>${esc(e.industry||"-")}</td>
-        <td>${sevPill(e.severity)}</td><td>${(e.attack_types||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")}</td>
-        <td>${statusPill(e.status)}</td><td>${e.completeness??"-"}</td><td class="muted">${esc(e.disclosed_date||"-")}</td>
-      </tr>`).join("")+`</tbody></table>`;
+    if(!rows.length){ document.getElementById("evTable").innerHTML=`<p class="muted">暂无${esc(REC())}。去「仪表盘」点“一键载入演示数据”,或到「采集」页跑一轮真实采集。</p>`; return; }
+    const cols=(UI&&UI.list_columns&&UI.list_columns.length)?UI.list_columns:
+      [{role:"title",label:"标题"},{role:"record_type",label:"类型"},{role:"dim1"},{role:"grade"},{role:"tags_a"},
+       {role:"status",label:"状态"},{role:"completeness",label:"完备度"},{role:"disclosed_date"}];
+    const adv=(UI&&UI.record_types&&UI.record_types.advisory&&UI.record_types.advisory.value)||"";
+    const cell=(e,c)=>{ const r=c.role; switch(r){
+      case "title": return esc(e.title||e.event_id);
+      case "record_type": return (adv&&e.record_type===adv)?`<span class="pill info">${esc(adv)}</span>`:`<span class="pill">${esc(e.record_type||REC())}</span>`;
+      case "status": return statusPill(e.status);
+      case "completeness": return e.completeness??"-";
+      case "grade": return sevPill(e.grade);
+      case "tags_a": case "tags_b": return (e[r]||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")||"-";
+      default: { const val=e[r]; const txt=Array.isArray(val)?val.join("、"):(val==null||val===""?"-":String(val));
+        return r.endsWith("_date")?`<span class="muted">${esc(txt)}</span>`:esc(txt); } } };
+    document.getElementById("evTable").innerHTML=`<table><thead><tr>${cols.map(c=>`<th>${esc(c.label||L(c.role))}</th>`).join("")}</tr></thead><tbody>`+
+      rows.map(e=>`<tr style="cursor:pointer" onclick="openEvent('${e.event_id}')">${cols.map(c=>`<td>${cell(e,c)}</td>`).join("")}</tr>`).join("")+`</tbody></table>`;
   }catch(e){ document.getElementById("evTable").innerHTML=`<p class="muted">${esc(e.message)}</p>`; }
 }
-function sevPill(s){ const m={"特别重大":"bad","重大":"bad","较大":"warn","一般":"info"};
-  return s?`<span class="pill ${m[s]||''}">${esc(s)}</span>`:"-"; }
-function statusPill(s){ const m={published:"ok",monitoring:"info",draft:"",closed:""};
-  const t={published:"已发布",monitoring:"跟踪中",draft:"草稿",closed:"已关闭"};
-  return `<span class="pill ${m[s]||''}">${t[s]||s}</span>`; }
 
 async function openEvent(id){
   try{
     const d=await api(`/events/${id}`); const p=d.payload||{};
-    const losses=["loss_L1","loss_L2","loss_L3","loss_L4","loss_L5"];
-    const lname={loss_L1:"L1 直接资金",loss_L2:"L2 收入/产量",loss_L3:"L3 处置成本",loss_L4:"L4 罚款诉讼",loss_L5:"L5 商业机会"};
+    const secs=(UI&&UI.detail_sections&&UI.detail_sections.length)?UI.detail_sections:
+      [{kind:"kv",roles:["subject","dim1","region","grade"]},{kind:"tags",roles:["tags_a","tags_b"]},{kind:"tristate"},{kind:"sources"}];
+    const ch=(UI&&UI.channels&&UI.channels.confirmed)?UI.channels:{claimed:"claimed_cny",estimated:"estimated_cny",confirmed:"confirmed_cny"};
     const money=(m)=>{ if(!m)return"未披露"; const f=(c)=>c?(c.point??c.low??"?"):null;
-      const parts=[]; if(f(m.confirmed_cny))parts.push(`<span class="pill ok">已确认 ${f(m.confirmed_cny)}</span>`);
-      if(f(m.estimated_cny))parts.push(`<span class="pill info">估算 ${f(m.estimated_cny)}</span>`);
-      if(f(m.claimed_cny))parts.push(`<span class="pill warn">声称 ${f(m.claimed_cny)}</span>`);
+      const parts=[]; if(f(m[ch.confirmed]))parts.push(`<span class="pill ok">已确认 ${f(m[ch.confirmed])}</span>`);
+      if(f(m[ch.estimated]))parts.push(`<span class="pill info">估算 ${f(m[ch.estimated])}</span>`);
+      if(f(m[ch.claimed]))parts.push(`<span class="pill warn">声称 ${f(m[ch.claimed])}</span>`);
       return parts.length?parts.join(" "):`<span class="muted">${esc(m.status||"未披露")}</span>`; };
-    const r=p.ransom||{};
-    drawer(`
-      <h3>${esc(p.title||id)}</h3>
-      <div class="kv">
-        <span class="lbl">事件编号</span><span class="mono">${id} ${statusPill(d.status)}</span>
-        <span class="lbl">单位/行业</span><span>${esc(p.org_name||"未披露")} / ${esc((p.industry||{}).level1||"-")}</span>
-        <span class="lbl">地区</span><span>${esc((p.region||{}).province||"-")}</span>
-        <span class="lbl">严重度</span><span>${sevPill(p.severity&&p.severity.level)}</span>
-        <span class="lbl">手段</span><span>${(p.attack_type||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")||"-"}</span>
-        <span class="lbl">后果</span><span>${(p.consequences||[]).map(a=>`<span class="tag">${esc(a)}</span>`).join("")||"-"}</span>
-        <span class="lbl">完备度</span><span>${d.completeness??"-"}</span>
-      </div>
-      <div class="lossbox"><b>赎金(要求≠损失)</b><br>
-        ${r.applicable?`要求:${r.demanded_amount??"?"} ${esc(r.demanded_currency||"")} · 是否支付:${esc(r.paid||"未披露")}`:'<span class="muted">非勒索事件</span>'}
-      </div>
-      <b style="font-size:13px">损失六分类</b>
-      ${losses.map(k=>`<div class="lossbox"><b>${lname[k]}</b><br>${money(p[k])}</div>`).join("")}
-      <b style="font-size:13px">可售产品映射</b>
-      <div style="margin:6px 0">${(p.sellable_mapping||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join("")||'<span class="muted">无</span>'}</div>
-      <b style="font-size:13px">来源</b>
-      <div style="margin:6px 0">${(p.sources||[]).map(s=>`<div class="muted mono">[${esc(s.credibility)}] ${esc(s.url_or_doc_number||s.publisher||"")}</div>`).join("")||'<span class="muted">无</span>'}</div>
-      <details style="margin-top:10px"><summary class="muted">查看完整 JSON</summary><pre>${esc(JSON.stringify(p,null,2))}</pre></details>
-    `);
+    const fmt=(v)=>(v==null||v==="")?"-":(Array.isArray(v)?v.map(x=>(x&&typeof x==="object")?JSON.stringify(x):x).join("、"):((typeof v==="object")?JSON.stringify(v):String(v)));
+    let html=`<h3>${esc(p.title||id)}</h3>
+      <div class="kv"><span class="lbl">${esc(REC())}编号</span><span class="mono">${id} ${statusPill(d.status)}</span>
+        <span class="lbl">完备度</span><span>${d.completeness??"-"}</span></div>`;
+    for(const sec of secs){
+      if(sec.kind==="kv"){
+        html+=`<div class="kv">${(sec.roles||[]).map(r=>{ const v=roleVal(p,r);
+          return `<span class="lbl">${esc(L(r))}</span><span>${r==="grade"?sevPill(v):esc(fmt(v))}</span>`; }).join("")}</div>`;
+      }else if(sec.kind==="tags"){
+        html+=`<div class="kv">${(sec.roles||[]).map(r=>{ const v=roleVal(p,r); const arr=Array.isArray(v)?v:(v?[v]:[]);
+          return `<span class="lbl">${esc(L(r))}</span><span>${arr.map(a=>`<span class="tag">${esc(fmt(a))}</span>`).join("")||"-"}</span>`; }).join("")}</div>`;
+      }else if(sec.kind==="tristate"){
+        const fsl=(UI&&UI.tristate_fields)||[]; const lb=(UI&&UI.tristate_labels)||{};
+        if(fsl.length) html+=`<b style="font-size:13px">${esc(sec.label||"关键断言(三态:声称/估算/确认)")}</b>`+
+          fsl.map(k=>`<div class="lossbox"><b>${esc(lb[k]||k)}</b><br>${money(p[k])}</div>`).join("");
+      }else if(sec.kind==="object"){
+        const o=getPath(p,sec.path)||{}; const keys=sec.keys||{};
+        html+=`<div class="lossbox"><b>${esc(sec.label||sec.path)}</b><br>${Object.keys(keys).length?
+          Object.entries(keys).map(([k,l])=>`${esc(l)}:${esc(fmt(o[k]))}`).join(" · "):esc(fmt(o))}</div>`;
+      }else if(sec.kind==="text"){
+        html+=`<b style="font-size:13px">${esc(sec.label||sec.path)}</b><div style="margin:6px 0;white-space:pre-wrap">${esc(fmt(getPath(p,sec.path)))}</div>`;
+      }else if(sec.kind==="list"){
+        const arr=getPath(p,sec.path)||[];
+        html+=`<b style="font-size:13px">${esc(sec.label||sec.path)}</b><div style="margin:6px 0">${(Array.isArray(arr)?arr:[arr]).map(x=>`<span class="tag">${esc(fmt(x))}</span>`).join("")||'<span class="muted">无</span>'}</div>`;
+      }else if(sec.kind==="sources"){
+        html+=`<b style="font-size:13px">来源</b><div style="margin:6px 0">${(p.sources||[]).map(x=>`<div class="muted mono">[${esc(x.credibility)}] ${esc(x.url_or_doc_number||x.publisher||"")}</div>`).join("")||'<span class="muted">无</span>'}</div>`;
+      }
+    }
+    html+=`<details style="margin-top:10px"><summary class="muted">查看完整 JSON</summary><pre>${esc(JSON.stringify(p,null,2))}</pre></details>`;
+    drawer(html);
   }catch(e){ toast(e.message); }
 }
 
@@ -578,7 +639,7 @@ async function vSources(){
           <option value="S3" selected>S3 专业媒体</option><option value="S4">S4 需佐证</option></select>
         <button onclick="addSource()" id="nsBtn">添加</button>
       </div>
-      <p class="sub" style="margin:8px 0 0">🎯 入口链接尽量填到<b>具体栏目页</b>(如 .../zhifa/index.htm),而不是网站首页——首页抓到的是要闻/领导活动,与安全事件无关。只填了根地址也可以:系统会自动识别该站的相关栏目,也可以加完后点「立即定位栏目」。<br>
+      <p class="sub" style="margin:8px 0 0">🎯 入口链接尽量填到<b>具体栏目页</b>(如 .../zhifa/index.htm),而不是网站首页——首页抓到的是要闻/领导活动,与需求无关。只填了根地址也可以:系统会自动识别该站的相关栏目,也可以加完后点「立即定位栏目」。<br>
         适配器自动选择:页面型优先探测 RSS、无 RSS 用通用列表解析并自动翻页;检索型走搜索引擎。同域已存在则自动合并,不重复建。<br>
         📱 公众号:直接把一条该号的文章链接粘到"入口链接"即可,系统会自动识别出它属于哪个公众号并持续跟踪该号(不是只存这一篇)。</p>
       <div id="nsMsg" class="sub" style="margin-top:6px"></div>
@@ -1208,9 +1269,9 @@ async function showCoverage(){
     box.innerHTML=`<div class="card" style="padding:12px">
       <b>📊 覆盖度盘点</b> <span class="muted">近 ${c.window_days} 天,低于 ${c.min_events} 条即判为空白</span>
       <div style="margin:6px 0">源 ${c.sources_total} 个(生效 ${c.sources_active},其中近期真正出过内容 <b>${c.sources_producing}</b>)
-        ｜覆盖空白行业 <b>${c.gap_count}</b> 个</div>
+        ｜覆盖空白 <b>${c.gap_count}</b> 个</div>
       <div style="max-height:320px;overflow:auto"><table><thead><tr>
-        <th>行业</th><th style="text-align:right">近期事件</th><th>覆盖</th><th>二级分类</th>
+        <th>${esc(c.dimension_label||"分类")}</th><th style="text-align:right">近期${esc(REC())}</th><th>覆盖</th><th>子项</th>
       </tr></thead><tbody>${rows}</tbody></table></div>
       ${c.prospect_queries.length?`<details style="margin-top:8px"><summary class="muted">
         据此自动生成的找源方向词 ${c.prospect_queries.length} 条(点「🧭 主动找源」时会一起跑)</summary>
@@ -1330,19 +1391,20 @@ async function loadDigest(day){
     if(!r.exists){ body.innerHTML=`<span class="muted">${esc(r.note||"暂无日报")}</span>`; return; }
     const c=r.content;
     const chip=(t)=>`<span class="pill info" style="margin:2px">${esc(t)}</span>`;
+    const lb=c.labels||{}; const rec=lb.record||REC(); const g0=(lb.group_roles||["dim1"])[0]; const g0l=lb[g0]||L("dim1","分类");
     body.innerHTML=`<div style="font-size:15px;margin-bottom:8px"><b>${r.day}</b>
         ${r.delivered?'<span class="pill ok">已推送</span>':''}</div>
-      <div style="margin-bottom:10px">今日新增事件 <b>${c.events_total}</b> 条 ｜ 通报情报 <b>${c.advisories_total||0}</b> 条 ｜ 线索 <b>${c.leads_total}</b> 条 ｜ 新入库文档 <b>${(c.crawl||{}).new_docs||0}</b> 篇</div>
-      ${(c.top_advisories||[]).length?`<h3 style="font-size:14px;margin-top:10px">通报情报(近期重点方向)</h3>
+      <div style="margin-bottom:10px">今日新增${esc(rec)} <b>${c.events_total}</b> 条${lb.advisory?` ｜ ${esc(lb.advisory)} <b>${c.advisories_total||0}</b> 条`:""}${lb.leads_enabled?` ｜ 线索 <b>${c.leads_total}</b> 条`:""} ｜ 新入库文档 <b>${(c.crawl||{}).new_docs||0}</b> 篇</div>
+      ${(c.top_advisories||[]).length?`<h3 style="font-size:14px;margin-top:10px">${esc(lb.advisory||"汇总情报")}(近期重点方向)</h3>
         <ul style="margin:0;padding-left:18px">${c.top_advisories.map(a=>
-          `<li style="margin:2px 0">${esc(a.title||'(无题)')} <span class="muted">${esc(a.occurred||'时间未披露')} · ${esc((a.consequences||[]).slice(0,3).join('、')||'—')}</span></li>`).join("")}</ul>`:''}
-      ${(c.hot_industries||[]).length?`<h3 style="font-size:14px">行业热点</h3><div>${c.hot_industries.map(([n,k])=>chip(n+" "+k)).join("")}</div>`:''}
-      ${(c.top_events||[]).length?`<h3 style="font-size:14px;margin-top:10px">重点事件</h3>
-        <table><thead><tr><th>单位</th><th>行业</th><th>严重度</th><th>攻击</th><th>状态</th></tr></thead><tbody>
-        ${c.top_events.map(e=>`<tr><td>${esc(e.org||"—")}</td><td>${esc(e.industry||"—")}</td>
-          <td>${esc(e.severity||"—")}</td><td>${esc((e.attack_types||[]).join("、")||"—")}</td>
+          `<li style="margin:2px 0">${esc(a.title||'(无题)')} <span class="muted">${esc(a.occurred||'时间未披露')} · ${esc((a.tags_b||[]).slice(0,3).join('、')||'—')}</span></li>`).join("")}</ul>`:''}
+      ${(c.hot_groups||[]).length?`<h3 style="font-size:14px">${esc(g0l)}热点</h3><div>${c.hot_groups.map(([n,k])=>chip(n+" "+k)).join("")}</div>`:''}
+      ${(c.top_events||[]).length?`<h3 style="font-size:14px;margin-top:10px">重点${esc(rec)}</h3>
+        <table><thead><tr><th>${esc(lb.subject||"主体")}</th><th>${esc(lb.dim1||"分类")}</th><th>${esc(lb.grade||"等级")}</th><th>${esc(lb.tags_a||"标签")}</th><th>状态</th></tr></thead><tbody>
+        ${c.top_events.map(e=>`<tr><td>${esc(e.subject||e.title||"—")}</td><td>${esc(e.dim1||"—")}</td>
+          <td>${esc(e.grade||"—")}</td><td>${esc((e.tags_a||[]).join("、")||"—")}</td>
           <td>${esc(e.status||"")}</td></tr>`).join("")}</tbody></table>`:''}
-      ${(c.top_leads||[]).length?`<h3 style="font-size:14px;margin-top:10px">销售线索(评分Top)</h3>
+      ${(c.top_leads||[]).length?`<h3 style="font-size:14px;margin-top:10px">线索(评分Top)</h3>
         <table><thead><tr><th>目标</th><th>窗口期</th><th>评分</th><th>建议产品</th></tr></thead><tbody>
         ${c.top_leads.map(l=>`<tr><td>${esc(l.org)}</td><td>${esc(l.stage||"")}</td>
           <td>${l.score}</td><td>${esc((l.products||[]).join("、")||"—")}</td></tr>`).join("")}</tbody></table>`:''}

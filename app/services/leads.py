@@ -1,105 +1,151 @@
-"""线索引擎(M8 / 方案 12.3):四维产品映射 + 评分 + 采购窗口三阶段。"""
+"""线索引擎(通用平台 · 输出层):多维映射 + 评分 + 时间窗阶段。
+
+映射规则文件、评分权重、窗口阶段、匹配维度、话术模板全部来自画像 `outputs.leads_engine`;
+`enabled=false` 的需求整段不产线索。引擎里不再有任何行业字面量。
+"""
 from datetime import date
 
 import yaml
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models import Event, Lead
-from app.services import url_tools
-
-_SEVERITY_W = {"特别重大": 1.0, "重大": 0.85, "较大": 0.65, "一般": 0.45, "未定级": 0.35}
-_SIZE_W = {"特大": 1.0, "大": 0.85, "中": 0.6, "小微": 0.35, "未知": 0.5}
-_STAGE_W = {"应急期": 1.0, "整改期": 0.9, "预算期": 0.6, "已过窗": 0.2}
+from app.services import need_ctx
+from app.services.need_ctx import dget
 
 
-def load_mapping_rules(path=None) -> list[dict]:
-    path = path or settings.config_dir / "product_mapping.yaml"
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f).get("rules", [])
+def _ctx(ctx=None, db=None, need_id: str | None = None):
+    return ctx or need_ctx.get(db, need_id or need_ctx.default_need_id())
 
 
-def window_stage(disclosed: date | None, today: date | None = None) -> str:
-    """采购窗口三阶段(12.3)。"""
+def load_mapping_rules(path=None, ctx=None) -> list[dict]:
+    c = _ctx(ctx)
+    p = path or c.path(c.leads.get("mapping_file"))
+    if not p:
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            return (yaml.safe_load(f) or {}).get("rules", [])
+    except OSError:
+        return []
+
+
+def window_stage(disclosed: date | None, today: date | None = None, ctx=None) -> str:
+    """时间窗阶段:按画像 window_stages 的 max_days 递进;max_days=null 的是"已过窗"。"""
+    stages = _ctx(ctx).leads.get("window_stages") or []
+    if not stages:
+        return "整改期"
+    bounded = [s for s in stages if s.get("max_days") is not None]
     if not disclosed:
-        return "整改期"
+        return bounded[1]["name"] if len(bounded) > 1 else stages[0]["name"]
     days = ((today or date.today()) - disclosed).days
-    if days <= 30:
-        return "应急期"
-    if days <= 180:
-        return "整改期"
-    if days <= 540:
-        return "预算期"
-    return "已过窗"
+    for s in bounded:
+        if days <= int(s["max_days"]):
+            return s["name"]
+    return stages[-1]["name"]
 
 
-def _match_rule(rule: dict, payload: dict) -> bool:
-    """四维匹配:手段×入口×根因×后果,规则内各维为 OR,维间为 AND。"""
-    checks = {
-        "attack_type": set(payload.get("attack_type") or []),
-        "consequences": set(payload.get("consequences") or []),
-        "entry_vector": {e.get("vector") for e in payload.get("entry_vector") or []},
-        "root_cause": {url_tools.dget(payload, "root_cause", "category")},
-        "security_controls": {c.get("control") for c in payload.get("security_controls") or []
-                              if c.get("status") in ("缺位", "在位但失效", "在位被绕过")},
-    }
-    for dim, wanted in rule.get("match", {}).items():
-        have = checks.get(dim, set())
+def _stage_weight(stage: str, ctx) -> float:
+    for s in ctx.leads.get("window_stages") or []:
+        if s.get("name") == stage:
+            return float(s.get("weight", 0.5))
+    return 0.5
+
+
+def _dim_values(payload: dict, spec: dict) -> set:
+    """按画像 match_dims 的一条规格,从 payload 里取出该维度的取值集合。"""
+    val = dget(payload, str(spec.get("path") or ""))
+    item_key, status_key, status_in = spec.get("item_key"), spec.get("status_key"), spec.get("status_in")
+    if isinstance(val, list):
+        out = set()
+        for it in val:
+            if isinstance(it, dict):
+                if status_key and status_in and it.get(status_key) not in set(status_in):
+                    continue
+                out.add(it.get(item_key) if item_key else None)
+            else:
+                out.add(it)
+        return {x for x in out if x is not None}
+    return {val} if val not in (None, "", {}) else set()
+
+
+def _match_rule(rule: dict, payload: dict, ctx=None) -> bool:
+    """多维匹配:规则内各维为 OR,维间为 AND;维度定义来自画像 match_dims。"""
+    c = _ctx(ctx)
+    dims = c.leads.get("match_dims") or {}
+    for dim, wanted in (rule.get("match") or {}).items():
+        spec = dims.get(dim) or {"path": dim}
+        have = _dim_values(payload, spec)
         if wanted and not (set(wanted) & have):
             return False
     return True
 
 
-def map_products(payload: dict, rules: list[dict] | None = None) -> list[str]:
-    rules = rules if rules is not None else load_mapping_rules()
+def map_products(payload: dict, rules: list[dict] | None = None, ctx=None) -> list[str]:
+    c = _ctx(ctx)
+    rules = rules if rules is not None else load_mapping_rules(ctx=c)
     products: list[str] = []
     for rule in rules:
-        if _match_rule(rule, payload):
+        if _match_rule(rule, payload, c):
             for p in rule.get("products", []):
                 if p not in products:
                     products.append(p)
     return products
 
 
-def score_lead(ev: Event, stage: str, products: list[str], reachable_bonus: float = 0.0) -> float:
-    """线索分 = 严重度 × 窗口权重 × 匹配度 × 规模 ×(1+可触达加分),映射到 0-100。"""
-    sev = _SEVERITY_W.get(ev.severity or "未定级", 0.35)
-    stg = _STAGE_W.get(stage, 0.5)
+def score_lead(ev: Event, stage: str, products: list[str], reachable_bonus: float = 0.0, ctx=None) -> float:
+    """线索分 = 等级 × 窗口权重 × 匹配度 × 规模 ×(1+可触达加分),映射到 0-100。"""
+    c = _ctx(ctx, need_id=ev.need_id)
+    gw, sw = c.leads.get("grade_weights") or {}, c.leads.get("size_weights") or {}
+    sev = float(gw.get(ev.severity or "", 0.35)) if gw else 0.5
+    stg = _stage_weight(stage, c)
     match = min(1.0, 0.3 + 0.14 * len(products))
-    size = _SIZE_W.get(ev.org_size or "未知", 0.5)
+    size = float(sw.get(ev.org_size or "未知", 0.5)) if sw else 0.5
     return round(100 * sev * stg * match * size * (1 + reachable_bonus), 1)
 
 
-def talk_track(ev: Event, products: list[str]) -> str:
+def talk_track(ev: Event, products: list[str], ctx=None) -> str:
+    c = _ctx(ctx, need_id=ev.need_id)
     p = ev.payload or {}
     facts = []
-    if ev.industry_l1:
-        facts.append(f"同行业({ev.industry_l1})近期发生:{p.get('title','安全事件')}")
-    for f in ("loss_L4", "loss_L2", "loss_L1"):
-        money = p.get(f) or {}
-        if money.get("status") not in (None, "未披露", "无此类损失"):
-            facts.append(f"{f} 状态:{money.get('status')}")
-    if url_tools.dget(p, "ransom", "demanded_amount"):
-        facts.append(f"攻击者要求赎金 {p['ransom']['demanded_amount']}(注意:要求≠损失)")
-    facts.append(f"建议切入:{'、'.join(products[:5]) or '待产品映射'}")
-    facts.append("话术仅引用公开来源事实,禁止贬损任何在位厂商")
+    for f in (c.leads.get("talk_track") or {}).get("facts") or []:
+        kind, tpl = f.get("kind"), str(f.get("template") or "{v}")
+        if kind == "dim1":
+            v = c.get_role(p, "dim1")
+            if v:
+                facts.append(tpl.format(v=v, title=p.get("title", "")))
+        elif kind == "tristate_status":
+            for fld in f.get("fields") or []:
+                money = p.get(fld) or {}
+                if isinstance(money, dict) and money.get("status") not in (None, "未披露", "无此类损失"):
+                    facts.append(tpl.format(f=fld, status=money.get("status")))
+        elif kind == "path":
+            v = dget(p, str(f.get("path") or ""))
+            if v:
+                facts.append(tpl.format(v=v))
+        elif kind == "products":
+            facts.append(tpl.format(products="、".join(products[:5]) or "待映射"))
+        elif kind == "text":
+            facts.append(tpl)
     return ";".join(facts)
 
 
-def generate_leads(db: Session, ev: Event, rules: list[dict] | None = None) -> list[Lead]:
-    """事件发布/更新后生成或刷新线索(victim 类;same_product 待企业库集成)。"""
-    payload = ev.payload or {}
-    products = map_products(payload, rules)
-    # 回写 D5 可售映射(自动初筛,人工在复核台确认)
-    if products and payload.get("sellable_mapping") != products:
-        payload = dict(payload)
-        payload["sellable_mapping"] = products
-        ev.payload = payload
-    stage = window_stage(ev.disclosed_date)
-    org = ev.org_name or "未披露"
-    if org == "未披露":
+def generate_leads(db: Session, ev: Event, rules: list[dict] | None = None, ctx=None) -> list[Lead]:
+    """记录发布/更新后生成或刷新线索。画像未开启线索引擎的需求直接返回空。"""
+    c = _ctx(ctx, db, ev.need_id)
+    if not c.leads.get("enabled"):
         return []
-    score = score_lead(ev, stage, products)
+    payload = ev.payload or {}
+    products = map_products(payload, rules, c)
+    wb = c.leads.get("write_back_field")            # 画像可声明把匹配到的产品回写到记录的哪个字段
+    if wb and products and payload.get(wb) != products:
+        payload = dict(payload)
+        payload[wb] = products
+        ev.payload = payload
+    stage = window_stage(ev.disclosed_date, ctx=c)
+    org = str(c.get_role(payload, c.leads.get("subject_role") or "subject") or ev.org_name or "未披露")
+    if org in ("", "未披露", "未知"):
+        return []
+    score = score_lead(ev, stage, products, ctx=c)
     existing = db.query(Lead).filter_by(event_id=ev.event_id, target_org=org).one_or_none()
     if existing:
         existing.score = score
@@ -109,7 +155,7 @@ def generate_leads(db: Session, ev: Event, rules: list[dict] | None = None) -> l
         return [existing]
     lead = Lead(need_id=ev.need_id, event_id=ev.event_id, target_org=org, target_kind="victim",
                 score=score, window_stage=stage, products=products,
-                talk_track=talk_track(ev, products))
+                talk_track=talk_track(ev, products, c))
     db.add(lead)
     db.flush()
     return [lead]
@@ -117,15 +163,17 @@ def generate_leads(db: Session, ev: Event, rules: list[dict] | None = None) -> l
 
 def refresh_window_stages(db: Session, need_id: str) -> int:
     """每日重算窗口阶段与评分(过期自动降级)。"""
+    c = need_ctx.get(db, need_id)
     n = 0
     for lead in db.query(Lead).filter(Lead.need_id == need_id,
                                       Lead.status.in_(["new", "dispatched", "followed"])).all():
         ev = db.get(Event, lead.event_id)
-        stage = window_stage(ev.disclosed_date)
+        stage = window_stage(ev.disclosed_date, ctx=c)
         if stage != lead.window_stage:
             lead.window_stage = stage
-            lead.score = score_lead(ev, stage, lead.products or [])
-            if stage == "已过窗" and lead.status == "new":
+            lead.score = score_lead(ev, stage, lead.products or [], ctx=c)
+            last = (c.leads.get("window_stages") or [{}])[-1].get("name")
+            if stage == last and lead.status == "new":
                 lead.status = "dropped"
             n += 1
     db.flush()

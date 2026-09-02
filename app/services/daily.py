@@ -26,9 +26,19 @@ def _already_ran_today(db, need_id: str, day) -> bool:
 def _tick():
     """每分钟检查:到点就跑当天该跑的事(采集 / 源库自动运维),已跑过的不重复。"""
     now = datetime.utcnow()
-    need_id = settings.daily_need_id
-    _daily_crawl(need_id, now)
-    _autopilot(need_id, now)
+    for need_id in daily_need_ids():
+        _daily_crawl(need_id, now)
+        _autopilot(need_id, now)
+
+
+def daily_need_ids() -> list[str]:
+    """每日自动跑哪些需求:DAILY_NEED_ID 可逗号分隔多个;缺省=平台默认需求。"""
+    raw = str(getattr(settings, "daily_need_id", "") or "")
+    ids = [x.strip() for x in raw.split(",") if x.strip()]
+    if ids:
+        return ids
+    from app.services import need_ctx
+    return [need_ctx.default_need_id()]
 
 
 def _daily_crawl(need_id: str, now: datetime):

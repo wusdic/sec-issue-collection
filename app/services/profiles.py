@@ -181,12 +181,55 @@ def get_active_dictionaries(db: Session, need_id: str) -> dict:
     return rel.content if rel else {}
 
 
-def default_sec_events_paths() -> dict:
-    c = settings.config_dir
+def need_paths(need_id: str | None = None) -> dict:
+    """某需求的画像/词表/关键词/种子源/产品映射文件路径(全部由画像声明;缺省需求 = settings.default_need_id)。"""
+    from app.services import need_ctx
+    need_id = need_id or need_ctx.default_need_id()
+    ctx = need_ctx.get(None, need_id)
+    profile = None
+    for f in need_ctx.profile_files():
+        try:
+            if ((yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get("need") or {}).get("id") == need_id:
+                profile = f
+                break
+        except (OSError, yaml.YAMLError):
+            continue
     return {
-        "profile": c / "need_sec_events.yaml",
-        "dictionaries": settings.schema_dir / "dictionaries.yaml",
-        "keywords": c / "keyword_matrix.yaml",
-        "sources": c / "seed_sources.yaml",
-        "product_mapping": c / "product_mapping.yaml",
+        "profile": profile or (settings.config_dir / f"need_{need_id}.yaml"),
+        "dictionaries": ctx.dictionaries_file,
+        "keywords": ctx.discovery_terms_file,
+        "sources": ctx.seed_file,
+        "product_mapping": ctx.path(ctx.leads.get("mapping_file")),
     }
+
+
+def all_profile_files() -> list[Path]:
+    """config/need_*.yaml 里全部画像文件(不含模板)。"""
+    from app.services import need_ctx
+    return need_ctx.profile_files()
+
+
+def setup_need(db: Session, need_id: str | None = None, activate: bool = True) -> dict:
+    """按画像把一个需求装起来:注册画像 + 载词表 + 载关键词 + 载种子源(全部幂等;文件缺的跳过)。"""
+    from app.services import need_ctx
+    paths = need_paths(need_id)
+    if not paths["profile"] or not Path(paths["profile"]).exists():
+        raise ProfileError(f"找不到画像文件:{paths['profile']}")
+    cfg = load_profile_file(paths["profile"])
+    np = register_need(db, cfg, activate=activate)
+    need_ctx.reset_cache()
+    out = {"need_id": np.id, "name": np.name, "dictionaries": False, "keywords": False, "seed_sources": 0}
+    if paths["dictionaries"] and Path(paths["dictionaries"]).exists():
+        load_dictionaries(db, np.id, paths["dictionaries"])
+        out["dictionaries"] = True
+    if paths["keywords"] and Path(paths["keywords"]).exists():
+        load_keyword_set(db, np.id, paths["keywords"])
+        out["keywords"] = True
+    if paths["sources"] and Path(paths["sources"]).exists():
+        out["seed_sources"] = load_seed_sources(db, np.id, paths["sources"])
+    db.flush()
+    return out
+
+
+def active_need_ids(db: Session) -> list[str]:
+    return [n.id for n in db.query(NeedProfile).filter_by(active=True).all()]

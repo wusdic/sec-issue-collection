@@ -42,8 +42,13 @@ STEPS = [
 _LABELS = {k: v for k, v, _w in STEPS}
 
 
+def _default_need() -> str:
+    from app.services import need_ctx
+    return need_ctx.default_need_id()
+
+
 def _rec(db, step: str, status: str, summary: dict | None = None, note: str = ""):
-    row = AutoOpsRun(need_id=_need or "sec_events", task=f"{TASK}:{step}", status=status,
+    row = AutoOpsRun(need_id=_need or _default_need(), task=f"{TASK}:{step}", status=status,
                      summary=summary or {}, note=note[:2000] or None,
                      finished_at=None if status == "running" else datetime.utcnow())
     try:
@@ -96,7 +101,8 @@ def _step_seeds(db):
 def _step_engines(db):
     from app.services import fetcher, prospect
     with fetcher.render_session():
-        r = prospect.selftest(db, "网警 处罚")
+        from app.services import need_ctx
+        r = prospect.selftest(db, ctx=need_ctx.get(db, _need or _default_need()))
         r["applied"] = prospect.apply_selftest(db, r)
     db.commit()
     return {"usable": r["usable"], "tested": r["tested"],
@@ -177,7 +183,8 @@ _ACTIONS = {"seeds": _step_seeds, "engines": _step_engines, "dedup": _step_dedup
 
 # ---------------- 编排 ----------------
 
-def status(db, need_id: str = "sec_events") -> dict:
+def status(db, need_id: str | None = None) -> dict:
+    need_id = need_id or _default_need()
     """首次流程的进度/结果。切页、刷新、重启都能接着看(状态在 AutoOpsRun 里)。"""
     rows = (db.query(AutoOpsRun)
             .filter(AutoOpsRun.need_id == need_id, AutoOpsRun.task.like(f"{TASK}:%"))
@@ -201,7 +208,8 @@ def status(db, need_id: str = "sec_events") -> dict:
             "precheck": precheck(db)}
 
 
-def start(need_id: str = "sec_events", skip_crawl: bool = False) -> dict:
+def start(need_id: str | None = None, skip_crawl: bool = False) -> dict:
+    need_id = need_id or _default_need()
     """启动首次流程(后台)。前置检查不通过直接拒绝,并说明该改什么。"""
     if _running.is_set():
         return {"started": False, "note": "首次流程已经在跑了"}

@@ -178,7 +178,9 @@ def _do_seeds(db, need_id: str) -> dict:
     升级后新增的内置源不该还要人去跑一次 CLI —— 载入是幂等的,已有的不动、只补新的。
     """
     from app.services import profiles
-    paths = profiles.default_sec_events_paths()
+    paths = profiles.need_paths(need_id)
+    if not paths["sources"] or not paths["sources"].exists():
+        return {"in_file": 0, "added": 0, "total": db.query(Source).count(), "skipped": "画像未声明种子源文件"}
     in_file = profiles.count_seed_sources(paths["sources"])
     before = db.query(Source).count()
     profiles.load_seed_sources(db, need_id, paths["sources"])

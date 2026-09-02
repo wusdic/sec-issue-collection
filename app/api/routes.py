@@ -22,20 +22,27 @@ from app.services import wechat
 from app.services.errors import error_headline
 from app.services.events import PublishError, log_change, update_payload
 from app.services.extraction import load_record_schema
+from app.services import need_ctx
 from app.services.profiles import get_active_profile
 
 api = APIRouter(prefix="/api/v1")
 
 
 def _record_schema(db: Session, need_id: str) -> dict:
-    cfg = get_active_profile(db, need_id).config
-    schema_file = (cfg.get("record_schemas") or [{}])[0].get("file") or str(settings.schema_dir / "event.schema.json")
-    return load_record_schema(schema_file)
+    return load_record_schema(need_ctx.for_need(get_active_profile(db, need_id)).schema_file)
 
 
 def _confirm_allowed(db: Session, need_id: str) -> list[str]:
-    cfg = get_active_profile(db, need_id).config
-    return ((cfg.get("sources") or {}).get("credibility_levels") or {}).get("confirm_allowed") or ["S1", "S2"]
+    return need_ctx.for_need(get_active_profile(db, need_id)).confirm_allowed
+
+
+def need_id_param(need_id: str | None = Query(None)) -> str:
+    """查询参数 need_id 缺省 = 平台默认需求(设置项 default_need_id)。"""
+    return need_id or need_ctx.default_need_id()
+
+
+def _nid(v: str | None) -> str:
+    return v or need_ctx.default_need_id()
 
 
 # ---------- 认证 ----------
@@ -101,7 +108,7 @@ class SourceIn(BaseModel):
     credibility: str = "S3"
     tier: str = "B"
     note: str | None = None
-    need_id: str = "sec_events"
+    need_id: str | None = None
 
 
 @api.post("/sources", status_code=201)
@@ -136,7 +143,7 @@ def create_source(body: SourceIn, db: Session = Depends(get_session),
             raise HTTPException(422, "公众号源需要公众号名称,或粘贴一条该号的文章链接")
         ident = f"mp:{account}"
         if dup := db.query(Source).filter_by(identity_key=ident).one_or_none():
-            dup.serves_needs = sorted(set(dup.serves_needs or []) | {body.need_id})
+            dup.serves_needs = sorted(set(dup.serves_needs or []) | {_nid(body.need_id)})
             if dup.lifecycle == "retired":
                 dup.lifecycle = "active"
             db.commit()
@@ -145,7 +152,7 @@ def create_source(body: SourceIn, db: Session = Depends(get_session),
                      adapter="sogou_wechat",
                      adapter_config={"account": account, "list_order": "relevance"},
                      credibility=body.credibility, tier=body.tier, lifecycle="active",
-                     serves_needs=[body.need_id], identity_key=ident, site_key=ident,
+                     serves_needs=[_nid(body.need_id)], identity_key=ident, site_key=ident,
                      manual_assist=False, note=body.note or f"公众号:{account}",
                      discovered_from="manual")
         db.add(src)
@@ -158,14 +165,14 @@ def create_source(body: SourceIn, db: Session = Depends(get_session),
     site_key, ident = url_tools.source_keys(kind, entry)
     # 只在"同一栏目"(identity_key 相同)时合并;同站不同栏目(site_key 同、identity_key 异)各算一条
     if ident and (dup := db.query(Source).filter_by(identity_key=ident).one_or_none()):
-        dup.serves_needs = sorted(set(dup.serves_needs or []) | {body.need_id})
+        dup.serves_needs = sorted(set(dup.serves_needs or []) | {_nid(body.need_id)})
         if dup.lifecycle == "retired":
             dup.lifecycle = "active"
         db.commit()
         return {"id": dup.id, "merged": True, "name": dup.name}
     src = Source(name=body.name.strip(), entry_url=entry, kind=kind, adapter=adapter,
                  adapter_config={}, credibility=body.credibility, tier=body.tier,
-                 lifecycle="active", serves_needs=[body.need_id],
+                 lifecycle="active", serves_needs=[_nid(body.need_id)],
                  identity_key=ident, site_key=site_key, manual_assist=False, note=body.note,
                  discovered_from="manual")
     db.add(src)
@@ -229,7 +236,7 @@ def restore_source(source_id: int, db: Session = Depends(get_session),
 
 
 @api.post("/sources/health-check")
-def start_health_check(need_id: str = "sec_events",
+def start_health_check(need_id: str = Depends(need_id_param),
                        _: AppUser = Depends(require_roles("analyst"))):
     """启动"一键体检"后台任务(立即返回)。进度用 GET /sources/health-check 查询。"""
     from app.services import health
@@ -251,7 +258,7 @@ def cancel_health_check(_: AppUser = Depends(require_roles("analyst"))):
 
 
 @api.post("/sources/locate-columns")
-def start_locate_columns(need_id: str = "sec_events", force: bool = False,
+def start_locate_columns(need_id: str = Depends(need_id_param), force: bool = False,
                          _: AppUser = Depends(require_roles("analyst"))):
     """启动"批量精准定位栏目"后台任务:把只填了根地址的源逐个定位到具体栏目(立即返回)。"""
     from app.services import locate
@@ -259,7 +266,7 @@ def start_locate_columns(need_id: str = "sec_events", force: bool = False,
 
 
 @api.get("/sources/locate-columns")
-def locate_columns_status(need_id: str = "sec_events", db: Session = Depends(get_session),
+def locate_columns_status(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                           _: AppUser = Depends(current_user)):
     """定位进度 + 当前还有多少源没精准到栏目。"""
     from app.services import locate
@@ -277,7 +284,7 @@ def cancel_locate_columns(_: AppUser = Depends(require_roles("analyst"))):
 
 
 @api.post("/sources/prospect")
-def start_prospect(need_id: str = "sec_events",
+def start_prospect(need_id: str = Depends(need_id_param),
                    _: AppUser = Depends(require_roles("analyst"))):
     """启动"主动找源"后台任务:用找源专用检索词去搜索引擎捞新渠道 → LLM 相关度初评 → 评分自动入库。
 
@@ -301,7 +308,8 @@ def cancel_prospect(_: AppUser = Depends(require_roles("analyst"))):
 
 
 @api.post("/sources/prospect/selftest")
-def prospect_selftest(query: str = "网警 处罚", apply: bool = True,
+def prospect_selftest(query: str | None = None, apply: bool = True,
+                      need_id: str = Depends(need_id_param),
                       _: AppUser = Depends(require_roles("analyst"))):
     """启动找源路径自检(后台跑,立即返回)。
 
@@ -310,7 +318,7 @@ def prospect_selftest(query: str = "网警 处罚", apply: bool = True,
     apply=True(默认)时结论直接落到引擎列表——已经算出来的结论不该再丢回给人抄一遍。
     """
     from app.services import prospect
-    return prospect.selftest_start("sec_events", query, apply=apply)
+    return prospect.selftest_start(need_id, query, apply=apply)
 
 
 @api.get("/sources/prospect/selftest")
@@ -322,17 +330,18 @@ def prospect_selftest_status(db: Session = Depends(get_session),
 
 
 @api.get("/sources/prospect/queries")
-def prospect_queries(need_id: str = "sec_events", db: Session = Depends(get_session),
+def prospect_queries(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                      _: AppUser = Depends(current_user)):
     """本轮会用的找源检索词 = 人工维护的基础词 + 覆盖空白自动生成的方向词。"""
     from app.services import coverage, prospect
-    base = prospect.base_queries()
-    auto = coverage.prospect_queries(db, need_id)
+    ctx = need_ctx.get(db, need_id)
+    base = prospect.base_queries(ctx)
+    auto = coverage.prospect_queries(db, need_id, ctx=ctx)
     return {"base": base, "from_coverage": auto, "total": len(prospect.build_queries(db, need_id))}
 
 
 @api.get("/coverage")
-def coverage_summary(need_id: str = "sec_events", days: int | None = None,
+def coverage_summary(need_id: str = Depends(need_id_param), days: int | None = None,
                      db: Session = Depends(get_session),
                      _: AppUser = Depends(current_user)):
     """覆盖度盘点:哪些行业近 N 天一条事件都没有(=该去找源的方向)、哪些源在空跑。"""
@@ -383,14 +392,14 @@ def ack_actions(body: AckIn, db: Session = Depends(get_session),
                 user: AppUser = Depends(require_roles("analyst"))):
     """确认已读:高级别动作看过就不再顶在页面上(日志仍完整保留)。"""
     from app.services import actions
-    n = (actions.ack_all(db, body.need_id, body.module, user.id) if body.all
+    n = (actions.ack_all(db, _nid(body.need_id), body.module, user.id) if body.all
          else actions.ack(db, body.ids or [], user.id))
     db.commit()
     return {"acked": n}
 
 
 @api.get("/autopilot")
-def autopilot_state(need_id: str = "sec_events", db: Session = Depends(get_session),
+def autopilot_state(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                     _: AppUser = Depends(current_user)):
     """源库自动运维总览:各维护任务的周期/上次跑/下次跑、最近执行记录、还剩什么要人处理。"""
     from app.services import autopilot
@@ -405,7 +414,7 @@ def autopilot_state(need_id: str = "sec_events", db: Session = Depends(get_sessi
 # ---------- 首次部署流程 ----------
 
 @api.get("/bootstrap")
-def bootstrap_status(need_id: str = "sec_events", db: Session = Depends(get_session),
+def bootstrap_status(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                      _: AppUser = Depends(current_user)):
     """首次流程进度/结果 + 前置检查。切页刷新都能接着看。"""
     from app.services import bootstrap
@@ -413,7 +422,7 @@ def bootstrap_status(need_id: str = "sec_events", db: Session = Depends(get_sess
 
 
 @api.post("/bootstrap/run")
-def bootstrap_run(need_id: str = "sec_events", skip_crawl: bool = False,
+def bootstrap_run(need_id: str = Depends(need_id_param), skip_crawl: bool = False,
                   _: AppUser = Depends(require_roles("analyst"))):
     """一键跑首次部署该做的事(后台,按依赖顺序:整理源 → 先采一轮 → 再找源)。"""
     from app.services import bootstrap
@@ -428,7 +437,7 @@ def bootstrap_cancel(_: AppUser = Depends(require_roles("analyst"))):
 
 
 @api.post("/autopilot/run")
-def autopilot_run(need_id: str = "sec_events", force: bool = False,
+def autopilot_run(need_id: str = Depends(need_id_param), force: bool = False,
                   _: AppUser = Depends(require_roles("analyst"))):
     """立刻跑一轮自动运维(force=不管周期,全部任务都跑一遍)。后台执行,立即返回。"""
     from app.services import autopilot
@@ -436,7 +445,7 @@ def autopilot_run(need_id: str = "sec_events", force: bool = False,
 
 
 @api.get("/autopilot/grading-preview")
-def grading_preview(need_id: str = "sec_events", db: Session = Depends(get_session),
+def grading_preview(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                     _: AppUser = Depends(current_user)):
     """自动定级会怎么判(不落库),用来确认规则符合预期再放手交给它。"""
     from app.services import grading
@@ -507,7 +516,7 @@ def source_discover_columns(source_id: int, persist: bool = False,
         return {"root_only": False, "note": "该源已是具体栏目/或非根域,采集时直接抓其自身",
                 "columns": []}
     render_pref = (src.adapter_config or {}).get("render", "auto")
-    terms = columns.relevance_terms(db, (src.serves_needs or ["sec_events"])[0])
+    terms = columns.relevance_terms(db, (src.serves_needs or [need_ctx.default_need_id()])[0])
     if persist:
         # 强制重算(用户点「定位栏目」就是要现在定位一次),再按记录返回
         cfg = dict(src.adapter_config or {})
@@ -616,10 +625,10 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
             used_q = (q or "").strip()
             if not used_q:  # 没给词就从该源服务的需求的关键词矩阵取一个事件词做样本
                 from app.models import KeywordSet
-                nid = (src.serves_needs or ["sec_events"])[0]
+                nid = (src.serves_needs or [need_ctx.default_need_id()])[0]
                 ks = db.query(KeywordSet).filter_by(need_id=nid, is_active=True).first()
-                terms = (ks.content.get("event_terms") if ks else None) or ["数据泄露"]
-                used_q = terms[0]
+                terms = (ks.content.get("event_terms") if ks else None) or need_ctx.get(db, nid).source_search_queries
+                used_q = terms[0] if terms else need_ctx.get(db, nid).name
             if hasattr(adapter, "search_page"):
                 items = adapter.search_page(used_q, 0) or []
             else:
@@ -648,7 +657,7 @@ def test_fetch_source(source_id: int, q: str | None = None, mark: bool = False,
 # ---------- 找源词表现 / 关键词进化 ----------
 
 @api.get("/query-evolution")
-def query_evolution_report(need_id: str = "sec_events", top: int = 12,
+def query_evolution_report(need_id: str = Depends(need_id_param), top: int = 12,
                            db: Session = Depends(get_session),
                            _: AppUser = Depends(current_user)):
     """哪些找源词在干活、哪些限定词在拖后腿、词表正在怎么长。"""
@@ -657,7 +666,7 @@ def query_evolution_report(need_id: str = "sec_events", top: int = 12,
 
 
 @api.post("/query-evolution/run")
-def query_evolution_run(need_id: str = "sec_events", db: Session = Depends(get_session),
+def query_evolution_run(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                         user: AppUser = Depends(require_roles("analyst"))):
     """立刻跑一轮词表进化(平时由自动运维按周期跑)。"""
     from app.services import query_evolution
@@ -714,7 +723,7 @@ def source_candidates(min_score: float = 0, db: Session = Depends(get_session),
 
 
 @api.post("/source-candidates/{identity_key:path}/admit")
-def admit_candidate(identity_key: str, need_id: str = "sec_events",
+def admit_candidate(identity_key: str, need_id: str = Depends(need_id_param),
                     db: Session = Depends(get_session),
                     user: AppUser = Depends(require_roles("analyst"))):
     """人工"收下"一个候选:直接建成 S4 试运行源(不必等它攒够自动入库分数)。"""
@@ -850,26 +859,33 @@ def get_archive(snapshot_id: str, db: Session = Depends(get_session),
 def list_events(need_id: str, status: str | None = None, industry: str | None = None,
                 province: str | None = None, severity: str | None = None,
                 record_type: str | None = None,
+                dim1: str | None = None, dim2: str | None = None, region: str | None = None,
+                grade: str | None = None, subject: str | None = None,
                 limit: int = Query(50, le=500), db: Session = Depends(get_session),
                 _: AppUser = Depends(current_user)):
+    """记录列表。筛选既接受角色名(dim1/grade/region/subject,任何需求通用),也兼容旧参数
+    (industry/severity/province)。返回同时带角色键与旧键。"""
+    from app.services.need_ctx import ROLE_COLUMNS
     q = db.query(Event).filter_by(need_id=need_id)
     if status == "live":   # 已发布口径 = 已发布 + 跟踪中 + 已关闭(与 KPI 一致)
         q = q.filter(Event.status.in_(["published", "monitoring", "closed"]))
     elif status:
         q = q.filter_by(status=status)
-    if industry:
-        q = q.filter_by(industry_l1=industry)
-    if province:
-        q = q.filter_by(province=province)
-    if severity:
-        q = q.filter_by(severity=severity)
-    if record_type:
-        q = q.filter_by(record_type=record_type)
-    return [{"event_id": e.event_id, "title": (e.payload or {}).get("title"),
-             "status": e.status, "industry": e.industry_l1, "province": e.province,
-             "severity": e.severity, "record_type": e.record_type, "attack_types": e.attack_types,
-             "completeness": e.completeness_score, "disclosed_date": str(e.disclosed_date or "")}
-            for e in q.order_by(Event.event_id.desc()).limit(limit).all()]
+    for role, val in (("dim1", dim1 or industry), ("dim2", dim2), ("region", region or province),
+                      ("grade", grade or severity), ("subject", subject), ("record_type", record_type)):
+        if val:
+            q = q.filter(getattr(Event, ROLE_COLUMNS[role]) == val)
+    rows = q.order_by(Event.event_id.desc()).limit(limit).all()
+    out = []
+    for e in rows:
+        row = {"event_id": e.event_id, "title": (e.payload or {}).get("title"), "status": e.status,
+               "record_type": e.record_type, "completeness": e.completeness_score,
+               "occurred_date": str(e.occurred_date or ""), "disclosed_date": str(e.disclosed_date or "")}
+        for role, col in ROLE_COLUMNS.items():
+            if role not in ("occurred_date", "disclosed_date", "record_type"):
+                row[role] = getattr(e, col, None)
+        out.append(row)
+    return out
 
 
 @api.get("/events/{event_id}")
@@ -893,7 +909,7 @@ def put_event(event_id: str, body: PayloadIn, db: Session = Depends(get_session)
     if not ev:
         raise HTTPException(404, "事件不存在")
     from app.services.money_guard import apply_guard
-    guard = apply_guard(dict(body.payload))
+    guard = apply_guard(dict(body.payload), ctx=need_ctx.get(db, ev.need_id))
     update_payload(db, ev, guard.payload, by_user=user.id, source_ref=body.source_ref)
     db.commit()
     return {"event_id": event_id, "guard_violations": guard.violations}
@@ -1006,7 +1022,7 @@ class WatchIn(BaseModel):
 @api.post("/watch-targets")
 def add_watch(body: WatchIn, db: Session = Depends(get_session),
               user: AppUser = Depends(require_roles("analyst"))):
-    wt = WatchTarget(need_id=body.need_id, kind=body.kind, value=body.value,
+    wt = WatchTarget(need_id=_nid(body.need_id), kind=body.kind, value=body.value,
                      aliases=body.aliases, reason=body.reason, tier=body.tier)
     db.add(wt)
     db.commit()
@@ -1042,22 +1058,22 @@ def report_heatmap(need_id: str, days: int = 365, db: Session = Depends(get_sess
 
 
 @api.get("/reports/loss")
-def report_loss(need_id: str, scope: str = "confirmed", db: Session = Depends(get_session),
+def report_loss(need_id: str, scope: str | None = None, db: Session = Depends(get_session),
                 _: AppUser = Depends(current_user)):
     trace = kpi_svc.traceability_check(db, need_id)
     if not trace["ok"]:
         raise HTTPException(409, f"口径校验失败,拒绝出数: {trace['violations']}")
-    return kpi_svc.loss_stats(db, need_id, scope)
+    return kpi_svc.amount_stats(db, need_id, scope)
 
 
 @api.get("/reports/controls")
 def report_controls(need_id: str, db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
-    return kpi_svc.controls_stats(db, need_id)
+    return kpi_svc.status_count(db, need_id)
 
 
 @api.get("/reports/whitespace")
 def report_whitespace(need_id: str, db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
-    return kpi_svc.whitespace(db, need_id)
+    return kpi_svc.missing_field(db, need_id)
 
 
 @api.get("/kpi/dashboard")
@@ -1069,7 +1085,42 @@ def kpi_dashboard(need_id: str, db: Session = Depends(get_session), _: AppUser =
 
 @api.get("/needs")
 def list_needs(db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
-    return [{"id": n.id, "name": n.name, "active": n.active} for n in db.query(NeedProfile).all()]
+    """已注册的需求(画像)。default=平台默认需求;未注册但 config/need_*.yaml 里有的画像也列出(registered=false)。"""
+    default = need_ctx.default_need_id()
+    out, seen = [], set()
+    for n in db.query(NeedProfile).all():
+        c = need_ctx.for_need(n)
+        out.append({"id": n.id, "name": n.name, "active": n.active, "registered": True,
+                    "default": n.id == default, "archetype": c.archetype,
+                    "record_label": c.ui.get("record_label")})
+        seen.add(n.id)
+    for f in need_ctx.profile_files():
+        cfg = need_ctx.load_profile_config_file(f)
+        nid = ((cfg or {}).get("need") or {}).get("id")
+        if nid and nid not in seen:
+            out.append({"id": nid, "name": (cfg["need"].get("name") or nid), "active": False,
+                        "registered": False, "default": nid == default, "file": str(f.name)})
+    return out
+
+
+@api.get("/needs/{need_id}/ui")
+def need_ui(need_id: str, db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """界面定义:页签/列/筛选/详情分区/仪表盘卡片/角色标签——前端按它渲染,不认行业字段名。"""
+    return need_ctx.get(db, need_id).to_ui()
+
+
+@api.post("/needs/{need_id}/setup")
+def need_setup(need_id: str, db: Session = Depends(get_session),
+               user: AppUser = Depends(require_roles("admin"))):
+    """按画像文件把一个需求装起来(注册 + 词表 + 关键词 + 种子源,幂等)。"""
+    from app.services import profiles
+    try:
+        r = profiles.setup_need(db, need_id)
+    except profiles.ProfileError as e:
+        raise HTTPException(400, str(e))
+    db.add(AuditLog(user_id=user.id, action="need.setup", target=need_id, detail=r))
+    db.commit()
+    return r
 
 
 @api.get("/audit-logs")
@@ -1113,7 +1164,7 @@ def test_llm_endpoint(_: AppUser = Depends(require_roles("analyst"))):
 # ---------- 关键词矩阵(决定搜什么、搜多少) ----------
 
 @api.get("/keywords")
-def get_keywords(need_id: str = "sec_events", db: Session = Depends(get_session),
+def get_keywords(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                  _: AppUser = Depends(current_user)):
     """当前生效的关键词矩阵内容 + 展开后的实际查询条数预览。"""
     from app.models import KeywordSet
@@ -1126,7 +1177,7 @@ def get_keywords(need_id: str = "sec_events", db: Session = Depends(get_session)
 
 
 class KeywordsIn(BaseModel):
-    need_id: str = "sec_events"
+    need_id: str | None = None
     content: dict
 
 
@@ -1138,15 +1189,15 @@ def put_keywords(body: KeywordsIn, db: Session = Depends(get_session),
     from app.services.scheduler import expand_queries
     content = dict(body.content or {})
     # 版本号自增(基于已有最大数字版本)
-    existing = db.query(KeywordSet).filter_by(need_id=body.need_id).all()
+    existing = db.query(KeywordSet).filter_by(need_id=_nid(body.need_id)).all()
     nums = [float(k.version) for k in existing if str(k.version).replace(".", "").isdigit()]
     content["version"] = str(round((max(nums) if nums else 0) + 0.1, 1))
-    db.query(KeywordSet).filter_by(need_id=body.need_id).update({"is_active": False})
-    ks = KeywordSet(need_id=body.need_id, version=content["version"], content=content, is_active=True)
+    db.query(KeywordSet).filter_by(need_id=_nid(body.need_id)).update({"is_active": False})
+    ks = KeywordSet(need_id=_nid(body.need_id), version=content["version"], content=content, is_active=True)
     from datetime import datetime
     ks.published_at = datetime.utcnow()
     db.add(ks)
-    db.add(AuditLog(user_id=user.id, action="keywords.update", target=body.need_id,
+    db.add(AuditLog(user_id=user.id, action="keywords.update", target=_nid(body.need_id),
                     detail={"version": content["version"]}))
     db.commit()
     from app.services import columns as columns_svc
@@ -1159,7 +1210,7 @@ def put_keywords(body: KeywordsIn, db: Session = Depends(get_session),
 # ---------- 采集触发与运行记录(前端"采集"页) ----------
 
 class CrawlIn(BaseModel):
-    need_id: str = "sec_events"
+    need_id: str | None = None
     limit_sources: int = 3
     do_archive: bool = True
 
@@ -1184,15 +1235,15 @@ def crawl_run_now(body: CrawlIn, db: Session = Depends(get_session),
                   user: AppUser = Depends(require_roles("analyst", "editor"))):
     """后台启动一轮采集(不阻塞),返回任务 id;已有运行中任务则返回它。"""
     from app.services import crawl_runner
-    running = crawl_runner.has_running(db, body.need_id)
+    running = crawl_runner.has_running(db, _nid(body.need_id))
     if running:
         return {"job_id": running.id, "already_running": True, "job": _job_dict(running)}
-    jid = crawl_runner.start_job(body.need_id, body.limit_sources, user.id)
+    jid = crawl_runner.start_job(_nid(body.need_id), body.limit_sources, user.id)
     return {"job_id": jid, "already_running": False}
 
 
 @api.get("/crawl/current")
-def crawl_current(need_id: str = "sec_events", db: Session = Depends(get_session),
+def crawl_current(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
                   _: AppUser = Depends(current_user)):
     """当前/最近一次采集任务的状态与进度(任何页面/刷新都能查到是否在运行)。"""
     from app.services import crawl_runner
@@ -1258,7 +1309,7 @@ def crawl_job_diagnostics(job_id: int, db: Session = Depends(get_session),
 # ---------- 每日简报 M-digest ----------
 
 @api.get("/digest")
-def get_digest(need_id: str = "sec_events", day: str | None = None,
+def get_digest(need_id: str = Depends(need_id_param), day: str | None = None,
                db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
     """取某天日报(默认最新)。返回结构化内容 + Markdown。"""
     from datetime import date as _date
@@ -1280,7 +1331,7 @@ def get_digest(need_id: str = "sec_events", day: str | None = None,
 
 
 @api.get("/digests")
-def list_digests(need_id: str = "sec_events", limit: int = 30,
+def list_digests(need_id: str = Depends(need_id_param), limit: int = 30,
                  db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
     from app.models import DailyDigest
     rows = (db.query(DailyDigest).filter_by(need_id=need_id)
@@ -1290,7 +1341,7 @@ def list_digests(need_id: str = "sec_events", limit: int = 30,
 
 
 @api.post("/digest/run")
-def run_digest(need_id: str = "sec_events", push: bool = False,
+def run_digest(need_id: str = Depends(need_id_param), push: bool = False,
                db: Session = Depends(get_session), _: AppUser = Depends(require_roles("analyst"))):
     """按需生成今日日报(不必等采集)。push=True 时尝试邮件推送。"""
     from app.services import digest as digest_svc
@@ -1307,7 +1358,7 @@ def run_digest(need_id: str = "sec_events", push: bool = False,
 
 
 @api.get("/digest/download")
-def download_digest(need_id: str = "sec_events", day: str | None = None,
+def download_digest(need_id: str = Depends(need_id_param), day: str | None = None,
                     db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
     """下载日报 Markdown。"""
     from datetime import date as _date
@@ -1345,7 +1396,7 @@ def crawl_runs(limit: int = 30, db: Session = Depends(get_session),
 # ---------- 演示数据(前端"一键载入演示",空库也能看到界面效果) ----------
 
 @api.post("/demo/seed")
-def demo_seed(need_id: str = "sec_events", db: Session = Depends(get_session),
+def demo_seed(need_id: str = Depends(need_id_param), db: Session = Depends(get_session),
               user: AppUser = Depends(require_roles("analyst", "editor"))):
     """注入 3 条样例事件(已发布/待复核各态),便于快速体验界面。仅演示用。"""
     from datetime import datetime
@@ -1357,30 +1408,28 @@ def demo_seed(need_id: str = "sec_events", db: Session = Depends(get_session),
     from app.services.review import approve
 
     need = db.get(NeedProfile, need_id)
-    src = db.query(Source).first()
-    # 幂等:已注入过演示数据则不再重复,避免"采集文档"数字反复累加
+    if need is None:
+        raise HTTPException(404, f"需求 {need_id} 未注册(先在需求页装载画像)")
+    # 演示文档挂到服务本需求的源上;没有就用任意一个
+    src = next((s for s in db.query(Source).all() if need_id in (s.serves_needs or [])), None) \
+        or db.query(Source).first()
+    # 幂等:已注入过演示数据则不再重复,避免"采集文档"数字反复累加(按需求分别判断)
     existed = db.query(RawDocument).filter(
         RawDocument.need_id == need_id,
-        RawDocument.url.like("https://demo.local/%")).count()
+        RawDocument.url.like(f"https://demo.local/{need_id}/%")).count()
     if existed:
         return {"created": [], "published": [],
                 "note": f"演示数据已存在({existed} 条),未重复注入。"}
 
-    samples = [
-        ("某三甲医院遭勒索攻击 HIS系统瘫痪36小时",
-         "某市第三人民医院遭勒索软件攻击,HIS 系统瘫痪超过36小时,门诊停诊。"
-         "攻击者要求支付200万元赎金,医院未支付,数据由备份恢复,部分备份也被加密。"
-         "初步判断与某VPN设备未修补漏洞有关,监管部门已介入。"),
-        ("某城商行网银系统遭DDoS攻击 交易中断3小时",
-         "某城市商业银行网上银行遭大规模DDoS攻击,交易系统中断约3小时,大量客户无法转账。"
-         "银行称已启用流量清洗,未造成资金损失。"),
-        ("某车企供应商数据泄露 涉及生产数据",
-         "某汽车零部件供应商因第三方运维通道被入侵导致生产数据泄露,"
-         "攻击者在泄露站列名索要赎金。企业尚未公开回应。"),
-    ]
+    ctx = need_ctx.for_need(need) if need else need_ctx.get(db, need_id)
+    samples = [(str(x.get("title") or ""), str(x.get("text") or "")) for x in ctx.demo_samples if x.get("text")]
+    if not samples:
+        return {"created": [], "published": [], "note": "该需求画像未声明 demo.samples,没有可注入的演示样例"}
+    if src is None:
+        raise HTTPException(400, "还没有任何数据源,先载入种子源")
     created, published = [], []
     for i, (title, text) in enumerate(samples):
-        url = f"https://demo.local/seed-{datetime.utcnow():%Y%m%d%H%M%S}-{i}"
+        url = f"https://demo.local/{need_id}/seed-{datetime.utcnow():%Y%m%d%H%M%S%f}-{i}"
         doc = RawDocument(need_id=need_id, source_id=src.id, url=url, url_normalized=url,
                           final_url=url, title=title, publisher=src.name,
                           published_at=datetime.utcnow(), content_text=text, screen_status="pending")
@@ -1402,4 +1451,4 @@ def demo_seed(need_id: str = "sec_events", db: Session = Depends(get_session),
                     pass
     db.commit()
     return {"created": created, "published": published,
-            "note": "已注入演示事件;第1条已走完复核发布并生成回访与线索"}
+            "note": f"已注入演示{ctx.ui.get('record_label') or '记录'};第1条已走完复核发布并生成回访与线索"}
