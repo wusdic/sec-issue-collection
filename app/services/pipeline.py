@@ -313,6 +313,12 @@ def _stage_draft(db, need, ctx, doc, st, result) -> bool:
     recall = dedup.semantic_recall(db, need.id, ev.embedding, exclude_event_id=ev.event_id)
     if recall:
         result["semantic_suspects"] = [(e.event_id, round(s, 3)) for e, s in recall]
+    if st.get("related_docs"):
+        try:
+            from app.services import relations
+            relations.link(db, ev, st["related_docs"], ctx)
+        except Exception:  # noqa: BLE001 关系落库失败不影响建记录
+            pass
     result["action"] = "draft_created"
     result["event_id"] = ev.event_id
     result["violations"] = extraction["violations"]
@@ -324,8 +330,35 @@ def _stage_draft(db, need, ctx, doc, st, result) -> bool:
     return True
 
 
-STAGES = {"screen": _stage_screen, "extract": _stage_extract, "scope_gate": _stage_scope_gate,
-          "content_check": _stage_content_check, "dedup_record": _stage_dedup_record, "draft": _stage_draft}
+def _stage_verify(db, need, ctx, doc, st, result) -> bool:
+    """真实性验证:官方域/正文哈希/标题一致/密级标记 → doc.verification;含密级标记的只登记不入库。"""
+    from app.services import verify
+    v = verify.verify_document(doc, ctx)
+    diagnostics.record("verify", f"验证 {v['status']}(域 {v['domain_trust']})", detail=v)
+    if v.get("sensitive"):
+        doc.screen_status = "manual_queue"
+        doc.screen_reason = "正文含内部/密级标记:只登记来源,不入库正文,转人工确认"
+        result["action"] = "manual_queue"
+        return True
+    return False
+
+
+def _stage_relations(db, need, ctx, doc, st, result) -> bool:
+    """记录关系抽取(文档型可选阶段):废止/替代/修订/依据 → payload.related_docs(建草稿后再落边)。"""
+    from app.services import relations
+    payload = st.get("payload")
+    if payload is None:
+        return False
+    rel = relations.extract(doc.content_text or "", ctx, own_title=doc.title or payload.get("title"))
+    if rel:
+        payload["related_docs"] = rel
+        st["related_docs"] = rel
+    return False
+
+
+STAGES = {"screen": _stage_screen, "verify": _stage_verify, "extract": _stage_extract,
+          "scope_gate": _stage_scope_gate, "content_check": _stage_content_check,
+          "dedup_record": _stage_dedup_record, "relations": _stage_relations, "draft": _stage_draft}
 
 
 def _early_stop_config(source: Source, adapter) -> tuple[bool, int]:

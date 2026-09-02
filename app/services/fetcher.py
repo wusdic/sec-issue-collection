@@ -57,6 +57,38 @@ _BASE_HEADERS = {
 }
 
 
+_META_CHARSET_RE = re.compile(rb'charset=["\']?\s*([A-Za-z0-9_\-]+)', re.I)
+
+
+def decode_body(resp) -> str:
+    """把响应字节解码成文本:HTTP 头有 charset 用头;没有就看 HTML meta charset;再没有用
+    charset_normalizer 猜(政务站大量 GBK/GB2312 页面不带头,httpx 默认按 utf-8 会解成乱码)。"""
+    raw = resp.content or b""
+    ctype = resp.headers.get("content-type", "") or ""
+    enc = None
+    m = re.search(r"charset=([A-Za-z0-9_\-]+)", ctype, re.I)
+    if m:
+        enc = m.group(1)
+    if not enc:
+        mm = _META_CHARSET_RE.search(raw[:4096])
+        if mm:
+            enc = mm.group(1).decode("ascii", "ignore")
+    if enc:
+        e = enc.lower().replace("gb2312", "gb18030").replace("gbk", "gb18030")
+        try:
+            return raw.decode(e, errors="replace")
+        except LookupError:
+            pass
+    try:
+        from charset_normalizer import from_bytes
+        best = from_bytes(raw[:200000]).best()
+        if best and best.encoding:
+            return raw.decode(best.encoding, errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+    return raw.decode("utf-8", errors="replace")
+
+
 def _httpx_fetch(url: str, referer: str | None, timeout: float | None) -> FetchResult:
     headers = {"User-Agent": settings.fetch_user_agent, **_BASE_HEADERS}
     if referer:
@@ -67,14 +99,14 @@ def _httpx_fetch(url: str, referer: str | None, timeout: float | None) -> FetchR
             final_url = str(resp.url)
             ctype = resp.headers.get("content-type", "text/html")
             # 只对文本/HTML/XML 类响应解码为文本;二进制(PDF/图片等)不当 html 处理
-            html = resp.text if any(t in ctype for t in ("text", "html", "xml", "json")) else None
+            html = decode_body(resp) if any(t in ctype for t in ("text", "html", "xml", "json")) else None
             # C8: 搜狗微信临时链 → 提取永久链再抓一次
             if "weixin.sogou.com" in final_url or ("sogou" in final_url and "mp.weixin" not in final_url):
                 perm = url_tools.extract_wechat_permalink(html or "")
                 if perm:
                     resp = client.get(perm)
                     final_url = str(resp.url)
-                    html = resp.text
+                    html = decode_body(resp)
             return FetchResult(url=url, final_url=final_url, status=resp.status_code, html=html,
                               headers=dict(resp.headers))
     except Exception as e:  # noqa: BLE001 网络异常统一登记

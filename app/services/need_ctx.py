@@ -138,7 +138,7 @@ DEFAULTS: dict = {
                  "query_budget_per_source_daily": 200, "max_pages_per_query": 3,
                  "auto_generate": True},     # 画像没给 discovery_terms_file 时装载即自动生成矩阵
     # ---- 处理流水线组合:阶段可增删排序;extract_mode=light 时不需要 Schema 文件(按角色生成轻量 Schema)
-    "pipeline": {"stages": ["screen", "extract", "scope_gate", "content_check", "dedup_record", "draft"],
+    "pipeline": {"stages": ["screen", "verify", "extract", "scope_gate", "content_check", "dedup_record", "draft"],
                  "extract_mode": "schema", "light_fields": []},
 }
 SCOPE_KINDS = ("regions", "industries", "topics", "entities", "doc_types")

@@ -82,6 +82,10 @@ EDITABLE = [
     ("retired_recheck_days", "停用源自动复检周期(天)", "采集", "int", False,
      "被自动停用的源隔这么多天在体检时复检一次,能出数据就自动恢复(误杀自愈)。默认 14;0=不复检"),
 
+    ("feishu_webhook", "飞书群机器人 Webhook", "推送", "str", True,
+     "填了就把日报/重要告警同时推到飞书群(自定义机器人 webhook 地址);留空不推"),
+    ("feishu_app_id", "飞书应用 App ID", "推送", "str", False, "把记录导出到飞书多维表格时用(需应用有 bitable 权限)"),
+    ("feishu_app_secret", "飞书应用 App Secret", "推送", "str", True, "留空表示不修改"),
     ("default_need_id", "默认信息需求", "平台", "str", False,
      "页面与接口在没指定需求时用哪个(需求画像 need.id)。多需求并行时每个页面可切换,这里只是缺省"),
     ("autopilot_enabled", "启用源库自动运维", "自动运维", "bool", False,

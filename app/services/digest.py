@@ -176,10 +176,10 @@ def generate_today(db: Session, need_id: str) -> DailyDigest:
     d = upsert(db, need_id, datetime.utcnow().date())
     # 可选邮件推送(未配置 SMTP 则跳过,不影响页面查看/下载)
     try:
-        from app.services.notify import deliver_email
+        from app.services.notify import deliver_all
         title = (d.content or {}).get("title") or "日报"
-        ok, _msg = deliver_email(f"{title} {d.day}", d.markdown or "")
-        d.delivered = bool(ok)
+        r = deliver_all(f"{title} {d.day}", d.markdown or "")
+        d.delivered = any(v.get("ok") for v in r.values())
     except Exception:  # noqa: BLE001
         pass
     db.commit()

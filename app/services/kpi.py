@@ -211,3 +211,62 @@ def dashboard(db: Session, need_id: str, ctx=None) -> dict:
         "traceability": traceability_check(db, need_id, c),
         "tiles": list(c.ui.get("dashboard_tiles") or []),
     }
+
+
+_SCORE_WEIGHTS = {"completeness": 0.4, "accuracy": 0.3, "consistency": 0.2, "timeliness": 0.1}
+
+
+def quality_scorecard(db: Session, need_id: str, days: int | None = None, ctx=None) -> dict:
+    """数据质量评分卡(借鉴 caijifagui 的 完整性/准确性/一致性/时效性 四维加权与 A–D 定级):
+    - 完整性 = 覆盖维度有覆盖的比例 × 0.5 + 已发布记录完备度均分 × 0.5;
+    - 准确性 = 可追溯校验通过(1/0)× 0.5 + 无守卫违规记录占比 × 0.5(粗筛存疑不计);
+    - 一致性 = 关键角色列(主体/维度/日期)非空占比;
+    - 时效性 = 披露→入库中位时延换算(≤1 天满分,≥30 天 0 分)。
+    权重可由画像 outputs.quality_scorecard.weights 覆盖;等级阈值 A≥90 B≥75 C≥60。
+    """
+    from datetime import datetime as _dt
+    from app.services import coverage as _cov
+    c = _ctx(db, need_id, ctx)
+    cfg = (c.outputs.get("quality_scorecard") or {})
+    w = {**_SCORE_WEIGHTS, **{k: float(v) for k, v in (cfg.get("weights") or {}).items()}}
+    live = _live(db, need_id)
+    # 完整性
+    cov = _cov.industry_coverage(db, need_id, days, c)
+    covered = sum(1 for x in cov if x["level"] in ("有覆盖", "偏少")) / len(cov) if cov else 1.0
+    comps = [e.completeness_score for e in live if e.completeness_score is not None]
+    completeness = 100 * (0.5 * covered + 0.5 * ((sum(comps) / len(comps) / 100) if comps else 0.0))
+    # 准确性
+    trace_ok = 1.0 if traceability_check(db, need_id, c)["ok"] else 0.0
+    from app.services.money_guard import apply_guard
+    clean = 0
+    for e in live:
+        try:
+            clean += 1 if apply_guard(dict(e.payload or {}), "", ctx=c).clean else 0
+        except Exception:  # noqa: BLE001
+            clean += 1
+    accuracy = 100 * (0.5 * trace_ok + 0.5 * (clean / len(live) if live else 1.0))
+    # 一致性:主体/维度/日期列非空
+    def _filled(e):
+        cols = [ROLE_COLUMNS["subject"], ROLE_COLUMNS["dim1"], ROLE_COLUMNS["occurred_date"]]
+        return sum(1 for col in cols if getattr(e, col, None)) / len(cols)
+    consistency = 100 * (sum(_filled(e) for e in live) / len(live) if live else 1.0)
+    # 时效性
+    lags = []
+    for e in live:
+        if e.disclosed_date and e.created_at:
+            lags.append(max(0, (e.created_at.date() - e.disclosed_date).days))
+    if lags:
+        lags.sort()
+        med = lags[len(lags) // 2]
+        timeliness = 100 * max(0.0, min(1.0, 1 - (med - 1) / 29)) if med > 1 else 100.0
+    else:
+        timeliness = 100.0
+    dims = {"completeness": round(completeness, 1), "accuracy": round(accuracy, 1),
+            "consistency": round(consistency, 1), "timeliness": round(timeliness, 1)}
+    total = round(sum(dims[k] * w.get(k, 0) for k in dims) / (sum(w.get(k, 0) for k in dims) or 1), 1)
+    grade = "A" if total >= 90 else "B" if total >= 75 else "C" if total >= 60 else "D"
+    return {"need_id": need_id, "score": total, "grade": grade, "dimensions": dims, "weights": w,
+            "labels": {"completeness": "完整性", "accuracy": "准确性", "consistency": "一致性", "timeliness": "时效性"},
+            "records": len(live), "coverage_gaps": [x["industry"] for x in cov if x["gap"]][:20],
+            "median_lag_days": (lags[len(lags) // 2] if lags else None),
+            "generated_at": _dt.utcnow().isoformat(timespec="seconds")}

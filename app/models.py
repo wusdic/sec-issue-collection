@@ -218,6 +218,8 @@ class RawDocument(Base):
     screen_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     screen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     seen_again: Mapped[int] = mapped_column(Integer, default=0)
+    # 真实性验证(services/verify):域名可信度/内容哈希/标题一致/密级标记 → status
+    verification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 # ============ M4/M5 事件(记录) ============
@@ -250,6 +252,22 @@ class Event(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
     first_published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class RecordRelation(Base):
+    """记录之间的有向关系(文档型需求的版本谱系):source →relation→ target。
+    relation ∈ supersedes(替代)/ repeals(废止)/ amends(修订)/ references(引用)/ parent(上位法)/ child。
+    target 可以是库外文件(只有标题),此时 target_event_id 为空、target_title 记标题。"""
+    __tablename__ = "record_relation"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    need_id: Mapped[str] = mapped_column(ForeignKey("need_profile.id"), index=True)
+    source_event_id: Mapped[str] = mapped_column(ForeignKey("event.event_id"), index=True)
+    target_event_id: Mapped[str | None] = mapped_column(ForeignKey("event.event_id"), nullable=True, index=True)
+    target_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    relation: Mapped[str] = mapped_column(String(16))
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+    __table_args__ = (UniqueConstraint("source_event_id", "relation", "target_title"),)
 
 
 class EventSource(Base):

@@ -133,6 +133,11 @@ sources:                    # ★ 非空即可
   skip_hosts_extra: []      # 追加不作为专业源的域
   grading: null             # 试运行源自动定级规则;null = discovery_file.grading
   discovery_scoring: null   # 候选评分权重;null = discovery_file.scoring
+  verification:             # (v1.3)真实性验证:官方域后缀/域名录、机构域后缀、密级标记;空 = 平台缺省
+    official_suffixes: []   # 如 [.gov.cn, .mil.cn]
+    official_domains: []    # 非 .gov.cn 但同样权威的域(与 grading.official_domains 合并)
+    medium_suffixes: []     # 如 [.org.cn, .edu.cn]
+    sensitive_markers: []   # 如 [内部资料, 密级, 不对外公开]:命中只登记不入库正文
 
 # ---------- D. 质量:粗筛 / 抽取 / 范畴 / 断言三态 ----------
 quality:                    # ★ model 与 screen.goal
@@ -156,10 +161,13 @@ quality:                    # ★ model 与 screen.goal
     isolation: []           # [{source_path: ransom.demanded_amount, reason: 要求≠损失}]
     paid_check: null
   double_review_fields: []
+  relations:                # (v1.3)记录关系抽取规则(废止/替代/修订/依据);空 = 平台缺省正则
+    patterns: []            # [{relation: repeals|supersedes|amends|references|parent, regex: "…(《?([^》]+)》)…"}]
+    append_default: true
 
 # ---------- K. 流水线组合(v1.2) ----------
 pipeline:
-  stages: [screen, extract, scope_gate, content_check, dedup_record, draft]   # 可增删排序
+  stages: [screen, verify, extract, scope_gate, content_check, dedup_record, draft]   # 可增删排序;文档型可加 relations(建议放 draft 前)
   extract_mode: schema      # schema = 按 record_schemas.file;light = 按角色生成轻量 Schema(标题/摘要/主体/分类/地域/标签/日期)
   light_fields: []          # 轻量 Schema 追加字段 [{name, type, desc}]
 
@@ -202,6 +210,10 @@ outputs:                    # ★ 非空即可
     group_roles: [dim1, grade]
     rank_role: grade
     advisory_split: true
+  exports: []               # (v1.3)导出通道,如 [{name: 法规表, kind: feishu_bitable, app_token: "", table_id: "", key_field: 记录号,
+                            #   field_map: {标题: title, 发布机关: subject, 主题: dim1, 状态: record.status}}]
+  quality_scorecard:        # (v1.3)质量评分卡权重(完整性/准确性/一致性/时效性),空 = 0.4/0.3/0.2/0.1
+    weights: {}
 
 # ---------- G. 界面 ----------
 ui:

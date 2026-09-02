@@ -858,6 +858,19 @@ def put_event(event_id: str, body: PayloadIn, db: Session = Depends(get_session)
     return {"event_id": event_id, "guard_violations": guard.violations}
 
 
+@api.get("/events/{event_id}/relations")
+def event_relations(event_id: str, db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """记录的上下游关系(废止/替代/修订/依据)。"""
+    from app.services import relations
+    return relations.for_event(db, event_id)
+
+
+@api.get("/kpi/scorecard")
+def kpi_scorecard(need_id: str = Depends(need_id_param), days: int | None = None,
+                  db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    return kpi_svc.quality_scorecard(db, need_id, days)
+
+
 @api.get("/events/{event_id}/changelog")
 def event_changelog(event_id: str, db: Session = Depends(get_session),
                     _: AppUser = Depends(current_user)):

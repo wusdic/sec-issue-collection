@@ -57,6 +57,120 @@ class BaseAdapter:
         raise NotImplementedError
 
 
+# ---------------- 通用 JSON 列表接口适配器 ----------------
+
+def _jpath(obj, path: str):
+    """a.b[0].c 取值(与 need_ctx.dget 同语义,这里不依赖它以免上层引用)。"""
+    if not path:
+        return obj
+    cur = obj
+    for m in re.finditer(r"([^.\[\]]+)|\[(\d+)\]", path):
+        k, i = m.group(1), m.group(2)
+        if k is not None:
+            if not isinstance(cur, dict):
+                return None
+            cur = cur.get(k)
+        else:
+            if not isinstance(cur, list) or int(i) >= len(cur):
+                return None
+            cur = cur[int(i)]
+        if cur is None:
+            return None
+    return cur
+
+
+class JsonApiAdapter(BaseAdapter):
+    """官方站点常见的 JSON 列表接口(借鉴 data-collector 的 CAC JsonList 爬法,做成配置驱动的通用适配器)。
+
+    adapter_config:
+      api_url:      接口地址(必填;也可用 entry_url)
+      method:       GET / POST(默认 GET)
+      params:       固定查询参数 / 表单(dict)
+      page_param:   页码参数名(默认 pageno);page_start: 首页页码(默认 1)
+      size_param / page_size: 每页条数参数名与值(可省)
+      items_path:   列表在响应里的路径(如 list、data.items)
+      fields:       {title: topic, url: infourl, published: pubtime, publisher: source}(相对每条 item 的路径)
+      base_url:     相对链接补全用(默认取 api_url 的 scheme+host)
+      max_pages:    最多翻几页(默认 20)
+      headers:      额外请求头(如 Referer)
+    列表型:discover_page(page) 逐页返回;page 从 0 起。
+    """
+    name = "json_api"
+    kind = "page"
+
+    def _api(self) -> str:
+        return self.config.get("api_url") or self.source.entry_url or ""
+
+    def _request(self, page: int):
+        import json as _json
+        from urllib.parse import urlencode
+        api = self._api()
+        params = dict(self.config.get("params") or {})
+        page_param = self.config.get("page_param") or "pageno"
+        params[page_param] = int(self.config.get("page_start", 1)) + page
+        if self.config.get("size_param"):
+            params[self.config["size_param"]] = int(self.config.get("page_size") or 20)
+        headers = dict(self.config.get("headers") or {})
+        method = str(self.config.get("method") or "GET").upper()
+        if method == "GET":
+            url = api + ("&" if "?" in api else "?") + urlencode(params)
+            fr = fetcher.fetch(url, referer=headers.get("Referer"))
+            body = fr.html if fr.ok else None
+        else:
+            fr = fetcher.post_json(api, params, headers=headers) if hasattr(fetcher, "post_json") else None
+            body = fr.html if fr and fr.ok else None
+        if not body:
+            return None
+        try:
+            return _json.loads(body)
+        except ValueError:
+            return None
+
+    def discover_page(self, page: int) -> list[DiscoveredItem] | None:
+        if page >= int(self.config.get("max_pages", 20) or 20):
+            return None
+        data = self._request(page)
+        if data is None:
+            return None if page > 0 else []
+        items = _jpath(data, self.config.get("items_path") or "list")
+        if not isinstance(items, list) or not items:
+            return None if page > 0 else []
+        f = dict(self.config.get("fields") or {})
+        api = self._api()
+        p = urlparse(api)
+        base = self.config.get("base_url") or f"{p.scheme}://{p.netloc}"
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            url = _jpath(it, f.get("url") or "url")
+            title = _jpath(it, f.get("title") or "title")
+            if not url or not title:
+                continue
+            url = str(url)
+            if url.startswith("//"):
+                url = p.scheme + ":" + url
+            elif url.startswith("/"):
+                url = base.rstrip("/") + url
+            elif not url.startswith("http"):
+                url = urljoin(base + "/", url)
+            pub = _jpath(it, f.get("published") or "published")
+            out.append(DiscoveredItem(url=url, title=str(title).strip(),
+                                      published=str(pub) if pub else None,
+                                      publisher=(str(_jpath(it, f["publisher"])) if f.get("publisher") and _jpath(it, f["publisher"]) else None)))
+        return out
+
+    def discover(self) -> list[DiscoveredItem]:
+        out, page = [], 0
+        while True:
+            items = self.discover_page(page)
+            if items is None or not items:
+                break
+            out += items
+            page += 1
+        return out
+
+
 # ---------------- 自动翻页探测 ----------------
 
 # 「下一页」链接的常见文本/标记(中英),按出现频率排。自动识别,无需人工配模板。
@@ -501,7 +615,7 @@ class RansomwareLiveAdapter(BaseAdapter):
 
 _REGISTRY: dict[str, type[BaseAdapter]] = {
     a.name: a for a in [
-        GenericRSSAdapter, GenericListAdapter,
+        JsonApiAdapter, GenericRSSAdapter, GenericListAdapter,
         BaiduSearchAdapter, BingSearchAdapter, BingRSSAdapter, SogouWechatAdapter,
         WeiboSearchAdapter, DuckDuckGoHTMLAdapter, So360SearchAdapter,
         RansomwareLiveAdapter,

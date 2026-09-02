@@ -245,6 +245,10 @@ class Settings:
     smtp_password: str = os.getenv("SMTP_PASSWORD", "")
     smtp_from: str = os.getenv("SMTP_FROM", "")
     digest_email_to: str = os.getenv("DIGEST_EMAIL_TO", "")               # 逗号分隔收件人
+    # 飞书(可选):群机器人 webhook 推日报/告警;应用凭证用于把记录导出到多维表格
+    feishu_webhook: str = os.getenv("FEISHU_WEBHOOK", "")
+    feishu_app_id: str = os.getenv("FEISHU_APP_ID", "")
+    feishu_app_secret: str = os.getenv("FEISHU_APP_SECRET", "")
 
     # Celery
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")

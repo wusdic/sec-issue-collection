@@ -197,3 +197,52 @@ def _digest(db, ctx, day: str | None = None):
     d = date.fromisoformat(day) if day else datetime.utcnow().date()
     content = digest.build_content(db, ctx.id, d, ctx=ctx)
     return {"content": content, "markdown": digest.render_markdown(content)}
+
+
+# ---------------- 验证 / 关系 / 导出 / 质量(v1.3,借鉴同类项目) ----------------
+
+@register("verify", "处理", "真实性验证:官方域可信度 / 正文哈希 / 标题一致 / 密级标记", {"url": "地址", "title": "标题", "text": "正文"})
+def _verify(db, ctx, url: str = "", title: str = "", text: str = ""):
+    from app.services import verify
+    return verify.verify_text(url, title, text, ctx)
+
+
+@register("verify.recheck", "更新", "再核查一篇文档:重抓并比对正文哈希,判断内容是否变化", {"doc_id": "RawDocument.id"})
+def _recheck(db, ctx, doc_id: int):
+    from app.models import RawDocument
+    from app.services import verify
+    doc = db.get(RawDocument, int(doc_id))
+    return verify.recheck(doc, ctx) if doc else {"ok": False, "error": "文档不存在"}
+
+
+@register("relations.extract", "处理", "从正文抽取 废止/替代/修订/依据 关系,并与库内记录连边", {"event_id": "记录号(可省:只抽不连)", "text": "正文(省略则用记录来源文档)"})
+def _relations(db, ctx, event_id: str | None = None, text: str | None = None):
+    from app.models import Event, EventSource, RawDocument
+    from app.services import relations
+    ev = db.get(Event, event_id) if event_id else None
+    if text is None and ev is not None:
+        es = db.query(EventSource).filter_by(event_id=ev.event_id).first()
+        doc = db.get(RawDocument, es.doc_id) if es and es.doc_id else None
+        text = (doc.content_text if doc else "") or ""
+    rel = relations.extract(text or "", ctx, own_title=(ev.payload or {}).get("title") if ev else None)
+    linked = relations.link(db, ev, rel, ctx) if ev else []
+    return {"related_docs": rel, "linked": [{"relation": r.relation, "target": r.target_event_id or r.target_title} for r in linked]}
+
+
+@register("exports.run", "输出", "按画像 outputs.exports 把已发布记录导出(飞书多维表格等)", {"name": "导出名(可省)", "dry_run": "只渲染不写"})
+def _exports(db, ctx, name: str | None = None, dry_run: bool = False):
+    from app.services import exports
+    return exports.run(db, ctx, name=name, dry_run=dry_run)
+
+
+@register("quality.scorecard", "输出", "数据质量评分卡:完整性/准确性/一致性/时效性加权,A–D 定级", {"days": "覆盖度窗口"})
+def _scorecard(db, ctx, days: int | None = None):
+    from app.services import kpi
+    return kpi.quality_scorecard(db, ctx.id, days, ctx=ctx)
+
+
+@register("notify.feishu", "输出", "推一条文本到飞书群机器人(设置页 feishu_webhook)", {"text": "内容"})
+def _notify_feishu(db, ctx, text: str):
+    from app.services import notify
+    ok, note = notify.deliver_feishu(text)
+    return {"ok": ok, "note": note}

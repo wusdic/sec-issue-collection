@@ -44,6 +44,7 @@ _ADDED_COLUMNS = [
     ("source", "site_key", "VARCHAR(256)"),
     ("event", "record_type", "VARCHAR(16)"),
     ("source_probe", "site_title", "VARCHAR(256)"),
+    ("raw_document", "verification", "JSON"),
 ]
 
 
