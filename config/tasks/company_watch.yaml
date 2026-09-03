@@ -1,0 +1,206 @@
+# 任务:重点企业动态监测 —— 由原画像 need_company_watch.yaml 转换为任务模式(参数库引用 + 本任务特有覆盖)
+# 编译:python -m app.cli task-compile company_watch;装载:task-setup company_watch
+task:
+  id: company_watch
+  name: 重点企业动态监测
+  owner: 市场部
+  purpose: 定向监测名单内企业的融资/中标/新品/高管变动/处罚/合作等公开动态(只采公开信息,不作评价)
+  status: active
+  priority: B
+  schedule:
+    mode: continuous
+    cadence: daily
+    time_filters:
+    - 近7天
+use:
+- scope.topic.company_dynamics
+- record.light_document
+overrides:
+  need:
+    primary_behaviors:
+    - G5
+    languages:
+    - zh
+    regions:
+    - 中国大陆
+  compliance:
+    data_categories:
+    - 企业公开信息
+    personal_info: false
+    collection_boundary: 仅公开渠道
+    retention: 1年
+    usage_limit: 内部参考;不得贬损任何企业
+  record_schemas:
+  - archetype: 观测型
+    min_publish_fields:
+    - title
+    - subject
+  record:
+    id_prefix: CMP
+    role_labels:
+      subject: 企业
+      dim1: 动态类型
+      region: 地区
+    record_types:
+      values:
+      - 企业动态
+      - 汇总报道
+      - 不该入库
+      default: 企业动态
+      advisory:
+        value: 汇总报道
+        hints:
+        - 盘点
+        - 榜单
+        - 综述
+        subject_blank_values:
+        - ''
+        - 未披露
+        - 未知
+    dedup:
+      window_days: 30
+  dictionaries:
+    relevance_term_fields:
+    - topic_terms
+    - entity_terms
+  scope:
+    entities:
+    - value: 星河智算科技有限公司
+      aliases:
+      - 星河智算
+      - XinghePower
+    - value: 蓝海数科集团
+      aliases:
+      - 蓝海数科
+    require_mention:
+    - entities
+  pipeline:
+    light_fields:
+    - name: sentiment
+      type: string
+      desc: 正面/中性/负面
+  coverage:
+    dimension_role: subject
+    scope_kind: entities
+    query_templates:
+    - '{ind} 最新动态'
+  sources:
+    credibility_levels:
+      confirm_allowed:
+      - S1
+      - S2
+      levels:
+        S1: 企业官方公告/监管披露
+        S2: 主流财经媒体
+        S3: 自媒体
+  quality:
+    model: 事实核实型
+    screen:
+      goal: 判断是否为监测名单内企业的相关动态(融资、中标、新品、高管变动、处罚、合作签约)
+      exclude_rules:
+      - 不点名具体企业的行业综述
+      - 招聘信息
+      - 广告软文
+  update:
+    followup_schedule:
+    - 30
+  outputs:
+    reports:
+    - name: 企业动态周报
+      cycle: 周
+      audience: 市场部
+    reports_engine:
+      crosstab:
+        row_role: subject
+        col_roles:
+        - dim1
+    digest:
+      title: 企业动态日报
+      group_roles:
+      - subject
+      - dim1
+      advisory_split: false
+  ui:
+    record_label: 动态
+    tabs:
+      followups:
+        label: 跟踪
+        enabled: true
+    filters:
+    - role: status
+      label: 状态
+    detail_sections:
+    - kind: kv
+      roles:
+      - subject
+      - dim1
+      - region
+      - occurred_date
+    - kind: text
+      path: summary
+      label: 摘要
+    - kind: text
+      path: sentiment
+      label: 倾向
+    - kind: tags
+      roles:
+      - tags_a
+    - kind: sources
+  benchmark:
+    baselines:
+    - name: 企业官网新闻中心
+      type: 人工抽样
+      cycle: 月
+    target_recall: 0.9
+  demo:
+    samples:
+    - title: 星河智算完成B轮融资3亿元
+      text: 星河智算科技有限公司宣布完成B轮融资,金额3亿元,由某资本领投,资金将用于算力平台研发。
+    - title: 某机构发布行业算力榜单
+      text: 报告盘点了国内十家算力厂商的市场份额,未点名具体企业。
+  mock:
+    screen_keywords:
+    - 星河智算
+    - 蓝海数科
+    - XinghePower
+    - 融资
+    - 中标
+    - 新品
+    - 签约
+    - 处罚
+    - 高管
+    extract_rules:
+    - path: subject
+      when_contains:
+      - 星河智算
+      - XinghePower
+      value: 星河智算科技有限公司
+    - path: subject
+      when_contains:
+      - 蓝海数科
+      value: 蓝海数科集团
+    - path: category
+      when_contains:
+      - 融资
+      value: 融资
+    - path: category
+      when_contains:
+      - 中标
+      value: 中标
+    - path: category
+      when_contains:
+      - 签约
+      - 合作
+      value: 合作签约
+    - path: summary
+      regex: 正文[::]\s*([^\n]{10,200})
+    - path: sentiment
+      when_contains:
+      - 融资
+      - 中标
+      - 签约
+      value: 正面
+    - path: tags
+      when_contains:
+      - 融资
+      append: 融资

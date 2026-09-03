@@ -1,0 +1,24 @@
+preset:
+  id: quality.official_first_policy
+  kind: quality
+  name: 政策类可信度分级(官方 S1 / 协会 S2 / 媒体 S3)
+  description: 只有官方发布(S1)能支撑确认;协会转载 S2;媒体解读 S3
+  tags:
+  - 可信度
+  - 政策
+  applies_to:
+  - 文档型
+  version: 1
+  provenance:
+    from_task: policy_watch
+    section: sources.credibility_levels
+    extracted_at: '2026-09-03'
+body:
+  sources:
+    credibility_levels:
+      confirm_allowed:
+      - S1
+      levels:
+        S1: 部委官网/全国人大/司法机关正式发布
+        S2: 行业协会转载
+        S3: 媒体解读

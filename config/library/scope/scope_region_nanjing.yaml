@@ -1,0 +1,25 @@
+preset:
+  id: scope.region.nanjing
+  kind: scope
+  name: 南京市
+  description: 地域限定:南京市(别名 南京)
+  tags:
+  - 地域
+  - 江苏
+  - 南京
+  applies_to:
+  - 事件型
+  - 文档型
+  - 对象型
+  - 观测型
+  version: 1
+  provenance:
+    from_task: nanjing_docs
+    section: scope.regions
+    extracted_at: '2026-09-03'
+body:
+  scope:
+    regions:
+    - value: 南京市
+      terms:
+      - 南京

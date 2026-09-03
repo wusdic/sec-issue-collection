@@ -163,8 +163,8 @@ uvicorn app.main:app                     # 起 API,默认 SQLite + MockLLM
 
 ## 框架泛化的落地证据
 
-`config/need_policy_watch.yaml`(政策库,记录原型=**文档型**)与 sec_events(**事件型**)
-共用同一套 models/pipeline/adapters/dedup/discovery/archive,仅画像+Schema+词表不同——
+任务 `config/tasks/policy_watch.yaml`(政策库,记录原型=**文档型**,编译自参数库 `record.policy_document` 等)
+与 sec_events(**事件型**)共用同一套 models/pipeline/adapters/dedup/discovery/archive,仅画像+Schema+词表不同——
 `pytest tests/test_leads_and_pipeline.py::test_need_isolation` 验证两实例数据隔离、引擎零改动。
 
 ## 与设计文档的对应

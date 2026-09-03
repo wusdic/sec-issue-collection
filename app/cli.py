@@ -38,11 +38,7 @@ def init(with_users: bool = True, need: str = typer.Option(None, help="要装载
     try:
         ids = []
         if all_needs:
-            for f in profiles.all_profile_files():
-                cfg = need_ctx.load_profile_config_file(f) or {}
-                nid = (cfg.get("need") or {}).get("id")
-                if nid:
-                    ids.append(nid)
+            ids = need_ctx.file_need_ids()          # 画像文件 + 任务文件
         else:
             ids = [need or NEED_ID]
         loaded = [profiles.setup_need(db, nid) for nid in ids]

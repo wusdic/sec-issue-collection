@@ -1,0 +1,30 @@
+preset:
+  id: scope.topic.data_gov
+  kind: scope
+  name: 数据要素与数字政务主题
+  description: 数据要素 / 政务服务 / 数字政府 / 公共数据开放
+  tags:
+  - 主题
+  - 政务
+  applies_to:
+  - 事件型
+  - 文档型
+  - 对象型
+  - 观测型
+  version: 1
+  provenance:
+    from_task: nanjing_docs
+    section: scope.topics
+    extracted_at: '2026-09-03'
+body:
+  scope:
+    topics:
+    - 数据要素
+    - 政务服务
+    - 数字政府
+    - 公共数据开放
+    doc_types:
+    - 通知
+    - 意见
+    - 办法
+    - 方案

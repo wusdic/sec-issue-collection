@@ -1,0 +1,25 @@
+preset:
+  id: scope.topic.company_dynamics
+  kind: scope
+  name: 企业动态类型
+  description: 融资 / 中标 / 新品发布 / 高管变动 / 处罚 / 合作签约
+  tags:
+  - 主题
+  - 企业
+  applies_to:
+  - 观测型
+  - 事件型
+  version: 1
+  provenance:
+    from_task: company_watch
+    section: scope.topics
+    extracted_at: '2026-09-03'
+body:
+  scope:
+    topics:
+    - 融资
+    - 中标
+    - 新品发布
+    - 高管变动
+    - 处罚
+    - 合作签约

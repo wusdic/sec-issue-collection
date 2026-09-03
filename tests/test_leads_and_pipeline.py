@@ -48,7 +48,8 @@ def test_need_isolation(db):
     """多需求隔离:第二需求(政策库画像)注册后与 sec_events 数据不混。"""
     from app.services import profiles
     from app.models import Event
-    cfg = profiles.load_profile_file(profiles.settings.config_dir / "need_policy_watch.yaml")
+    from app.services import tasklib
+    cfg = tasklib.compile_task_id("policy_watch")      # 政策库已是任务模式:任务文件编译成画像
     np = profiles.register_need(db, cfg)
     db.flush()
     assert np.id == "policy_watch"

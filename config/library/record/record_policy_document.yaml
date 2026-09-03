@@ -1,0 +1,77 @@
+preset:
+  id: record.policy_document
+  kind: record
+  name: 政策/法规文档记录形态
+  description: 文档型;发布机关为主体、文号为去重键、主题为维度、文种为等级;线索关闭;政策库与医疗政策库的公共部分
+  tags:
+  - 记录形态
+  - 文档型
+  - 政策
+  applies_to:
+  - 文档型
+  version: 1
+  provenance:
+    from_task: policy_watch
+    section: record+ui+mock
+    extracted_at: '2026-09-03'
+body:
+  ui:
+    tabs:
+      leads:
+        label: 线索
+        enabled: false
+    record_label: 政策
+  coverage:
+    dimension_role: dim1
+  record:
+    role_labels:
+      occurred_date: 发布日
+      subject: 发布机关
+      tags_a: 主题
+      subject_key: 文号
+      grade: 文种
+      dim1: 主题
+    record_types:
+      values:
+      - 正式文件
+      - 征求意见
+      - 不该入库
+      out_of_scope: 不该入库
+      advisory:
+        value: 征求意见
+        subject_blank_values: []
+      default: 正式文件
+    field_roles:
+      occurred_date: published_date
+      title: title
+      subject: issuer
+      tags_a: topics
+      disclosed_date: effective_date
+      subject_key: doc_number
+      grade: doc_type
+      dim1: topics[0]
+      tags_b: affected_industries
+      record_type: record_type
+    envelope:
+      id_field: doc_id
+      status_field: ''
+    dedup:
+      window_days: 3650
+      type_role: null
+      subject_roles:
+      - subject_key
+      - subject+title
+      date_role: occurred_date
+  outputs:
+    reports_engine:
+      amount_sum: null
+      status_count: null
+      crosstab:
+        row_role: dim1
+    digest:
+      rank_role: grade
+      group_roles:
+      - dim1
+      - grade
+    leads_engine:
+      enabled: false

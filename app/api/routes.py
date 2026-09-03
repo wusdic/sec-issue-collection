@@ -1068,7 +1068,7 @@ def kpi_dashboard(need_id: str, db: Session = Depends(get_session), _: AppUser =
 
 @api.get("/needs")
 def list_needs(db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
-    """已注册的需求(画像)。default=平台默认需求;未注册但 config/need_*.yaml 里有的画像也列出(registered=false)。"""
+    """已注册的需求(画像)。default=平台默认需求;未注册但文件里有的(config/need_*.yaml 画像、config/tasks/*.yaml 任务)也列出(registered=false)。"""
     default = need_ctx.default_need_id()
     out, seen = [], set()
     for n in db.query(NeedProfile).all():
@@ -1083,6 +1083,13 @@ def list_needs(db: Session = Depends(get_session), _: AppUser = Depends(current_
         if nid and nid not in seen:
             out.append({"id": nid, "name": (cfg["need"].get("name") or nid), "active": False,
                         "registered": False, "default": nid == default, "file": str(f.name)})
+            seen.add(nid)
+    from app.services import tasklib
+    for t in tasklib.list_tasks():
+        tid = t.get("id")
+        if tid and tid not in seen:
+            out.append({"id": tid, "name": t.get("name") or tid, "active": False, "registered": False,
+                        "default": tid == default, "file": f"tasks/{tid}.yaml", "task": True, "status": t.get("status")})
     return out
 
 

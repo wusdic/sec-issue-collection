@@ -755,7 +755,7 @@ def load_profile_config_file(path) -> dict | None:
 
 
 def load_profile_config(need_id: str) -> dict | None:
-    """没有 DB 会话时按文件找画像(config/need_<id>.yaml 或任一文件里 need.id 匹配)。"""
+    """没有 DB 会话时按文件找画像:config/need_<id>.yaml → 任一画像文件里 need.id 匹配 → 任务文件 config/tasks/<id>.yaml 编译。"""
     direct = BASE_DIR / "config" / f"need_{need_id}.yaml"
     candidates = [direct] + [p for p in profile_files() if p != direct]
     for p in candidates:
@@ -766,6 +766,13 @@ def load_profile_config(need_id: str) -> dict | None:
             continue
         if (cfg.get("need") or {}).get("id") == need_id:
             return cfg
+    # 任务模式:config/tasks/<id>.yaml → 编译成画像(tasklib 属底座层,只读任务/参数库文件)
+    from app.services import tasklib
+    if tasklib.find_task(need_id):
+        try:
+            return tasklib.compile_task_id(need_id)
+        except (KeyError, ValueError, OSError, yaml.YAMLError):
+            return None
     return None
 
 
@@ -818,7 +825,25 @@ def default_need_id() -> str:
         nid = (cfg.get("need") or {}).get("id")
         if nid:
             return str(nid)
+    from app.services import tasklib
+    for t in tasklib.list_tasks():
+        if t.get("id"):
+            return str(t["id"])
     return "default"
+
+
+def file_need_ids() -> list[str]:
+    """文件里声明的全部需求 id:画像文件 config/need_*.yaml 的 need.id + 任务文件 config/tasks/*.yaml 的 task.id(去重、保序)。"""
+    from app.services import tasklib
+    out: list[str] = []
+    for f in profile_files():
+        nid = ((load_profile_config_file(f) or {}).get("need") or {}).get("id")
+        if nid and nid not in out:
+            out.append(str(nid))
+    for t in tasklib.list_tasks():
+        if t.get("id") and t["id"] not in out:
+            out.append(str(t["id"]))
+    return out
 
 
 def reset_cache():

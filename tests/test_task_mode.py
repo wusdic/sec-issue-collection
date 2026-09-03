@@ -99,3 +99,32 @@ def test_task_api_and_cli(db):
     from app.cli import cli
     out = CliRunner().invoke(cli, ["library-list", "--kind", "schedule"]).output
     assert "schedule.hourly_30d" in out
+
+
+def test_scenario_profiles_are_tasks_and_resolve_without_db(db):
+    """四个场景(政策/医疗政策/企业动态/南京文件)已转成任务文件;无会话也能按任务编译出画像;参数库标出被谁复用。"""
+    ids = {t["id"] for t in tasklib.list_tasks()}
+    assert {"tender_watch", "policy_watch", "med_policy", "company_watch", "nanjing_docs"} <= ids
+    need_ctx.reset_cache()
+    c = need_ctx.get(None, "policy_watch")                 # 没有 DB 记录 → 任务文件编译
+    assert c.id == "policy_watch" and c.archetype == "文档型" and c.ui.get("record_label") == "政策"
+    cfg = tasklib.compile_task_id("med_policy")
+    assert cfg["scope"]["industries"][0]["value"] == "医疗卫生" and cfg["keywords"]["time_filters"] == ["近30天"]
+    assert cfg["need"]["timeliness_sla"] == "日级" and cfg["task"]["status"] == "active"
+    used = {r["id"]: set(r["used_by"]) for r in tasklib.list_presets()}
+    assert {"policy_watch", "med_policy"} <= used["record.policy_document"]
+    assert {"company_watch", "nanjing_docs"} <= used["record.light_document"]
+    assert "nanjing_docs" in used["scope.region.nanjing"]
+    assert set(need_ctx.file_need_ids()) >= {"sec_events", "tender_watch", "policy_watch"}
+
+
+def test_list_needs_includes_task_files(db):
+    from app.api import routes
+    from app.models import AppUser
+    user = db.query(AppUser).first() or AppUser(username="t", password_hash="x", role="admin")
+    rows = routes.list_needs(db=db, _=user)
+    by_id = {r["id"]: r for r in rows}
+    row = by_id["policy_watch"]                                  # 别的测试可能已把它装进库:装了就 registered,没装就来自任务文件
+    assert row["registered"] or (row["file"] == "tasks/policy_watch.yaml" and row.get("task") is True)
+    assert "nanjing_docs" in by_id
+    assert by_id["sec_events"]["registered"] is True

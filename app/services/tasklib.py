@@ -1,4 +1,4 @@
-"""任务模式与参数库(能力层):
+"""任务模式与参数库(底座层:只读任务/参数库文件,不依赖任何能力模块;need_ctx 用它把任务文件编译成画像):
 
 - **参数库(preset)**:`config/library/<kind>/<id>.yaml`,一段可复用的画像片段(scope 地域词、记录形态、质量规则、
   节奏、输出…),带 id/kind/name/tags/applies_to/version/provenance;

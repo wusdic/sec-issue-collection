@@ -1,0 +1,55 @@
+preset:
+  id: record.light_document
+  kind: record
+  name: 轻量记录形态(标题/摘要/主体/分类/地域)
+  description: 无 Schema 文件;pipeline.extract_mode=light;主体+标题去重;线索关闭;适合企业动态、地域文件、资讯类
+  tags:
+  - 记录形态
+  - 轻量
+  applies_to:
+  - 事件型
+  - 文档型
+  - 对象型
+  - 观测型
+  version: 1
+  provenance:
+    from_task: company_watch
+    section: pipeline+record+ui
+    extracted_at: '2026-09-03'
+body:
+  ui:
+    list_columns:
+    - role: title
+    - role: subject
+    - role: dim1
+    - role: occurred_date
+    tabs:
+      leads:
+        label: 线索
+        enabled: false
+  record:
+    role_labels:
+      occurred_date: 发布日
+      tags_a: 标签
+      record_type: 类型
+    record_types:
+      out_of_scope: 不该入库
+    envelope:
+      id_field: ''
+      status_field: ''
+    dedup:
+      type_role: null
+      subject_roles:
+      - subject+title
+      date_role: occurred_date
+  pipeline:
+    extract_mode: light
+  outputs:
+    reports_engine:
+      amount_sum: null
+      status_count: null
+      missing_field: null
+    digest:
+      rank_role: dim1
+    leads_engine:
+      enabled: false

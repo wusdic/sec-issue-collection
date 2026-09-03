@@ -1,0 +1,28 @@
+preset:
+  id: scope.topic.healthcare_policy
+  kind: scope
+  name: 医疗政策主题与文种
+  description: 互联网诊疗 / 医保支付 / 医疗数据 / 药品集采 / 分级诊疗;通知 / 管理办法 / 指导意见 / 征求意见稿
+  tags:
+  - 主题
+  - 医疗
+  applies_to:
+  - 文档型
+  version: 1
+  provenance:
+    from_task: med_policy
+    section: scope.topics
+    extracted_at: '2026-09-03'
+body:
+  scope:
+    topics:
+    - 互联网诊疗
+    - 医保支付
+    - 医疗数据
+    - 药品集采
+    - 分级诊疗
+    doc_types:
+    - 通知
+    - 管理办法
+    - 指导意见
+    - 征求意见稿
