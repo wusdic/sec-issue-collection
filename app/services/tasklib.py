@@ -148,7 +148,7 @@ def extract_preset(cfg: dict, section: str, preset_id: str, kind: str, name: str
 # ---------------- 任务 ----------------
 
 def task_files() -> list[Path]:
-    return sorted(Path(p) for p in glob.glob(str(TASKS_DIR / "*.yaml")))
+    return sorted(Path(p) for p in glob.glob(str(TASKS_DIR / "*.yaml")) if "template" not in Path(p).name)
 
 
 def load_task_file(path: Path) -> dict | None:
