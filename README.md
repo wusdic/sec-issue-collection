@@ -10,20 +10,18 @@
 平台主线:**针对一个信息需求,找得快、找得全、确认真实、整理成好用可用的记录、按分类存在本地**;
 通知(邮件/飞书/webhook)与导出(本地资料库/多维表格)是可插拔组件。
 
-平台设计与验证见 `design/platform/`(从 [00 总纲](design/platform/00-总纲.md) 开始):
-[01 架构设计与实施方案](design/platform/01-实施方案.md)(模块式分层,每层的需求与验收)·
-[02 业务逻辑与参数化维度](design/platform/02-业务逻辑与参数化维度.md) ·
-[03 功能说明书](design/platform/03-功能清单.md)(每个功能:作用/给谁用/入口/用法要点)·
-[04 多视角验证](design/platform/04-多视角验证.md) ·
-[05 落地与验证记录](design/platform/05-落地验证.md)(含"新增一个需求"操作清单)·
-[06 场景适用性与能力模组](design/platform/06-场景适用性与能力模组.md)(四个场景画像,能力模组目录)·
-[07 需求泛化模型与决策表](design/platform/07-需求泛化模型与决策表.md)(六根轴 + 需求特征→画像键 决策表,生成式验证)·
-[08 模块边界与升级规范](design/platform/08-模块边界与升级规范.md)(分层、契约、扩展点、升级操作规范)·
-[09 同类项目借鉴评估](design/platform/09-同类项目借鉴评估.md)(data-collector / caijifagui / data-compliance-platform 的吸收、排期与不采用)。
-画像模板:[`config/need_profile.template.yaml`](config/need_profile.template.yaml)(v1.2 全维度,9 个必填键)。
+平台设计与验证见 `design/platform/`(索引 [design/platform/README.md](design/platform/README.md),从 [00 总纲](design/platform/00-总纲.md) 开始):
+[01 任务模式](design/platform/01-任务模式.md)(任务怎么定义、编译、装载、运行、提炼;参数库)·
+[02 参数手册](design/platform/02-参数手册.md)(任务级参数与画像键全表、调参指南)·
+[03 架构设计](design/platform/03-架构设计.md)(模块式分层,每层的需求与验收)·
+[04 功能说明书](design/platform/04-功能说明书.md)(每个功能:作用/给谁用/入口/用法要点)·
+[05 场景与需求模型](design/platform/05-场景与需求模型.md)(六根轴、决策表、场景矩阵)·
+[06 质量与验证](design/platform/06-质量与验证.md)(多视角复查、验证矩阵、落地记录)·
+[07 模块边界与扩展](design/platform/07-模块边界与扩展.md)(分层规则、契约、扩展点、升级规范)·
+[08 演进与借鉴](design/platform/08-演进与借鉴.md)(同类项目借鉴评估、路线图)。
 
-快速开始:`python -m app.cli init`(装载默认需求;`--all` 装载全部画像)→ `uvicorn app.main:app` → 登录后头部可切换需求。
-新建任务(v1.5):复制 `config/tasks/task.template.yaml` → `use` 参数库条目 + 写本任务特有部分 → `python -m app.cli task-setup <id>`;详见 [10 任务模式与参数库](design/platform/10-任务模式与参数库.md)。
+快速开始:`python -m app.cli init`(装载默认任务;`--all` 装载全部画像与任务文件)→ `uvicorn app.main:app` → 登录后头部可切换需求。
+新建任务(v1.5):复制 `config/tasks/task.template.yaml` → `use` 参数库条目 + 写本任务特有部分 → `python -m app.cli task-setup <id>`;详见 [01 任务模式](design/platform/01-任务模式.md)。
 
 ## 仓库结构
 

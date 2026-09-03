@@ -1,5 +1,5 @@
 # =====================================================================================
-# 任务模板 v1.5 —— "新建一个任务":规定这个任务要干什么、多久干一次、用哪些现成参数
+# 任务模板 v1.5 —— "新建一个任务":规定这个任务要干什么、多久干一次、用哪些现成参数(说明见 design/platform/01-任务模式.md)
 # 用法:复制为 config/tasks/<id>.yaml → python -m app.cli task-compile <id>(看编译结果)→ task-setup <id>(装载)
 # 结构:task(元信息/节奏/预算)+ use(参数库引用,按序合并)+ overrides(本任务特有,与画像同构)
 # 参数库:config/library/<kind>/<id>.yaml;`python -m app.cli library-list` 查看;
