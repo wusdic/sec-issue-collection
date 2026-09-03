@@ -1,0 +1,12 @@
+preset:
+  id: quality.official_only
+  kind: quality
+  name: 只认官方来源确认(S1)
+  description: 可信度分级:S1 官方原文 / S2 代理或协会 / S3 商业聚合;只有 S1 能支撑"已确认"断言
+  tags: [可信度, 官方]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: tender_watch, section: sources.credibility_levels, extracted_at: "2026-09-03"}
+body:
+  sources:
+    credibility_levels: {confirm_allowed: [S1], levels: {S1: 官方发布原文, S2: 代理机构/行业协会转载, S3: 商业聚合站/媒体}}

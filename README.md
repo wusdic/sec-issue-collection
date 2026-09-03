@@ -21,6 +21,7 @@
 画像模板:[`config/need_profile.template.yaml`](config/need_profile.template.yaml)(v1.2 全维度,9 个必填键)。
 
 快速开始:`python -m app.cli init`(装载默认需求;`--all` 装载全部画像)→ `uvicorn app.main:app` → 登录后头部可切换需求。
+新建任务(v1.5):复制 `config/tasks/task.template.yaml` → `use` 参数库条目 + 写本任务特有部分 → `python -m app.cli task-setup <id>`;详见 [10 任务模式与参数库](design/platform/10-任务模式与参数库.md)。
 
 ## 仓库结构
 

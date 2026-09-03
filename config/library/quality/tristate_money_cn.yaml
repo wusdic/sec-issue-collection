@@ -1,0 +1,15 @@
+preset:
+  id: quality.tristate_money_cn
+  kind: quality
+  name: 人民币金额三态守卫(中文语境词)
+  description: 事实核实型:声称/估算/确认三通道;中文"要求/索赔/拟处罚"为声称语境,"判决/处罚决定/公告披露"为确认语境
+  tags: [三态, 金额, 事实核实]
+  applies_to: [事件型]
+  version: 1
+  provenance: {from_task: sec_events, section: quality.assertions, extracted_at: "2026-09-03"}
+body:
+  quality:
+    assertions:
+      channels: {claimed: claimed_cny, estimated: estimated_cny, confirmed: confirmed_cny}
+      claimed_markers: "要求|索赔|勒索|拟处罚|拟罚|预计|或将|据传|传闻|主张|声称|估计|约合"
+      confirmed_markers: "判决|裁定|处罚决定|决定书|行政处罚|公告(?:披露|确认)|年报(?:披露|确认)|已支付|已缴纳"

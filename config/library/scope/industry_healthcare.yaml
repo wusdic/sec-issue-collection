@@ -1,0 +1,12 @@
+preset:
+  id: scope.industry.healthcare
+  kind: scope
+  name: 医疗卫生行业(同义词)
+  description: 行业限定:医疗/医院/卫生健康/医药/医保
+  tags: [行业, 医疗]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: med_policy, section: scope.industries, extracted_at: "2026-09-03"}
+body:
+  scope:
+    industries: [{value: 医疗卫生, terms: [医疗, 医院, 卫生健康, 医药, 医保]}]

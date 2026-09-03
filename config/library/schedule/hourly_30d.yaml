@@ -1,0 +1,13 @@
+preset:
+  id: schedule.hourly_30d
+  kind: schedule
+  name: 小时级 · 近 30 天
+  description: 时效敏感需求(招标、告警):小时级 SLA,只采近 30 天,检索用近 7 天时间过滤
+  tags: [节奏, 小时级]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: tender_watch, section: need.timeliness_sla, extracted_at: "2026-09-03"}
+body:
+  need: {timeliness_sla: 小时级, priority: A}
+  scope: {time_window_days: 30}
+  keywords: {time_filters: [近7天], negative_terms: [招聘, 培训]}

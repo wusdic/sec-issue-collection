@@ -1,0 +1,12 @@
+preset:
+  id: outputs.notify.all_configured
+  kind: outputs
+  name: 通知:邮件 + 飞书(按设置)
+  description: 日报与紧急动作走邮件和飞书群机器人(设置页配好凭证即生效)
+  tags: [输出, 通知]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: platform, section: outputs.notify, extracted_at: "2026-09-03"}
+body:
+  outputs:
+    notify: {channels: [email, feishu]}

@@ -1,0 +1,12 @@
+preset:
+  id: scope.doctypes.procurement
+  kind: scope
+  name: 政府采购公告文种
+  description: 招标公告/中标公告/中标结果公告/采购公告/成交公告
+  tags: [文种, 招标]
+  applies_to: [对象型, 文档型]
+  version: 1
+  provenance: {from_task: tender_watch, section: scope.doc_types, extracted_at: "2026-09-03"}
+body:
+  scope:
+    doc_types: [招标公告, 中标公告, 中标结果公告, 采购公告, 成交公告]

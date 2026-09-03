@@ -1086,6 +1086,113 @@ def list_needs(db: Session = Depends(get_session), _: AppUser = Depends(current_
     return out
 
 
+# ---------- 任务模式与参数库 ----------
+
+@api.get("/tasks")
+def list_tasks(db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
+    """任务文件清单(config/tasks)+ 库里是否已装载、当前状态。"""
+    from app.services import tasklib
+    rows = tasklib.list_tasks()
+    for r in rows:
+        np = db.get(NeedProfile, r["id"])
+        r["registered"] = np is not None
+        r["runnable"] = bool(np and np.active and tasklib.is_runnable(np.config))
+    return rows
+
+
+@api.get("/tasks/{task_id}/compile")
+def compile_task(task_id: str, _: AppUser = Depends(current_user)):
+    """预览:任务编译成画像后长什么样(不落库)。"""
+    from app.services import tasklib
+    try:
+        return tasklib.compile_task_id(task_id)
+    except (FileNotFoundError, KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@api.post("/tasks/{task_id}/setup")
+def task_setup(task_id: str, db: Session = Depends(get_session), user: AppUser = Depends(require_roles("admin"))):
+    """编译并装载任务(注册画像 + 词表 + 关键词 + 种子源,幂等)。"""
+    from app.services import profiles, tasklib
+    try:
+        r = profiles.setup_task(db, task_id)
+    except (FileNotFoundError, KeyError, ValueError, profiles.ProfileError) as e:
+        raise HTTPException(400, str(e))
+    db.add(AuditLog(user_id=user.id, action="task.setup", target=task_id, detail={"use": r.get("use")}))
+    db.commit()
+    return r
+
+
+class TaskStatusIn(BaseModel):
+    status: str                # draft | active | paused | finished
+
+
+@api.put("/tasks/{task_id}/status")
+def task_set_status(task_id: str, body: TaskStatusIn, db: Session = Depends(get_session),
+                    user: AppUser = Depends(require_roles("admin", "analyst"))):
+    """改任务状态(暂停/恢复/结束):自动化只跑 active 的任务。"""
+    if body.status not in ("draft", "active", "paused", "finished"):
+        raise HTTPException(400, "status 须为 draft/active/paused/finished")
+    np = db.get(NeedProfile, task_id)
+    if np is None:
+        raise HTTPException(404, "任务未装载")
+    cfg = dict(np.config or {})
+    cfg["task"] = {**(cfg.get("task") or {}), "id": task_id, "status": body.status}
+    np.config = cfg
+    need_ctx.reset_cache()
+    db.add(AuditLog(user_id=user.id, action="task.status", target=task_id, detail={"status": body.status}))
+    db.commit()
+    return {"id": task_id, "status": body.status}
+
+
+@api.get("/library")
+def library_list(kind: str | None = None, tag: str | None = None, _: AppUser = Depends(current_user)):
+    """参数库:可复用的画像片段(scope 地域词、记录形态、质量规则、节奏、输出…)。"""
+    from app.services import tasklib
+    return tasklib.list_presets(kind, tag)
+
+
+@api.get("/library/{preset_id}")
+def library_get(preset_id: str, _: AppUser = Depends(current_user)):
+    from app.services import tasklib
+    item = tasklib.library().get(preset_id)
+    if not item:
+        raise HTTPException(404, "参数库里没有该条目")
+    return item
+
+
+class ExtractIn(BaseModel):
+    need_id: str                 # 从哪个已装载需求/任务提炼
+    section: str                 # 点路径,如 scope.regions / quality.assertions
+    preset_id: str
+    kind: str
+    name: str
+    description: str = ""
+    tags: list[str] = []
+    applies_to: list[str] = []
+    overwrite: bool = False
+
+
+@api.post("/library/extract")
+def library_extract(body: ExtractIn, db: Session = Depends(get_session),
+                    user: AppUser = Depends(require_roles("admin", "analyst"))):
+    """提炼:把某个任务/画像的一段存成参数库条目,其它任务 use 即可复用。"""
+    from app.services import tasklib
+    np = db.get(NeedProfile, body.need_id)
+    if np is None:
+        raise HTTPException(404, "需求/任务未装载")
+    try:
+        path = tasklib.extract_preset(np.config or {}, body.section, body.preset_id, body.kind, body.name,
+                                      body.description, body.tags, body.applies_to,
+                                      provenance={"from_task": body.need_id}, overwrite=body.overwrite)
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(400, str(e))
+    db.add(AuditLog(user_id=user.id, action="library.extract", target=body.preset_id,
+                    detail={"from": body.need_id, "section": body.section}))
+    db.commit()
+    return {"id": body.preset_id, "path": str(path)}
+
+
 @api.get("/needs/{need_id}/ui")
 def need_ui(need_id: str, db: Session = Depends(get_session), _: AppUser = Depends(current_user)):
     """界面定义:页签/列/筛选/详情分区/仪表盘卡片/角色标签——前端按它渲染,不认行业字段名。"""

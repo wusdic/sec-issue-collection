@@ -1,0 +1,13 @@
+preset:
+  id: schedule.daily_365d
+  kind: schedule
+  name: 日级 · 近一年
+  description: 常规监测:日级 SLA,采近一年内容,检索用近 30 天时间过滤
+  tags: [节奏, 日级]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: platform, section: need.timeliness_sla, extracted_at: "2026-09-03"}
+body:
+  need: {timeliness_sla: 日级, priority: B}
+  scope: {time_window_days: 365}
+  keywords: {time_filters: [近30天]}

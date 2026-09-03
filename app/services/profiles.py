@@ -209,12 +209,49 @@ def all_profile_files() -> list[Path]:
     return need_ctx.profile_files()
 
 
-def setup_need(db: Session, need_id: str | None = None, activate: bool = True) -> dict:
-    """按画像把一个需求装起来:注册画像 + 载词表 + 载关键词 + 载种子源(全部幂等;文件缺的跳过)。"""
+def setup_task(db: Session, task_id: str, activate: bool = True) -> dict:
+    """任务模式:编译任务(参数库引用 + 覆盖)为画像并装载。"""
+    from app.services import tasklib
+    cfg = tasklib.compile_task_id(task_id)
+    r = setup_from_config(db, cfg, activate=activate)
+    r["task"] = cfg.get("task")
+    r["use"] = (cfg.get("compiled_from") or {}).get("use")
+    return r
+
+
+def setup_from_config(db: Session, cfg: dict, activate: bool = True) -> dict:
+    """给定画像 dict 装载(注册 + 词表 + 关键词 + 种子源,幂等)。"""
     from app.services import need_ctx
+    np = register_need(db, cfg, activate=activate)
+    need_ctx.reset_cache()
+    ctx = need_ctx.from_config(cfg)
+    out = {"need_id": np.id, "name": np.name, "dictionaries": False, "keywords": False, "seed_sources": 0}
+    if ctx.dictionaries_file and Path(ctx.dictionaries_file).exists():
+        load_dictionaries(db, np.id, ctx.dictionaries_file)
+        out["dictionaries"] = True
+    if ctx.discovery_terms_file and Path(ctx.discovery_terms_file).exists():
+        load_keyword_set(db, np.id, ctx.discovery_terms_file)
+        out["keywords"] = True
+    elif ctx.keywords_cfg.get("auto_generate", True):
+        from app.services import keywords
+        content, _ks = keywords.generate(db, ctx, persist=True)
+        out["keywords"] = bool(content.get("preview"))
+        out["keywords_generated"] = len(content.get("preview") or [])
+    if ctx.seed_file and Path(ctx.seed_file).exists():
+        out["seed_sources"] = load_seed_sources(db, np.id, ctx.seed_file)
+    db.flush()
+    return out
+
+
+def setup_need(db: Session, need_id: str | None = None, activate: bool = True) -> dict:
+    """按画像把一个需求装起来:注册画像 + 载词表 + 载关键词 + 载种子源(全部幂等;文件缺的跳过)。
+    没有 need_<id>.yaml 但有 config/tasks/<id>.yaml 时走任务模式编译。"""
+    from app.services import need_ctx, tasklib
     paths = need_paths(need_id)
     if not paths["profile"] or not Path(paths["profile"]).exists():
-        raise ProfileError(f"找不到画像文件:{paths['profile']}")
+        if need_id and tasklib.find_task(need_id):
+            return setup_task(db, need_id, activate=activate)
+        raise ProfileError(f"找不到画像文件:{paths['profile']}(也没有任务文件 config/tasks/{need_id}.yaml)")
     cfg = load_profile_file(paths["profile"])
     np = register_need(db, cfg, activate=activate)
     need_ctx.reset_cache()
@@ -239,5 +276,10 @@ def setup_need(db: Session, need_id: str | None = None, activate: bool = True) -
     return out
 
 
-def active_need_ids(db: Session) -> list[str]:
-    return [n.id for n in db.query(NeedProfile).filter_by(active=True).all()]
+def active_need_ids(db: Session, runnable_only: bool = False) -> list[str]:
+    """激活的需求;runnable_only=True 时再按任务状态/有效期过滤(暂停/结束的任务不进自动化)。"""
+    from app.services import tasklib
+    rows = db.query(NeedProfile).filter_by(active=True).all()
+    if not runnable_only:
+        return [n.id for n in rows]
+    return [n.id for n in rows if tasklib.is_runnable(n.config)]

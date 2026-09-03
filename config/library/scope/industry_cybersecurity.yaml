@@ -1,0 +1,12 @@
+preset:
+  id: scope.industry.cybersecurity
+  kind: scope
+  name: 网络安全行业(同义词)
+  description: 行业限定:网络安全/信息安全/等保/数据安全/安全运营
+  tags: [行业, 网络安全]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: tender_watch, section: scope.industries, extracted_at: "2026-09-03"}
+body:
+  scope:
+    industries: [{value: 网络安全, terms: [网络安全, 信息安全, 等保, 数据安全, 安全运营]}]

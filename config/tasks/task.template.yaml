@@ -1,0 +1,41 @@
+# =====================================================================================
+# 任务模板 v1.5 —— "新建一个任务":规定这个任务要干什么、多久干一次、用哪些现成参数
+# 用法:复制为 config/tasks/<id>.yaml → python -m app.cli task-compile <id>(看编译结果)→ task-setup <id>(装载)
+# 结构:task(元信息/节奏/预算)+ use(参数库引用,按序合并)+ overrides(本任务特有,与画像同构)
+# 参数库:config/library/<kind>/<id>.yaml;`python -m app.cli library-list` 查看;
+#        `library-extract <任务> <点路径> <新id> <kind> <名称>` 把本任务的一段提炼进库供别的任务复用。
+# 注意:本文件名含 template,不会被当成任务加载。
+# =====================================================================================
+task:
+  id: ""                        # ★ 任务 id(也是需求 id / 记录前缀所属需求)
+  name: ""                      # ★ 任务名称(界面标题、提示词、日报)
+  owner: ""                     # 任务负责人
+  purpose: ""                   # 一句话:这个任务要拿到什么、给谁用
+  status: draft                 # draft(草稿,不跑)/ active(自动化跑)/ paused(暂停)/ finished(结束,只读)
+  priority: B                   # A/B/C:抓取与查询配额
+  schedule:
+    mode: continuous            # continuous 持续监测 / campaign 有起止 / once 一次性回填
+    cadence: daily              # hourly / daily / weekly / alert → 画像 need.timeliness_sla
+    time_window_days: null      # 只采近 N 天 → 画像 scope.time_window_days;null 用参数库/设置
+    time_filters: []            # 检索时间过滤,如 [近7天] → keywords.time_filters
+    start: null                 # campaign 起止(ISO 日期);自动化只在区间内跑
+    end: null
+  budget:
+    query_budget_per_source_daily: null   # 每源每次查询条数上限 → keywords.query_budget_per_source_daily
+    max_pages_per_query: null             # → keywords.max_pages_per_query
+
+use: []                         # 参数库条目 id,按序合并(后者覆盖前者;列表追加去重),例如:
+                                #   - scope.region.jiangsu          地域词
+                                #   - scope.industry.cybersecurity  行业词
+                                #   - record.tender_notice          记录形态(Schema/角色/去重/报表/界面)
+                                #   - quality.official_only         可信度分级
+                                #   - schedule.hourly_30d           节奏
+                                #   - outputs.local_library         分类存本地
+
+overrides:                      # 本任务特有的画像键(与 config/need_profile.template.yaml 同构),至少要有:
+  compliance: {data_categories: [], personal_info: false, collection_boundary: 仅公开渠道, retention: "", usage_limit: ""}
+  quality:
+    model: 事实核实型
+    screen: {goal: ""}          # ★ 粗筛判定目标
+  scope: {}                     # 例:{topics: [...], entities: [...], require_mention: [regions]}
+  benchmark: {baselines: [], target_recall: 0.9}

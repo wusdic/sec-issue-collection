@@ -172,6 +172,53 @@ def keywords_generate(need: str = typer.Option(None, help="需求 id(缺省=默�
         db.close()
 
 
+@cli.command("task-setup")
+def task_setup(task_id: str):
+    """任务模式:编译 config/tasks/<id>.yaml(参数库引用 + 覆盖)为画像并装载。"""
+    from app.services import profiles
+    db = SessionLocal()
+    try:
+        r = profiles.setup_task(db, task_id)
+        db.commit()
+        typer.echo(json.dumps(r, ensure_ascii=False, indent=1, default=str))
+    finally:
+        db.close()
+
+
+@cli.command("task-compile")
+def task_compile(task_id: str):
+    """只编译不落库:打印任务编译出的画像。"""
+    from app.services import tasklib
+    typer.echo(json.dumps(tasklib.compile_task_id(task_id), ensure_ascii=False, indent=1, default=str))
+
+
+@cli.command("library-list")
+def library_list(kind: str = typer.Option(None), tag: str = typer.Option(None)):
+    """列出参数库条目(可复用的画像片段)。"""
+    from app.services import tasklib
+    for r in tasklib.list_presets(kind, tag):
+        typer.echo(f"[{r['kind']}] {r['id']}: {r['name']}  键={r['keys']}  被引用={r['used_by']}")
+
+
+@cli.command("library-extract")
+def library_extract(need: str, section: str, preset_id: str, kind: str, name: str,
+                    tags: str = typer.Option("", help="逗号分隔"), overwrite: bool = False):
+    """提炼:把已装载需求/任务的一段(如 scope.regions)存成参数库条目。"""
+    from app.models import NeedProfile
+    from app.services import tasklib
+    db = SessionLocal()
+    try:
+        np = db.get(NeedProfile, need)
+        if np is None:
+            typer.echo("需求/任务未装载"); raise typer.Exit(1)
+        path = tasklib.extract_preset(np.config or {}, section, preset_id, kind, name,
+                                      tags=[t for t in tags.split(",") if t], provenance={"from_task": need},
+                                      overwrite=overwrite)
+        typer.echo(f"已写入 {path}")
+    finally:
+        db.close()
+
+
 @cli.command("cap-list")
 def cap_list():
     """列出可独立调用的底层能力。"""

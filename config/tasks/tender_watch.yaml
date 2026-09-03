@@ -1,0 +1,59 @@
+# 任务:江苏网络安全招标中标监测 —— 任务模式样板(参数库引用 + 本任务特有覆盖)
+# 编译:python -m app.cli task-compile tender_watch;装载:task-setup tender_watch
+task:
+  id: tender_watch
+  name: 江苏网络安全招标中标监测
+  owner: 销售运营
+  purpose: 及时发现江苏省内网络安全类项目的招标与中标公告,跟踪中标人与金额,支撑销售打单
+  status: active                       # draft / active / paused / finished;自动化只跑 active
+  schedule:
+    mode: continuous                   # continuous(持续)/ campaign(有起止)/ once(一次性回填)
+    cadence: hourly                    # → need.timeliness_sla
+    time_window_days: 30               # → scope.time_window_days
+    start: null
+    end: null
+  budget:
+    query_budget_per_source_daily: 200
+    max_pages_per_query: 3
+use:                                   # 参数库条目,按序合并
+  - scope.region.jiangsu
+  - scope.industry.cybersecurity
+  - scope.doctypes.procurement
+  - record.tender_notice
+  - quality.official_only
+  - schedule.hourly_30d
+  - outputs.local_library
+overrides:                             # 本任务特有(与画像同构)
+  need: {primary_behaviors: [G1], languages: [zh], regions: [中国大陆]}
+  compliance: {data_categories: [政府采购公开信息], personal_info: false, collection_boundary: 仅公开渠道, retention: 3年, usage_limit: 内部销售参考}
+  scope:
+    require_mention: [regions]
+  keywords:
+    compose:
+      - {groups: [region_terms, industry_terms, doctype_terms], template: "{0} {1} {2}", limits: [3, 3, 3]}
+      - {groups: [industry_terms, doctype_terms], template: "{0} {1}"}
+  coverage: {dimension_role: region, scope_kind: regions, query_templates: ["{ind} 网络安全 中标公告"]}
+  sources:
+    prospect: {selftest_query: 江苏 网络安全 中标公告}
+  quality:
+    model: 事实核实型
+    screen:
+      goal: 判断是否为江苏省内网络安全/信息安全类采购项目的招标、中标、变更、废标公告原文
+      include_rules: [政府采购网/公共资源交易中心发布的公告原文, 采购内容涉及安全设备/等保测评/安全运营/数据安全]
+      exclude_rules: [招标代理/培训/资讯解读, 非江苏省项目, 与安全无关的采购]
+  outputs:
+    reports: [{name: 招标中标周报, cycle: 周, audience: 销售}]
+  benchmark: {baselines: [{name: 江苏政府采购网月度公告, type: 官方汇总, cycle: 月}], target_recall: 0.95}
+  demo:
+    samples:
+      - {title: 南京市某区政务云网络安全等保建设项目中标公告,
+         text: "项目编号:JSZC-2026-0812。采购人:南京市某区大数据管理局。中标供应商:江苏某某信息技术有限公司,中标金额:286.5万元。项目内容:政务云平台等级保护建设及安全运营服务。"}
+      - {title: 苏州市某医院网络安全设备采购招标公告,
+         text: "项目编号:SZ-2026-CG-077。采购人:苏州市某医院。采购内容:防火墙、态势感知平台、等保测评服务。投标截止日期2026年9月20日。"}
+  mock:
+    screen_keywords: [网络安全, 等保, 信息安全, 江苏, 南京, 苏州]
+    extract_rules:
+      - {path: region, when_contains: [江苏, 南京, 苏州, 无锡], value: 江苏省}
+      - {path: industry, when_contains: [网络安全, 等保, 信息安全], value: 网络安全}
+      - {path: items, when_contains: [防火墙], append: 防火墙}
+      - {path: items, when_contains: [等保], append: 等级保护}

@@ -1,0 +1,57 @@
+preset:
+  id: record.tender_notice
+  kind: record
+  name: 招标/中标公告记录形态
+  description: 对象型;采购人为主体、项目编号为去重键、公告类型为等级;Schema schema/tender.schema.json
+  tags: [记录形态, 招标, 对象型]
+  applies_to: [对象型]
+  version: 1
+  provenance: {from_task: tender_watch, section: record, extracted_at: "2026-09-03"}
+body:
+  record_schemas:
+    - {file: schema/tender.schema.json, archetype: 对象型, min_publish_fields: [project_name, notice_type], dedup_key: [project_no]}
+  record:
+    id_prefix: TND
+    envelope: {id_field: "", status_field: ""}
+    field_roles: {title: title, subject: buyer, subject_key: project_no, subject_type: notice_type, dim1: industry,
+                  region: region, grade: notice_type, tags_a: items, occurred_date: published_date, record_type: record_type}
+    role_labels: {subject: 采购人, subject_key: 项目编号, dim1: 行业, region: 地区, grade: 公告类型, tags_a: 采购品目, occurred_date: 发布日, record_type: 类型}
+    record_types:
+      values: [单一公告, 汇总, 不该入库]
+      default: 单一公告
+      out_of_scope: 不该入库
+      advisory: {value: 汇总, hints: [汇总, 盘点, 周报], subject_blank_values: ["", 未披露]}
+    grade_order: [中标公告, 招标公告, 变更公告, 废标公告, 其他]
+    dedup: {subject_roles: [subject_key, subject+title], type_role: null, date_role: occurred_date, window_days: 365}
+  dictionaries: {relevance_term_fields: [industry_terms, doctype_terms]}
+  quality:
+    extract_rules: ["amount.value 只填公告明确写出的中标金额/预算金额(元);单位万元要换算成元"]
+  update:
+    followup_schedule: [30]
+    followup_triggers: [{field: winner, when: empty, reason: 尚未公布中标人}]
+  outputs:
+    reports_engine:
+      crosstab: {row_role: dim1, col_roles: [grade]}
+      amount_sum: {kind: plain, fields: [amount.value], group_role: region}
+      status_count: null
+      missing_field: {field: winner}
+    leads_engine: {enabled: false}
+    digest: {title: 招标中标日报, group_roles: [region, grade], rank_role: grade}
+  ui:
+    record_label: 公告
+    tabs: {leads: {label: 线索, enabled: false}}
+    list_columns: [{role: title}, {role: grade}, {role: subject}, {role: region}, {role: occurred_date}]
+    filters: [{role: status, label: 状态}, {role: grade}]
+    detail_sections: [{kind: kv, roles: [subject, subject_key, dim1, region, grade, occurred_date]},
+                      {kind: object, path: amount, label: 金额, keys: {value: 金额(元), currency: 币种}},
+                      {kind: text, path: winner, label: 中标供应商}, {kind: tags, roles: [tags_a]}, {kind: sources}]
+  mock:
+    screen_keywords: [招标, 中标, 采购, 公告]
+    extract_rules:
+      - {path: project_no, regex: "项目编号[::]?\\s*([A-Z]{2,6}-?\\d{4}-?[A-Z0-9-]{2,})"}
+      - {path: project_name, regex: "([\\u4e00-\\u9fff0-9A-Za-z]{4,40}项目)"}
+      - {path: buyer, regex: "采购人[::]?\\s*([\\u4e00-\\u9fff]{2,30}?(?:局|委员会|医院|大学|公司|中心|集团))"}
+      - {path: winner, regex: "中标(?:供应商|单位|人)[::]?\\s*([\\u4e00-\\u9fff]{2,30}?(?:公司|集团|研究所))"}
+      - {path: amount.value, regex: "中标(?:金额|价)[::]?\\s*(\\d+(?:\\.\\d+)?)\\s*万元", transform: wan}
+      - {path: notice_type, when_contains: [中标], value: 中标公告}
+      - {path: notice_type, when_contains: [招标公告], value: 招标公告}

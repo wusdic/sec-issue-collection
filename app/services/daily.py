@@ -41,12 +41,20 @@ def daily_need_ids() -> list[str]:
     return [need_ctx.default_need_id()]
 
 
+def _task_runnable(db, need_id: str) -> bool:
+    """任务模式:暂停/结束/未到期的任务不进自动化。"""
+    from app.models import NeedProfile
+    from app.services import tasklib
+    np = db.get(NeedProfile, need_id)
+    return np is not None and np.active and tasklib.is_runnable(np.config)
+
+
 def _daily_crawl(need_id: str, now: datetime):
     if not settings.daily_auto_enabled or now.hour != int(settings.daily_auto_hour):
         return
     db = SessionLocal()
     try:
-        if _already_ran_today(db, need_id, now.date()):
+        if not _task_runnable(db, need_id) or _already_ran_today(db, need_id, now.date()):
             return
     finally:
         db.close()
@@ -69,8 +77,8 @@ def _autopilot(need_id: str, now: datetime):
         return
     db = SessionLocal()
     try:
-        if not autopilot.due_tasks(db, need_id):
-            return                       # 今天没有到期的维护任务
+        if not _task_runnable(db, need_id) or not autopilot.due_tasks(db, need_id):
+            return                       # 任务未激活,或今天没有到期的维护任务
     finally:
         db.close()
     autopilot.start_async(need_id)

@@ -1,0 +1,12 @@
+preset:
+  id: scope.region.jiangsu
+  kind: scope
+  name: 江苏省(含地市别名)
+  description: "地域限定:江苏省及主要地市的检索别名;配合 require_mention=[regions] 使用"
+  tags: [地域, 江苏]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: tender_watch, section: scope.regions, extracted_at: "2026-09-03"}
+body:
+  scope:
+    regions: [{value: 江苏省, terms: [江苏, 南京, 苏州, 无锡, 常州, 南通]}]

@@ -1,0 +1,13 @@
+preset:
+  id: outputs.local_library
+  kind: outputs
+  name: 本地分类资料库(行业/等级/年)
+  description: 发布即落 data/library/<需求>/<dim1>/<grade>/<year>,JSON+Markdown
+  tags: [输出, 本地资料库]
+  applies_to: [事件型, 文档型, 对象型, 观测型]
+  version: 1
+  provenance: {from_task: sec_events, section: outputs.exports, extracted_at: "2026-09-03"}
+body:
+  outputs:
+    exports:
+      - {name: 本地资料库, kind: local_library, root: data/library, path_template: "{dim1}/{grade}/{year}", formats: [json, md]}
